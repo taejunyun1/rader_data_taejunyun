@@ -1,0 +1,48 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "research-radar",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "../web/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "triggers": {
+    "crons": ["0 3 * * 1"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "research-radar-db",
+      "database_id": "b81665c2-3341-4788-ba03-3f30c0f9b8ec"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "ORIGINALS",
+      "bucket_name": "reservoir-originals"
+    },
+    {
+      "binding": "EXPORTS",
+      "bucket_name": "reservoir-exports"
+    }
+  ],
+  "ai": {
+    "binding": "AI"
+  },
+  "vars": {
+    "AI_GATEWAY_BASE_URL": "https://gateway.ai.cloudflare.com/v1/7543330c65069ee2df1b7b353fb0201c/research-radar",
+    "OPENAI_BASE_URL": "https://gateway.ai.cloudflare.com/v1/7543330c65069ee2df1b7b353fb0201c/research-radar/openai",
+    "MODEL_HIGH": "gpt-5-mini",
+    "MODEL_LOW": "gpt-5-nano",
+    "MONTHLY_BUDGET_USD": "10",
+    "ACCESS_TEAM_DOMAIN": "",
+    "ACCESS_AUD": ""
+  }
+}

@@ -1,0 +1,443 @@
+RESEARCH RADAR — Product / Technical / Operating Specification v0.1
+
+DOCUMENT 1. PRODUCT DEFINITION
+
+목적
+
+Research Radar는 사진작가 윤태준의 작업, 연구, 논문, Obsidian 메모, 관심
+자료와 웹 리서치를 지속적으로 축적·분석하여 새로운 연구 가능성과 사진
+작업 방향을 발견하도록 돕는 개인 연구 시스템이다.
+
+일반적인 AI 아이디어 생성기나 챗봇이 아니다.
+
+핵심 흐름: 자료 수집 → Research Reservoir → 관심사 변화 감지 → 외부 자료
+탐색 → 읽을 자료 선별 → 키워드·문장·질문 착즙 → Critic → Counter →
+사용자 선택 → 다시 Reservoir 축적
+
+중심 연구영역
+
+Photography, Image, Moving Image, Photographic Apparatus,
+Camera/Lens/Sensor, Light, Print/Display, Materiality, Representation,
+Index, Archive, Transmission, Network, Image Circulation, Computational
+Photography, Machine Vision, Computer Vision, AI, Synthetic/Generative
+Image, Dataset, Automation, Protocol, Human/Non-human Vision,
+Contemporary Photography, Photographic History, Installation, Media Art
+등을 초기 관심축으로 사용한다.
+
+고정 taxonomy가 아니며 자료와 사용자 선택에 따라 변화한다.
+
+Research Reservoir
+
+핵심 자산은 AI가 아니라 Reservoir다.
+
+축적 대상: - 윤태준 홈페이지의 작품 및 프로젝트 - 작업노트, 논문,
+Obsidian 텍스트, 연구 메모 - 참고 논문, 책, 아티클 - 작가·전시 정보,
+기술문서, 웹자료 - 저장 URL, 시스템 발견 자료 - Distill 결과 - 사용자
+선택 및 거부 기록
+
+AI 서비스가 변경되어도 Reservoir는 독립적인 연구 데이터베이스로 남아야
+한다.
+
+Research Radar
+
+Weekly: - 새롭게 증가하는 키워드 - 최근 반복된 질문 - 흥미로운 문장 -
+새로운 연결 - 예상 밖의 자료
+
+Monthly: - 반복 패턴 - 관심사의 이동 - Research Thread 후보 - 미해결
+질문 - 과도하게 집중된 영역
+
+Yearly: - 장기 연구 궤적 - 반복되는 문제의식 - 새 연구축 - 약화된
+관심사 - 미해결 질문 - 다음 연구 가능성
+
+평소에는 데이터를 천천히 수집·정리하고, 사용자가 Radar를 실행할 때 누적
+데이터를 종합한다.
+
+Distill — 착즙기
+
+챗봇이 아니라 선택형 연구 편집 도구다.
+
+1차 기본 출력: - Keywords: 5~7개 - Thoughts / Fragments: 3~5개 -
+Questions: 약 3개 - Read Next: 실제 논문·아티클·텍스트 3~5개 - Research
+Gap: 1~3개 - Possible Research Directions: 약 2개 - Possible Artwork
+Directions: 약 2개 - 필요한 경우 작은 실험 제안
+
+사용자는 일부 요소만 선택해 Re-Distill한다. 많은 분기를 요구하지 않는다.
+
+Reading Queue
+
+AI가 대신 다 읽는 것이 아니라 “지금 인간이 직접 무엇을 읽어야 하는가”를
+제안한다.
+
+등급: - Must Read - Worth Reading - Reference
+
+각 자료에는 why_read, related_question, 실제 출처를 제공한다. 존재가
+확인되지 않은 자료를 생성하지 않는다.
+
+Research Gap
+
+다음을 탐지한다: - 근거가 충분한 것 - 근거가 부족한 것 - 충돌하는 주장 -
+자료가 부족한 영역 - 직접 연구가 필요한 문제 - 예술적 명제로는
+가능하지만 학술적으로 미검증인 가설
+
+Critic
+
+모든 주요 결과에 자동 작동하는 논리·근거 검증 레이어다.
+
+검사: - 논리 오류 - 과도한 일반화 - 개념적 비약 - 근거 부족 - 기술적
+오류 - 용어 혼용 - 출처/주장 불일치 - 진부한 미디어아트 언어 - 지나치게
+반복된 주장
+
+복잡한 점수보다 필요한 경고만 짧게 제시한다.
+
+Counter / Red Team
+
+Critic과 별개이며 관심사의 확증편향을 방지한다.
+
+Distill에 실제 등장한 키워드와 미학적 성향에서 반대급부를 자동 생성한다.
+
+예: AI → Direct Observation Automation → Manual Action Network →
+Specific Place Synthetic → Indexical Realtime → Long Duration Virtual →
+Physical Data → Object/Print System → Single Image Non-human → Human
+Encounter
+
+고정된 아날로그 추천기가 되어서는 안 된다. 현재 Distill에서 부족한 축을
+동적으로 찾고, 가능하면 실제 사진사·작가·작업방식·텍스트를 근거로
+제안한다.
+
+사용자 역할
+
+사용자는 Admin이 아니라 Research Editor다.
+
+주요 행동: Keep / Ignore / Watch / Develop / Select / Re-Distill
+
+선택과 거부 기록 자체가 Radar의 관심 신호가 된다.
+
+제품 원칙
+
+-   Reservoir First
+-   Search Before Generation
+-   Provenance First
+-   Human Depth
+-   Avoid Self-Reinforcement
+-   Photography Remains Central
+-   Low Interaction Cost
+
+V0 범위
+
+필수: Inbox / Reservoir / Radar / Distill / Reading Queue / Research Gap
+/ Critic / Counter / 기본 검색 / 사용자 선택 기록 / Settings
+
+제외: 일반 챗봇 / Multi-agent UI / Knowledge Graph 시각화 / 다중 사용자
+/ Admin Panel / Fine-tuning / 복잡한 권한관리 / 과도한 대시보드 /
+불필요한 외부 SaaS
+
+DOCUMENT 2. TECHNICAL ARCHITECTURE
+
+기술 원칙
+
+Cloudflare-first / External-minimal / Serverless-first / Reservoir-first
+/ Model-agnostic
+
+공개 사이트: taejunyun.com 비공개 Research Radar: radar.taejunyun.com
+
+기본 구조
+
+radar.taejunyun.com → Cloudflare Access → Research Radar Web App →
+Cloudflare Worker - D1 - R2 - Scheduled Jobs / Cron - Workers AI - AI
+Gateway → OpenAI API
+
+역할
+
+Cloudflare Access: - 단일 사용자 인증 - 공개 홈페이지와 비공개 연구
+데이터 분리
+
+Workers: - API, 입력/URL 처리, 검색 - Distill/Critic/Counter
+orchestration - 사용자 action 기록 - 외부 AI 호출 - Secret 보호
+
+D1: sources, source_versions, source_analysis, keywords, questions,
+fragments, threads, directions, user_signals, radar_snapshots,
+distill_sessions, reading_queue, research_gaps, discovery_candidates,
+processing_jobs
+
+초기에는 과도하게 정규화하지 않는다.
+
+R2: PDF, 직접 업로드 파일, 필요한 웹 snapshot, 미공개 이미지,
+export/backup
+
+공개 작품 이미지는 가능한 한 홈페이지 URL을 Source of Truth로 사용한다.
+
+Workers AI: 분류, 짧은 요약, 키워드 추출, 기본 관련성 판정, 후보 정리
+
+AI Gateway: AI 호출 계층 통합 및 특정 공급자 종속 최소화
+
+OpenAI API: 고급 Distill, 복수 자료 관계 추론, Research Gap, Critic,
+Counter, 장기 Radar 분석
+
+Input Sources
+
+Personal Website / Google Drive / Local File or Folder / Obsidian
+Markdown / PDF / URL / Plain Text or Note / Manual Upload / System
+Discovery
+
+자료 유형은 가능한 범위에서 자동 판별한다.
+
+홈페이지 처리
+
+본인 홈페이지는 authoritative personal source로 취급한다.
+
+PROJECT 단위: title / year / project_url / artist_statement / exhibition
+metadata / images[]
+
+이미지를 맥락 없이 독립 데이터로 분리하지 않는다. 공개 작품 이미지는 URL
+reference, 미공개 작업만 별도 업로드를 기본으로 한다.
+
+Ingestion Pipeline
+
+INPUT → Source identification → Deduplication → Original preservation →
+Text / metadata extraction → Source classification → Basic analysis →
+Index → Reservoir
+
+자료에 따라 유연하게 추출: summary / keywords / claims /
+important_fragments / questions / connections / contradictions / people
+/ artists / technologies / works / concepts / dates
+
+모든 자료에 동일 필드를 억지로 채우지 않는다.
+
+Provenance Layer
+
+SOURCE = 원자료에 실제 존재 INTERPRETATION = 원자료에 대한 AI 해석
+SYNTHESIS = 복수 자료 연결 해석 SPECULATION = 새로운 연구 가설
+ARTISTIC_PROPOSITION = 작업을 위한 의도적 비약
+
+AI 생성물을 Source Evidence처럼 재사용하지 않는다.
+
+검색
+
+V0는 D1 텍스트/metadata 검색으로 시작한다. exact title/author → keywords
+→ questions → summary → fragments → thread relation → user signals
+
+의미검색이 실제 병목이 될 때 Vectorize 등 semantic layer를 검토한다.
+
+Distill Pipeline
+
+현재 Radar + 사용자 선택 + 관련 Thread + 최근 Keep/Develop + 관련
+Source + 과거 Resurface + 필요한 외부 Research → Context Selection →
+Distill → Critic → Counter → Result
+
+Reservoir 전체를 LLM context에 넣지 않는다.
+
+Distill Session
+
+각 실행에 다음을 저장: input_context / sources_used / keywords_generated
+/ questions_generated / reading_queue / research_gaps / user_selection /
+redistill_output / critic_output / counter_output / final_actions /
+model_version / prompt_version / timestamp
+
+Discovery
+
+DISCOVERY → CANDIDATE → relevance analysis → candidate pool →
+Keep/Watch/Ignore → Reservoir 자동 수집량에는 강한 상한을 둔다.
+
+모델 전략
+
+저비용 모델: classification / summary / tagging / candidate filtering
+
+고품질 모델: Distill / Research Gap / Critic / Counter / long-term
+synthesis
+
+모델명은 하드코딩하지 않는다.
+
+V0 UI
+
+RADAR / DISTILL / RESERVOIR / INBOX / DISCOVER / SETTINGS
+
+Admin 없음. Critic / Counter / Reading Queue / Research Gap은
+Distill/Radar 내부 컴포넌트다.
+
+사용자 파라미터 5개
+
+1.  Familiarity — 기존 관심사 ↔ 새로운 영역
+2.  Research Depth — 가벼운 탐색 ↔ 깊은 연구
+3.  Divergence — 정합적 연결 ↔ 예상 밖 연결
+4.  Counter Strength — 약한 반대급부 ↔ 강한 반대 미학
+5.  Technical ↔ Photographic — 기술·시스템 ↔ 촬영·이미지·빛·프린트·물질
+
+각 상위 파라미터가 여러 내부 알고리즘 값을 함께 제어한다. 저수준
+threshold나 retrieval count는 사용자에게 노출하지 않는다.
+
+비목표
+
+Chatbot / Multi-user / Admin Dashboard / Complex ACL / Knowledge Graph
+UI / Fine-tuning / Agent Swarm / Complex Workflow Builder / 불필요한
+외부 SaaS
+
+DOCUMENT 3. OPERATING POLICY & ALGORITHM PRINCIPLES
+
+기본 원칙
+
+Automation = Collect / Organize / Detect / Suggest Human = Read / Judge
+/ Select / Develop
+
+내부 후보는 많아도 사용자에게는 가치가 높은 소수만 노출한다.
+
+Source 정책
+
+자동 내부 분류: Personal Work / Personal Text / Paper-Academic /
+Book-Article / Artist-Artwork / Technical / Web / Note / Discovery
+
+사용자가 taxonomy를 관리하지 않는다.
+
+Deduplication
+
+DOI → canonical URL → title+author → file hash → content similarity
+순으로 중복 탐지. 가능하면 하나의 Source로 통합하고 origin만 추가한다.
+
+Versioning
+
+작업노트, 논문 초안, 메모 등은 덮어쓰지 않고 version history로 보존한다.
+
+Source Reliability
+
+PRIMARY = 논문 원문 / 공식문서 / 작가 직접 텍스트 SECONDARY = 학술 리뷰
+/ 비평 / 미술기관 자료 DISCOVERY = 뉴스 / 블로그 / 웹자료 SPECULATIVE =
+AI 생성 해석
+
+내부적으로 자동 판단한다.
+
+관심 신호
+
+import / view / select / keep / watch / develop / ignore
+
+원칙: Develop > Keep > Select > View > Mere Presence
+
+Ignore는 negative signal이지만 삭제가 아니다.
+
+시간 정책
+
+LONG TERM = 전체 Archive CURRENT = 최근 활동 MOMENTUM = 최근 관심
+증가/감소
+
+오래된 자료는 버리지 않고 현재 관심과 연결되면 Resurface한다.
+
+Discovery
+
+AFFINITY = 현재 관심사와 직접 연결 DIVERGENCE = 조금 다른 영역에서 연결
+가능
+
+Divergence 설정에 따라 내부 비율을 조정한다. 자동 발견 자료는 바로 핵심
+Reservoir 자료로 확정하지 않는다.
+
+Reading Queue
+
+Distill마다 3~5개. 각 항목: title / author / source / why_read /
+related_question / priority
+
+실제 존재와 출처가 확인된 자료만 제시한다.
+
+Research Gap
+
+1~3개만 제시: - 아직 불분명한 것 - 더 읽어야 하는 것 - 근거가 끊기는
+지점 - 직접 연구해야 하는 문제
+
+Critic
+
+모든 주요 Distill 결과에 자동 실행.
+
+필요한 경우만 경고: 근거 부족 / 논리적 비약 / 과도한 일반화 / 기술적
+오류 / 용어 불명확 / 출처 불일치 / 진부한 주장 / 기존 연구와 과도한
+유사성
+
+학술적 근거 부족과 예술적 가능성을 구분한다.
+
+Counter
+
+사용자가 주제를 지정하지 않는다. Distill 결과의 키워드와 미학적 성향에서
+자동 생성한다.
+
+반대축을 기반으로 실제 사진사적 사례, 작가, 작업방식, 매체, 텍스트, 작업
+가능성을 찾아 제안한다. 화면에는 강한 방향 1~2개만 제시한다.
+
+Bias
+
+특정 키워드와 미학의 반복을 내부 감시한다. 편향이 강해지면 Counter
+개입을 높인다. 복잡한 Bias Score는 노출하지 않는다.
+
+Session Memory
+
+Distill → 선택 → Re-Distill → Critic → Counter → 최종 선택 과정을 자동
+보존한다. 선택과 거부 기록은 이후 Radar 개인화에 사용한다.
+
+상태
+
+SEED / QUESTION / THREAD / DIRECTION / DEVELOPING / ARCHIVED 사용자에게
+상태 선택을 강요하지 않고 행동에 따라 가능한 범위에서 자동 전환한다.
+
+Ignore / Delete
+
+IGNORE = 추천 우선순위 감소, 원자료 보존 DELETE = 실제 데이터 삭제
+
+비용 정책
+
+-   자동 수집은 작은 규모
+-   기본 분류는 저비용 모델
+-   고급 Distill은 필요할 때
+-   Critic/Counter는 Distill 실행 시
+-   Reservoir 전체를 반복해서 LLM에 전달하지 않음
+-   월 AI 사용량 guardrail 설정
+
+처리 실패
+
+내부 상태: received / stored / extracted / analyzed / indexed / failed
+
+사용자에게는 문제가 있을 때만 간단히 알리고 재처리 가능하게 한다.
+
+Export / Backup
+
+JSON / Markdown / CSV / Original Files 특정 AI 공급자나 Cloudflare에
+데이터가 종속되지 않아야 한다.
+
+UI 정책
+
+Admin Panel 없음.
+
+Settings에는 5개 상위 파라미터만 노출: Familiarity / Research Depth /
+Divergence / Counter Strength / Technical↔Photographic
+
+선택적 preset: Balanced / Deep Research / Artwork Exploration /
+Counter-heavy / Technical
+
+Preset은 5개 파라미터 조합일 뿐 별도 알고리즘이 아니다.
+
+자동화
+
+평소: 낮은 빈도로 Discovery와 데이터 정리 Weekly / Monthly / Yearly:
+내부 snapshot 준비 가능 Radar synthesis: 사용자 실행 시 최종 생성
+Distill: 사용자 실행 Critic: Distill과 함께 자동 Counter: Distill과 함께
+자동
+
+원칙: 평소에는 저수지를 채우고, 사용자가 요청하는 순간 착즙한다.
+
+최종 운영 철학
+
+Research Radar는 사용자의 사고를 자동화하지 않는다.
+
+자료를 잊지 않게 한다. 관심사의 이동을 감지한다. 지금 직접 읽어야 할
+것을 알려준다. 아직 답할 수 없는 질문을 드러낸다. 떨어져 있던 자료를
+연결한다. 연구와 작업 가능성을 압축한다. 논리적 오류는 Critic이
+견제한다. 미학적 확증편향은 Counter가 교란한다. 최종 판단은 인간이 한다.
+
+내부 알고리즘은 복잡해질 수 있지만 사용자 경험은 계속 단순해야 한다.
+
+============================================================ CODEX
+IMPLEMENTATION NOTE
+============================================================
+
+이 문서를 제품 요구사항의 Source of Truth로 사용한다.
+
+-   문서에 없는 기능을 임의로 확장하지 않는다.
+-   V0에서는 단순성과 실제 사용 가능성을 우선한다.
+-   Cloudflare-first / External-minimal 원칙을 유지한다.
+-   AI보다 Reservoir와 provenance를 우선한다.
+-   사용자에게 과도한 설정과 선택을 요구하지 않는다.
+-   중요한 설계 변경이 필요하면 임의 결정하지 말고 변경 이유와 대안을
+    먼저 제시한다.
