@@ -31,6 +31,8 @@ function arg(name, fallback = undefined) {
 const VAULT = arg("vault") ? String(arg("vault")).replace(/^~/, homedir()) : null;
 const API = String(arg("api", "https://radar.taejunyun.com")).replace(/\/$/, "");
 const TOKEN = String(arg("token", process.env.RADAR_CLI_TOKEN ?? ""));
+const CF_CLIENT_ID = String(process.env.RADAR_CF_CLIENT_ID ?? "");
+const CF_CLIENT_SECRET = String(process.env.RADAR_CF_CLIENT_SECRET ?? "");
 const WATCH = Boolean(arg("watch", false));
 const FORCE = Boolean(arg("force", false));
 const STATE_FILE = ".radar-sync.json";
@@ -90,7 +92,12 @@ async function uploadOne(absPath, state) {
 
   const res = await fetch(`${API}/api/sync/obsidian`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
+    headers: {
+      Authorization: `Bearer ${TOKEN}`,
+      "Content-Type": "application/json",
+      ...(CF_CLIENT_ID ? { "CF-Access-Client-Id": CF_CLIENT_ID } : {}),
+      ...(CF_CLIENT_SECRET ? { "CF-Access-Client-Secret": CF_CLIENT_SECRET } : {}),
+    },
     body: JSON.stringify({ path: relPath, filename: relPath.split("/").pop(), text: content, mtime }),
   });
 

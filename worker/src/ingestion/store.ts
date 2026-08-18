@@ -41,6 +41,14 @@ function sanitizeFilename(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 120);
 }
 
+function asciiOnly(meta: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(meta)) {
+    if (/^[\x20-\x7E]*$/.test(v)) out[k] = v.slice(0, 500);
+  }
+  return out;
+}
+
 export async function createSource(env: Env, input: CreateSourceInput): Promise<CreateSourceResult> {
   const fileHash = await sha256Hex(input.original);
 
@@ -64,7 +72,7 @@ export async function createSource(env: Env, input: CreateSourceInput): Promise<
   const clean = input.filename ? sanitizeFilename(input.filename) : null;
   const r2Key = `originals/${id}/v1${clean ? `-${clean}` : ""}`;
   await env.ORIGINALS.put(r2Key, input.original, {
-    customMetadata: { sourceId: id, origin: input.origin },
+    customMetadata: asciiOnly({ sourceId: id, origin: input.origin }),
   });
 
   const text = (input.extractedText ?? (typeof input.original === "string" ? input.original : "")).slice(0, 500_000);
