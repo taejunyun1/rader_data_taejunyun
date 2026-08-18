@@ -13,6 +13,12 @@
     "enabled": true,
     "head_sampling_rate": 1
   },
+  "routes": [
+    {
+      "pattern": "radar.taejunyun.com",
+      "custom_domain": true
+    }
+  ],
   "triggers": {
     "crons": ["0 3 * * 1"]
   },
@@ -20,7 +26,7 @@
     {
       "binding": "DB",
       "database_name": "research-radar-db",
-      "database_id": "b81665c2-3341-4788-ba03-3f30c0f9b8ec"
+      "database_id": "518f4686-8a43-4683-8c41-1e465ad109ea"
     }
   ],
   "r2_buckets": [
@@ -37,12 +43,12 @@
     "binding": "AI"
   },
   "vars": {
-    "AI_GATEWAY_BASE_URL": "https://gateway.ai.cloudflare.com/v1/7543330c65069ee2df1b7b353fb0201c/research-radar",
-    "OPENAI_BASE_URL": "https://gateway.ai.cloudflare.com/v1/7543330c65069ee2df1b7b353fb0201c/research-radar/openai",
+    "AI_GATEWAY_BASE_URL": "https://gateway.ai.cloudflare.com/v1/a58fbe3a0082c49f571d69d08c1227ab/research-radar",
+    "OPENAI_BASE_URL": "https://gateway.ai.cloudflare.com/v1/a58fbe3a0082c49f571d69d08c1227ab/research-radar/openai",
     "MODEL_HIGH": "gpt-5-mini",
     "MODEL_LOW": "gpt-5-nano",
     "MONTHLY_BUDGET_USD": "10",
-    "ACCESS_TEAM_DOMAIN": "",
-    "ACCESS_AUD": ""
+    "ACCESS_TEAM_DOMAIN": "taejunyun.cloudflareaccess.com",
+    "ACCESS_AUD": "5a1f9d13af1d6650e347281d6448a8a36e58210a7c43a24f791a207901ac9e51"
   }
 }
