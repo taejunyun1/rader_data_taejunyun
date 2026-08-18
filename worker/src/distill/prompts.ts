@@ -145,7 +145,36 @@ export function extractJsonLoose(text: string): unknown {
     try {
       return JSON.parse(text.slice(start, end + 1));
     } catch {
-      return null;
+      /* fall through to repair */
+    }
+  }
+  return repairTruncatedJson(text.slice(start >= 0 ? start : 0));
+}
+
+function repairTruncatedJson(fragment: string): unknown {
+  const strings: string[] = [];
+  const masked = fragment.replace(/"(?:[^"\\]|\\.)*"/g, (s) => {
+    strings.push(s);
+    return `"__S${strings.length - 1}__"`;
+  });
+
+  for (let cut = masked.length; cut > 0; cut--) {
+    const candidate = masked.slice(0, cut);
+    const opens = (candidate.match(/\{/g) ?? []).length - (candidate.match(/\}/g) ?? []).length;
+    const opensArr = (candidate.match(/\[/g) ?? []).length - (candidate.match(/\]/g) ?? []).length;
+    if (opens < 0 || opensArr < 0) return null;
+    let repaired = candidate;
+    if (opensArr > 0) repaired += "]".repeat(opensArr);
+    if (opens > 0) repaired += "}".repeat(opens);
+    const lastComma = repaired.search(/,\s*(["\}\]])?\s*$/);
+    if (lastComma >= 0 && !/["\}\]]\s*$/.test(repaired.replace(/,\s*$/, ""))) repaired = repaired.replace(/,\s*$/, "");
+    try {
+      const parsed = JSON.parse(repaired) as unknown;
+      return JSON.parse(
+        JSON.stringify(parsed).replace(/"__S(\d+)__"/g, (_, i) => JSON.stringify(strings[Number(i)]).slice(1, -1))
+      );
+    } catch {
+      continue;
     }
   }
   return null;

@@ -91,9 +91,9 @@ export async function runDistill(
       purpose: "critic",
       model: "high",
       jsonMode: true,
-      maxOutputTokens: 1500,
+      maxOutputTokens: 3000,
       messages: [
-        { role: "system", content: "You are Critic. Output only valid JSON." },
+        { role: "system", content: "You are Critic. Output only valid JSON. Be terse." },
         { role: "user", content: criticPrompt(JSON.stringify(distill, null, 1)) },
       ],
     }),
@@ -101,9 +101,9 @@ export async function runDistill(
       purpose: "counter",
       model: "high",
       jsonMode: true,
-      maxOutputTokens: 2000,
+      maxOutputTokens: 3000,
       messages: [
-        { role: "system", content: "You are Counter. Output only valid JSON." },
+        { role: "system", content: "You are Counter. Output only valid JSON. Be terse." },
         { role: "user", content: counterPrompt(JSON.stringify(distill, null, 1), params.counterStrength) },
       ],
     }),
