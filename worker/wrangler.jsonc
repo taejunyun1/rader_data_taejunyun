@@ -43,6 +43,7 @@
     "binding": "AI"
   },
   "vars": {
+    "ENVIRONMENT": "production",
     "AI_GATEWAY_BASE_URL": "https://gateway.ai.cloudflare.com/v1/a58fbe3a0082c49f571d69d08c1227ab/research-radar",
     "OPENAI_BASE_URL": "https://gateway.ai.cloudflare.com/v1/a58fbe3a0082c49f571d69d08c1227ab/research-radar/openai",
     "MODEL_HIGH": "gpt-5-mini",

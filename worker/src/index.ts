@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { HealthResponse } from "@radar/shared";
+import inbox from "./routes/inbox";
 import { verifyAccessAssertion, extractAssertion, type AccessIdentity } from "./lib/access";
 
 type AppEnv = { Bindings: Env; Variables: { identity?: AccessIdentity } };
@@ -10,7 +11,7 @@ app.use("/api/*", async (c, next) => {
   if (c.req.path === "/api/health") return next();
 
   const teamDomain = c.env.ACCESS_TEAM_DOMAIN;
-  if (!teamDomain) return next();
+  if (!teamDomain || c.env.ENVIRONMENT === "development") return next();
 
   const assertion = extractAssertion(c.req.raw);
   if (!assertion) return c.json({ error: "unauthorized" }, 401);
@@ -38,6 +39,8 @@ app.get("/api/me", (c) => {
   if (!identity) return c.json({ authenticated: false });
   return c.json({ authenticated: true, email: identity.email, name: identity.name });
 });
+
+app.route("/api/inbox", inbox);
 
 app.get("/api/debug/ai-check", async (c) => {
   const { callOpenAi } = await import("./lib/openai");

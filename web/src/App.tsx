@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { VIEWS, type View, type HealthResponse } from "@radar/shared";
+import InboxView from "./views/InboxView";
 
 export default function App() {
   const [view, setView] = useState<View>("RADAR");
@@ -50,7 +51,9 @@ export default function App() {
       </nav>
       <main style={{ padding: 24 }}>
         <h2 style={{ fontSize: 14, letterSpacing: 1, textTransform: "uppercase" }}>{view}</h2>
-        {view === "SETTINGS" ? (
+        {view === "INBOX" ? (
+          <InboxView />
+        ) : view === "SETTINGS" ? (
           <p style={{ color: "#666" }}>5 parameters and presets arrive in Phase 2.</p>
         ) : (
           <p style={{ color: "#666" }}>This view arrives in a later phase.</p>

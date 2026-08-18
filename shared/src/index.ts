@@ -1,16 +1,18 @@
 export const VIEWS = ["RADAR", "DISTILL", "RESERVOIR", "INBOX", "DISCOVER", "SETTINGS"] as const;
 export type View = (typeof VIEWS)[number];
 
-export type SourceKind =
-  | "PERSONAL_WORK"
-  | "PERSONAL_TEXT"
-  | "PAPER_ACADEMIC"
-  | "BOOK_ARTICLE"
-  | "ARTIST_ARTWORK"
-  | "TECHNICAL"
-  | "WEB"
-  | "NOTE"
-  | "DISCOVERY";
+export const SOURCE_KINDS = [
+  "PERSONAL_WORK",
+  "PERSONAL_TEXT",
+  "PAPER_ACADEMIC",
+  "BOOK_ARTICLE",
+  "ARTIST_ARTWORK",
+  "TECHNICAL",
+  "WEB",
+  "NOTE",
+  "DISCOVERY",
+] as const;
+export type SourceKind = (typeof SOURCE_KINDS)[number];
 
 export type Reliability = "PRIMARY" | "SECONDARY" | "DISCOVERY" | "SPECULATIVE";
 
@@ -56,6 +58,18 @@ export interface HealthResponse {
   ok: true;
   service: string;
   time: string;
+}
+
+export interface InboxItem {
+  sourceId: string;
+  title: string;
+  kind: SourceKind;
+  reliability: Reliability;
+  origin: string | null;
+  status: ProcessingStatus;
+  error: string | null;
+  createdAt: string;
+  updatedAt: string | null;
 }
 
 export interface RadarParams {
