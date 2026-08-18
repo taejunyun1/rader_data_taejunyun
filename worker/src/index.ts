@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { HealthResponse } from "@radar/shared";
 import inbox from "./routes/inbox";
+import settings from "./routes/settings";
 import { verifyAccessAssertion, extractAssertion, type AccessIdentity } from "./lib/access";
 
 type AppEnv = { Bindings: Env; Variables: { identity?: AccessIdentity } };
@@ -41,6 +42,7 @@ app.get("/api/me", (c) => {
 });
 
 app.route("/api/inbox", inbox);
+app.route("/api/settings", settings);
 
 app.get("/api/debug/ai-check", async (c) => {
   const { callOpenAi } = await import("./lib/openai");
