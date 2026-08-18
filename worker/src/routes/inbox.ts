@@ -106,19 +106,28 @@ inbox.post("/file", async (c) => {
   }
 
   const isTextFile = /\.(md|markdown|txt)$/i.test(filename);
-  if (!isTextFile && !body?.originalBase64) {
+  const isPdf = /\.pdf$/i.test(filename);
+  if (!isTextFile && !isPdf && !body?.originalBase64) {
     return c.json({ error: "unsupported_file_type" }, 400);
   }
+  if (isPdf && !body?.originalBase64) {
+    return c.json({ error: "pdf_requires_binary" }, 400);
+  }
+
+  const kind: SourceKind = isPdf ? "PAPER_ACADEMIC" : "NOTE";
 
   try {
     const result = await createSource(c.env, {
-      kind: "NOTE",
+      kind,
       title: filename.replace(/\.[^.]+$/, ""),
-      origin: isTextFile ? "upload:md" : "upload:file",
+      origin: isPdf ? "upload:pdf" : isTextFile ? "upload:md" : "upload:file",
       original,
       extractedText: text,
       filename,
-      metadata: body?.contentType ? { contentType: body.contentType } : undefined,
+      metadata: {
+        contentType: body?.contentType,
+        pdfPages: body?.text ? (body.text.match(/\[page \d+\]/g) ?? []).length : undefined,
+      },
     });
     return c.json(result);
   } catch (err) {

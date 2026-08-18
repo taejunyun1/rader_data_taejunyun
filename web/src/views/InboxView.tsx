@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import type { InboxItem } from "@radar/shared";
+import { extractPdfText, fileToBase64 } from "../lib/pdf";
 
 const STATUS_COLORS: Record<string, string> = {
   received: "#888888",
@@ -87,8 +88,32 @@ export default function InboxView() {
         const fileText = await f.text();
         const d = await post("/file", { filename: f.name, text: fileText });
         if (d) setMsg(d.duplicateOf ? "Duplicate — linked to existing source." : `Added: ${f.name}`);
+      } else if (/\.pdf$/i.test(f.name)) {
+        setMsg(`Extracting text from ${f.name}…`);
+        try {
+          const { text, pageCount } = await extractPdfText(f);
+          if (!text.trim()) {
+            setMsg(`${f.name}: no extractable text (scanned PDF?) — kept original for manual note.`);
+          }
+          const originalBase64 = f.size <= 10_000_000 ? await fileToBase64(f) : undefined;
+          const d = await post("/file", {
+            filename: f.name,
+            text: text || undefined,
+            originalBase64,
+            contentType: "application/pdf",
+          });
+          if (d) {
+            setMsg(
+              d.duplicateOf
+                ? "Duplicate — linked to existing source."
+                : `Added: ${f.name} (${pageCount} pages${text.trim() ? "" : ", no text layer"})`
+            );
+          }
+        } catch (err) {
+          setMsg(`${f.name}: PDF extraction failed — ${(err as Error).message}`);
+        }
       } else {
-        setMsg(`PDF upload arrives in the next update: ${f.name}`);
+        setMsg(`Unsupported file type: ${f.name}`);
       }
     }
     e.target.value = "";
@@ -162,8 +187,8 @@ export default function InboxView() {
       </div>
 
       <div style={sectionStyle}>
-        <h3 style={h3Style}>Upload file (.md / .txt — PDF next)</h3>
-        <input ref={fileRef} type="file" accept=".md,.markdown,.txt" multiple onChange={(e) => void onFile(e)} />
+        <h3 style={h3Style}>Upload file (.md / .txt / .pdf)</h3>
+        <input ref={fileRef} type="file" accept=".md,.markdown,.txt,.pdf" multiple onChange={(e) => void onFile(e)} />
       </div>
 
       {msg && <p style={{ fontSize: 13, color: "#444" }}>{msg}</p>}
