@@ -1,6 +1,7 @@
 import type { RadarParams } from "@radar/shared";
 import { uuid } from "../ingestion/ids";
 import { callOpenAi, monthSpendUsd } from "../lib/openai";
+import { verifyWork } from "../lib/openalex";
 import { buildDistillContext, type DistillContext } from "./context";
 import {
   PROMPT_VERSION,
@@ -14,7 +15,7 @@ import {
 } from "./prompts";
 
 export type DistillRunResult =
-  | { ok: true; sessionId: string; costUsd: number; budgetUsedPct: number }
+  | { ok: true; sessionId: string; costUsd: number; budgetUsedPct: number; queueItemIds: string[] }
   | { ok: false; error: string; budgetUsedPct: number };
 
 function asValidated<T>(raw: unknown, kind: "distill"): DistillOutput | null;
@@ -116,6 +117,8 @@ export async function runDistill(
   const sessionId = uuid();
   const ts = new Date().toISOString();
 
+  const queueIds = indexQueueItems(env, sessionId, distill, ts);
+
   await env.DB.batch([
     env.DB
       .prepare(
@@ -137,27 +140,50 @@ export async function runDistill(
         totalCost,
         ts
       ),
-    ...indexQueueItems(env, sessionId, distill, ts),
+    ...queueIds.stmts,
     ...indexGaps(env, sessionId, distill, ts),
   ]);
 
-  return { ok: true, sessionId, costUsd: totalCost, budgetUsedPct: await budgetPct(env) };
+  void verifyQueueItems(env, distill, queueIds.ids).catch(() => undefined);
+
+  return { ok: true, sessionId, costUsd: totalCost, budgetUsedPct: await budgetPct(env), queueItemIds: queueIds.ids };
 }
 
-function indexQueueItems(env: Env, sessionId: string, d: DistillOutput, ts: string): D1PreparedStatement[] {
+async function verifyQueueItems(env: Env, d: DistillOutput, ids: string[]): Promise<void> {
+  const items = d.read_next ?? [];
+  for (let i = 0; i < items.length && i < ids.length; i++) {
+    const item = items[i];
+    if (!item?.title) continue;
+    const work = await verifyWork(item.title, item.author ?? null);
+    if (work) {
+      await env.DB
+        .prepare(
+          `UPDATE reading_queue SET verified = 1, verified_at = ?, openalex_id = ?, source_url = COALESCE(?, source_url)
+           WHERE id = ?`
+        )
+        .bind(new Date().toISOString(), work.id, work.openAccessUrl ?? work.doi ?? null, ids[i])
+        .run();
+    }
+  }
+}
+
+function indexQueueItems(env: Env, sessionId: string, d: DistillOutput, ts: string): { stmts: D1PreparedStatement[]; ids: string[] } {
   const stmts: D1PreparedStatement[] = [];
+  const ids: string[] = [];
   for (const item of d.read_next ?? []) {
     if (!item?.title) continue;
+    const id = uuid();
+    ids.push(id);
     stmts.push(
       env.DB
         .prepare(
           `INSERT INTO reading_queue (id, distill_session_id, title, author, source_url, openalex_id, priority, why_read, related_question, created_at)
            VALUES (?, ?, ?, ?, NULL, NULL, 'WORTH', ?, ?, ?)`
         )
-        .bind(uuid(), sessionId, item.title.slice(0, 300), item.author ?? null, item.why_read ?? null, item.related_question ?? null, ts)
+        .bind(id, sessionId, item.title.slice(0, 300), item.author ?? null, item.why_read ?? null, item.related_question ?? null, ts)
     );
   }
-  return stmts;
+  return { stmts, ids };
 }
 
 function indexGaps(env: Env, sessionId: string, d: DistillOutput, ts: string): D1PreparedStatement[] {

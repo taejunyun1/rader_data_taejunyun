@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { HealthResponse } from "@radar/shared";
 import inbox from "./routes/inbox";
 import distillRoute from "./routes/distill";
+import radarRoute from "./routes/radar";
 import reservoir from "./routes/reservoir";
 import search from "./routes/search";
 import settings from "./routes/settings";
@@ -47,6 +48,7 @@ app.get("/api/me", (c) => {
 
 app.route("/api/inbox", inbox);
 app.route("/api/distill", distillRoute);
+app.route("/api/radar", radarRoute);
 app.route("/api/reservoir", reservoir);
 app.route("/api/search", search);
 app.route("/api/settings", settings);
@@ -76,11 +78,17 @@ app.onError((err, c) => {
 
 export default {
   fetch: app.fetch,
-  scheduled(event: ScheduledEvent, _env: Env, ctx: ExecutionContext) {
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
     ctx.waitUntil(
-      Promise.resolve().then(() => {
-        console.log(JSON.stringify({ level: "info", cron: event.cron, scheduledTime: event.scheduledTime }));
-      })
+      (async () => {
+        const { createWeeklySnapshotIfDue } = await import("./radar/snapshot");
+        try {
+          const id = await createWeeklySnapshotIfDue(env);
+          console.log(JSON.stringify({ level: "info", cron: event.cron, snapshot: id ?? "skipped" }));
+        } catch (err) {
+          console.error(JSON.stringify({ level: "error", scope: "cron", message: (err as Error).message }));
+        }
+      })()
     );
   },
 };

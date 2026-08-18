@@ -68,7 +68,8 @@ distill.get("/sessions/:id", async (c) => {
   const [queue, gaps] = await Promise.all([
     c.env.DB
       .prepare(
-        `SELECT id, title, author, priority, why_read AS whyRead, related_question AS relatedQuestion, source_url AS sourceUrl
+        `SELECT id, title, author, priority, why_read AS whyRead, related_question AS relatedQuestion,
+                source_url AS sourceUrl, openalex_id AS openalexId, verified
          FROM reading_queue WHERE distill_session_id = ?`
       )
       .bind(id)

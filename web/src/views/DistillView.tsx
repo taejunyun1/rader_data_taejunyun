@@ -24,7 +24,7 @@ interface SessionData {
     critic: { warnings: { category: string; note: string }[]; overall: string } | null;
     counter: { axes: { from: string; to: string; rationale: string }[]; suggestions: { direction: string; grounding: { name: string; kind: string; note: string }[] }[] } | null;
   };
-  readingQueue: { id: string; title: string; author: string | null; priority: string; whyRead: string | null; relatedQuestion: string | null }[];
+  readingQueue: { id: string; title: string; author: string | null; priority: string; whyRead: string | null; relatedQuestion: string | null; sourceUrl: string | null; openalexId: string | null; verified: number }[];
   researchGaps: { id: string; gap: string; kind: string | null }[];
 }
 
@@ -187,9 +187,28 @@ export default function DistillView() {
               <h4 style={h4}>Reading Queue</h4>
               {data.readingQueue.map((q) => (
                 <div key={q.id} style={{ marginBottom: 8, fontSize: 13 }}>
-                  <strong>{q.title}</strong>
+                  <strong>
+                    {q.sourceUrl ? (
+                      <a href={q.sourceUrl} target="_blank" rel="noreferrer" style={{ color: "#1a1a1a" }}>
+                        {q.title}
+                      </a>
+                    ) : (
+                      q.title
+                    )}
+                  </strong>
                   {q.author ? <span style={{ color: "#666" }}> — {q.author}</span> : null}{" "}
-                  <span style={{ fontSize: 10, background: "#eee", padding: "1px 6px", borderRadius: 3 }}>{q.priority}</span>
+                  <span
+                    style={{
+                      fontSize: 10,
+                      padding: "1px 6px",
+                      borderRadius: 3,
+                      background: q.verified ? "#2a7a2a" : "#eee",
+                      color: q.verified ? "#fff" : "#888",
+                    }}
+                    title={q.verified ? "Existence verified via OpenAlex" : "Not yet verified in OpenAlex"}
+                  >
+                    {q.verified ? "verified" : "unverified"}
+                  </span>
                   {q.whyRead && <p style={{ margin: "2px 0 0", color: "#555", fontSize: 12 }}>why: {q.whyRead}</p>}
                 </div>
               ))}
