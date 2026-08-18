@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { loadParams } from "../lib/params";
-import { budgetPct, runDistill } from "../distill/run";
+import { budgetPct, runDistill, verifyQueueItems } from "../distill/run";
+import type { DistillOutput } from "../distill/prompts";
 
 const distill = new Hono<{ Bindings: Env }>();
 
@@ -26,12 +27,42 @@ distill.post("/run", async (c) => {
       keepElements: body.keepElements,
     });
     if (!result.ok) return c.json(result, 429);
+    c.executionCtx.waitUntil(
+      verifyQueueItems(c.env, result.distillOutput, result.queueItemIds).catch((e) =>
+        console.warn(JSON.stringify({ level: "warn", scope: "queue-verify", message: (e as Error).message }))
+      )
+    );
     return c.json(result);
   } catch (err) {
     const message = (err as Error).message.slice(0, 300);
     console.error(JSON.stringify({ level: "error", scope: "distill:run", message }));
     return c.json({ ok: false, error: message }, 500);
   }
+});
+
+distill.post("/verify-queue/:id", async (c) => {
+  const id = c.req.param("id");
+  const rows = await c.env.DB
+    .prepare(`SELECT id, title, author FROM reading_queue WHERE distill_session_id = ? AND verified = 0`)
+    .bind(id)
+    .all<{ id: string; title: string; author: string | null }>();
+  const items = rows.results ?? [];
+  if (!items.length) return c.json({ verified: 0 });
+  const fake: DistillOutput = {
+    keywords: [],
+    thoughts_fragments: [],
+    questions: [],
+    read_next: items.map((r) => ({ title: r.title, author: r.author ?? undefined, why_read: "", related_question: undefined })),
+    research_gaps: [],
+    research_directions: [],
+    artwork_directions: [],
+  };
+  await verifyQueueItems(c.env, fake, items.map((r) => r.id));
+  const after = await c.env.DB
+    .prepare(`SELECT COUNT(*) AS n FROM reading_queue WHERE distill_session_id = ? AND verified = 1`)
+    .bind(id)
+    .first<{ n: number }>();
+  return c.json({ verified: after?.n ?? 0, total: items.length });
 });
 
 distill.get("/sessions", async (c) => {

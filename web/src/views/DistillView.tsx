@@ -101,6 +101,15 @@ export default function DistillView() {
     }
   }
 
+  async function verifyQueue() {
+    if (!data) return;
+    setMsg("Verifying reading queue via OpenAlex…");
+    const r = await fetch(`/api/distill/verify-queue/${data.session.id}`, { method: "POST" });
+    const d = (await r.json()) as { verified?: number; total?: number };
+    setMsg(`Verified ${d.verified ?? 0}/${d.total ?? 0} items.`);
+    await openSession(data.session.id);
+  }
+
   async function saveSelection() {
     if (!data) return;
     await fetch(`/api/distill/sessions/${data.session.id}/select`, {
@@ -184,7 +193,12 @@ export default function DistillView() {
 
           {data.readingQueue.length > 0 && (
             <>
-              <h4 style={h4}>Reading Queue</h4>
+              <h4 style={h4}>
+                Reading Queue{" "}
+                <button style={{ ...smallBtn, marginLeft: 8 }} onClick={() => void verifyQueue()}>
+                  Verify via OpenAlex
+                </button>
+              </h4>
               {data.readingQueue.map((q) => (
                 <div key={q.id} style={{ marginBottom: 8, fontSize: 13 }}>
                   <strong>

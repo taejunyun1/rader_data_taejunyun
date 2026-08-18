@@ -15,7 +15,7 @@ import {
 } from "./prompts";
 
 export type DistillRunResult =
-  | { ok: true; sessionId: string; costUsd: number; budgetUsedPct: number; queueItemIds: string[] }
+  | { ok: true; sessionId: string; costUsd: number; budgetUsedPct: number; queueItemIds: string[]; distillOutput: DistillOutput }
   | { ok: false; error: string; budgetUsedPct: number };
 
 function asValidated<T>(raw: unknown, kind: "distill"): DistillOutput | null;
@@ -144,12 +144,10 @@ export async function runDistill(
     ...indexGaps(env, sessionId, distill, ts),
   ]);
 
-  void verifyQueueItems(env, distill, queueIds.ids).catch(() => undefined);
-
-  return { ok: true, sessionId, costUsd: totalCost, budgetUsedPct: await budgetPct(env), queueItemIds: queueIds.ids };
+  return { ok: true, sessionId, costUsd: totalCost, budgetUsedPct: await budgetPct(env), queueItemIds: queueIds.ids, distillOutput: distill };
 }
 
-async function verifyQueueItems(env: Env, d: DistillOutput, ids: string[]): Promise<void> {
+export async function verifyQueueItems(env: Env, d: DistillOutput, ids: string[]): Promise<void> {
   const items = d.read_next ?? [];
   for (let i = 0; i < items.length && i < ids.length; i++) {
     const item = items[i];
