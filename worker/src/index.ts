@@ -9,6 +9,7 @@ import reservoir from "./routes/reservoir";
 import search from "./routes/search";
 import settings from "./routes/settings";
 import signals from "./routes/signals";
+import syncRoute from "./routes/sync";
 import { verifyAccessAssertion, extractAssertion, type AccessIdentity } from "./lib/access";
 
 type AppEnv = { Bindings: Env; Variables: { identity?: AccessIdentity } };
@@ -17,6 +18,19 @@ const app = new Hono<AppEnv>();
 
 app.use("/api/*", async (c, next) => {
   if (c.req.path === "/api/health") return next();
+
+  const authHeader = c.req.header("Authorization");
+  if (authHeader?.startsWith("Bearer ") && c.env.CLI_TOKEN) {
+    const token = authHeader.slice(7);
+    const [a, b] = await Promise.all([
+      crypto.subtle.digest("SHA-256", new TextEncoder().encode(token)),
+      crypto.subtle.digest("SHA-256", new TextEncoder().encode(c.env.CLI_TOKEN)),
+    ]);
+    if (buffersEqual(new Uint8Array(a), new Uint8Array(b))) {
+      c.set("identity", { sub: "cli", email: "cli@radar", name: "CLI" });
+      return next();
+    }
+  }
 
   const teamDomain = c.env.ACCESS_TEAM_DOMAIN;
   if (!teamDomain || c.env.ENVIRONMENT === "development") return next();
@@ -57,6 +71,7 @@ app.route("/api/reservoir", reservoir);
 app.route("/api/search", search);
 app.route("/api/settings", settings);
 app.route("/api/signals", signals);
+app.route("/api/sync", syncRoute);
 
 app.get("/api/debug/ai-check", async (c) => {
   const { callOpenAi } = await import("./lib/openai");
@@ -72,6 +87,13 @@ app.get("/api/debug/ai-check", async (c) => {
     return c.json({ ok: false, error: (err as Error).message.slice(0, 300) }, 500);
   }
 });
+
+function buffersEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i]! ^ b[i]!;
+  return diff === 0;
+}
 
 app.notFound((c) => c.json({ error: "not_found" }, 404));
 

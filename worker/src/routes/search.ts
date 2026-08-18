@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { ensureEmbedding, semanticSearch } from "../lib/embed";
 
 const search = new Hono<{ Bindings: Env }>();
 
@@ -89,7 +90,68 @@ search.get("/", async (c) => {
   );
 
   const sorted = [...hits.values()].sort((a, b) => b.score - a.score).slice(0, 30);
-  return c.json({ query: q, hits: sorted });
+
+  try {
+    const semantic = await semanticSearch(c.env, q, 8);
+    for (const s of semantic) {
+      const existing = sorted.find((h) => h.sourceId === s.sourceId);
+      if (existing) {
+        existing.score += Math.round(s.score * 20);
+        if (!existing.snippet) existing.matched += "+semantic";
+      } else {
+        const src = await c.env.DB
+          .prepare("SELECT title, kind, reliability FROM sources WHERE id = ?")
+          .bind(s.sourceId)
+          .first<{ title: string; kind: string; reliability: string }>();
+        if (src) {
+          sorted.push({
+            sourceId: s.sourceId,
+            title: src.title,
+            kind: src.kind,
+            reliability: src.reliability,
+            matched: "semantic",
+            snippet: "",
+            score: Math.round(s.score * 50),
+          });
+        }
+      }
+    }
+  } catch {
+    /* semantic layer unavailable — keyword results still returned */
+  }
+
+  sorted.sort((a, b) => b.score - a.score);
+  return c.json({ query: q, hits: sorted.slice(0, 30) });
+});
+
+search.post("/embed-backfill", async (c) => {
+  const limit = Math.min(parseInt(c.req.query("limit") ?? "15", 10) || 15, 40);
+  const rows = await c.env.DB.prepare(
+    `SELECT s.id FROM sources s
+     LEFT JOIN source_embeddings e ON e.source_id = s.id
+     WHERE e.source_id IS NULL AND s.status IN ('indexed','analyzed','extracted')
+     ORDER BY s.updated_at DESC LIMIT ?`
+  )
+    .bind(limit)
+    .all<{ id: string }>();
+
+  let embedded = 0;
+  const failures: { id: string; error: string }[] = [];
+  for (const r of rows.results ?? []) {
+    try {
+      const did = await ensureEmbedding(c.env, r.id);
+      if (did) embedded++;
+    } catch (e) {
+      failures.push({ id: r.id, error: (e as Error).message.slice(0, 100) });
+    }
+  }
+  const remaining = await c.env.DB
+    .prepare(
+      `SELECT COUNT(*) AS n FROM sources s LEFT JOIN source_embeddings e ON e.source_id = s.id
+       WHERE e.source_id IS NULL AND s.status IN ('indexed','analyzed','extracted')`
+    )
+    .first<{ n: number }>();
+  return c.json({ embedded, attempted: rows.results?.length ?? 0, remaining: remaining?.n ?? 0, failures });
 });
 
 export default search;

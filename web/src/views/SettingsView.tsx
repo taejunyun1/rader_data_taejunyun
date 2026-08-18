@@ -78,6 +78,20 @@ export default function SettingsView() {
     }
   }
 
+  async function buildIndex() {
+    setBusy(true);
+    setExportMsg("Building semantic index (embeddings)…");
+    try {
+      const r = await fetch("/api/search/embed-backfill?limit=25", { method: "POST" });
+      const d = (await r.json()) as { embedded?: number; remaining?: number };
+      setExportMsg(r.ok ? `Embedded ${d.embedded} sources. Remaining: ${d.remaining ?? 0}.` : `Failed: ${r.status}`);
+    } catch (e) {
+      setExportMsg(`Failed: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function syncWebsite() {
     setBusy(true);
     setSyncMsg("Syncing…");
@@ -157,6 +171,9 @@ export default function SettingsView() {
         </div>
         <button style={btn} disabled={busy} onClick={() => void backupOriginals()}>
           Backup originals to R2
+        </button>
+        <button style={{ ...btn, marginLeft: 6 }} disabled={busy} onClick={() => void buildIndex()}>
+          Build semantic index
         </button>
         {exportMsg && <p style={{ fontSize: 13, color: "#444", marginTop: 8 }}>{exportMsg}</p>}
       </div>

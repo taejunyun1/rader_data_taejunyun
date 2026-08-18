@@ -1,5 +1,6 @@
 import { SOURCE_KINDS, type ProcessingStatus, type SourceKind } from "@radar/shared";
 import { analysisPrompt, validateAnalysis, type SourceAnalysisPayload } from "./prompt";
+import { ensureEmbedding } from "../lib/embed";
 import { uuid } from "../ingestion/ids";
 
 const ANALYSIS_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
@@ -60,6 +61,9 @@ export async function analyzeSource(env: Env, sourceId: string): Promise<Analyze
       });
       await applyClassification(env, sourceId, payload, src.kind as SourceKind);
       await indexAnalysis(env, sourceId, payload, ts);
+      await ensureEmbedding(env, sourceId).catch((e: Error) =>
+        console.warn(JSON.stringify({ level: "warn", scope: "embed", sourceId, message: e.message }))
+      );
       await setSourceStatus(env, sourceId, "indexed");
       return { sourceId, status: "analyzed", hasAnalysis: true };
     }

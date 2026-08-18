@@ -9,6 +9,8 @@ interface Candidate {
   relevanceScore: number | null;
   status: string;
   queryUsed: string | null;
+  provider?: string;
+  externalUrl?: string | null;
 }
 
 const btn: React.CSSProperties = { padding: "6px 14px", border: "1px solid #1a1a1a", background: "#1a1a1a", color: "#fff", borderRadius: 4, cursor: "pointer", fontSize: 13 };
@@ -22,6 +24,8 @@ export default function DiscoverView() {
   const [busy, setBusy] = useState(false);
   const [queries, setQueries] = useState("");
   const [savedQueries, setSavedQueries] = useState<string[]>([]);
+  const [feeds, setFeeds] = useState("");
+  const [feedMsg, setFeedMsg] = useState("");
 
   const load = useCallback(async () => {
     const r = await fetch(`/api/discover/candidates?status=${statusFilter}`);
@@ -41,7 +45,22 @@ export default function DiscoverView() {
         setQueries((d.queries ?? []).join("\n"));
       })
       .catch(() => undefined);
+    fetch("/api/discover/feeds")
+      .then((r) => r.json() as Promise<{ feeds: string[] }>)
+      .then((d) => setFeeds((d.feeds ?? []).join("\n")))
+      .catch(() => undefined);
   }, []);
+
+  async function saveFeeds() {
+    const list = feeds.split("\n").map((f) => f.trim()).filter((f) => /^https?:\/\//.test(f));
+    const r = await fetch("/api/discover/feeds", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ feeds: list }),
+    });
+    if (r.ok) setFeedMsg(`${list.length} feeds saved.`);
+    else setFeedMsg("Save failed.");
+  }
 
   async function runDiscovery() {
     setBusy(true);
@@ -105,6 +124,20 @@ export default function DiscoverView() {
         </button>
       </div>
 
+      <div style={{ marginBottom: 16 }}>
+        <h4 style={h4}>RSS/Atom feeds (one URL per line, max 6 — journals, blogs)</h4>
+        <textarea
+          style={{ width: "100%", padding: "6px 10px", border: "1px solid #ccc", borderRadius: 4, fontSize: 12, fontFamily: "inherit", height: 70, boxSizing: "border-box" }}
+          value={feeds}
+          onChange={(e) => setFeeds(e.target.value)}
+          placeholder={"https://some-journal.org/rss\nhttps://blog.example.com/feed"}
+        />
+        <button style={{ ...smallBtn, marginTop: 6 }} onClick={() => void saveFeeds()}>
+          Save feeds
+        </button>
+        {feedMsg && <span style={{ fontSize: 11, color: "#2a7a2a", marginLeft: 8 }}>{feedMsg}</span>}
+      </div>
+
       <div style={{ marginBottom: 8 }}>
         {["CANDIDATE", "KEPT", "WATCHED", "IGNORED"].map((s) => (
           <button key={s} style={{ ...smallBtn, marginRight: 4, ...(s === statusFilter ? { background: "#1a1a1a", color: "#fff" } : {}) }} onClick={() => setStatusFilter(s)}>
@@ -119,12 +152,17 @@ export default function DiscoverView() {
         candidates.map((c) => (
           <div key={c.id} style={{ padding: "10px 0", borderBottom: "1px solid #eee" }}>
             <div style={{ fontSize: 14 }}>
-              {c.openalexId ? (
-                <a href={`${c.openalexId}`} target="_blank" rel="noreferrer" style={{ color: "#1a1a1a" }}>
+              {c.externalUrl || c.openalexId ? (
+                <a href={c.externalUrl ?? c.openalexId ?? "#"} target="_blank" rel="noreferrer" style={{ color: "#1a1a1a" }}>
                   {c.title}
                 </a>
               ) : (
                 c.title
+              )}
+              {c.provider && c.provider !== "openalex" && (
+                <span style={{ fontSize: 10, background: "#eef", color: "#446", padding: "1px 6px", borderRadius: 3, marginLeft: 6 }}>
+                  {c.provider}
+                </span>
               )}
             </div>
             <p style={{ margin: "2px 0", fontSize: 12, color: "#777" }}>

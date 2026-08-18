@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { runDiscovery, customQueries, setCustomQueries } from "../discovery/run";
+import { runDiscovery, customQueries, setCustomQueries, customFeeds, setCustomFeeds } from "../discovery/run";
 import { loadParams } from "../lib/params";
 import { createSource } from "../ingestion/store";
 import { searchWorks } from "../lib/openalex";
@@ -11,7 +11,7 @@ discover.get("/candidates", async (c) => {
   const rows = await c.env.DB
     .prepare(
       `SELECT id, openalex_id AS openalexId, title, authors, year, relevance_score AS relevanceScore,
-              status, query_used AS queryUsed, created_at AS createdAt
+              status, query_used AS queryUsed, created_at AS createdAt, provider, external_url AS externalUrl
        FROM discovery_candidates WHERE status = ? ORDER BY relevance_score DESC, created_at DESC LIMIT 50`
     )
     .bind(status)
@@ -37,9 +37,9 @@ discover.post("/candidates/:id/:action", async (c) => {
   if (!["keep", "watch", "ignore"].includes(action)) return c.json({ error: "invalid_action" }, 400);
 
   const cand = await c.env.DB
-    .prepare("SELECT id, openalex_id, title, authors, year, status FROM discovery_candidates WHERE id = ?")
+    .prepare("SELECT id, openalex_id, title, authors, year, status, provider, external_url FROM discovery_candidates WHERE id = ?")
     .bind(id)
-    .first<{ id: string; openalex_id: string | null; title: string; authors: string | null; year: number | null; status: string }>();
+    .first<{ id: string; openalex_id: string | null; title: string; authors: string | null; year: number | null; status: string; provider: string; external_url: string | null }>();
   if (!cand) return c.json({ error: "not_found" }, 404);
 
   const newStatus = action === "keep" ? "KEPT" : action === "watch" ? "WATCHED" : "IGNORED";
@@ -47,24 +47,43 @@ discover.post("/candidates/:id/:action", async (c) => {
 
   let sourceId: string | null = null;
   if (action === "keep" && cand.openalex_id) {
-    const detail = await searchWorks(cand.title, 1);
-    const match = detail.find((w) => w.id === cand.openalex_id);
+    const link = cand.external_url ?? cand.openalex_id;
+    let doi: string | undefined;
+    let oaUrl: string | null = null;
+    if (cand.provider === "openalex") {
+      const detail = await searchWorks(cand.title, 1);
+      const match = detail.find((w) => w.id === cand.openalex_id);
+      doi = match?.doi?.replace("https://doi.org/", "") ?? undefined;
+      oaUrl = match?.openAccessUrl ?? null;
+    }
     const r = await createSource(c.env, {
       kind: "DISCOVERY",
       title: cand.title,
       authors: cand.authors ?? undefined,
       year: cand.year ?? undefined,
-      canonicalUrl: cand.openalex_id,
-      doi: match?.doi?.replace("https://doi.org/", "") ?? undefined,
-      origin: "discovery",
+      canonicalUrl: link,
+      doi,
+      origin: `discovery:${cand.provider}`,
       original: cand.title,
       extractedText: undefined,
-      metadata: { openalexId: cand.openalex_id, oaUrl: match?.openAccessUrl ?? null },
+      metadata: { provider: cand.provider, externalId: cand.openalex_id, oaUrl },
     });
     sourceId = r.sourceId;
   }
 
   return c.json({ ok: true, status: newStatus, sourceId });
+});
+
+discover.get("/feeds", async (c) => {
+  return c.json({ feeds: await customFeeds(c.env.DB) });
+});
+
+discover.put("/feeds", async (c) => {
+  const body = (await c.req.json<{ feeds?: string[] }>().catch(() => null)) as { feeds?: string[] } | null;
+  if (!body?.feeds || !Array.isArray(body.feeds)) return c.json({ error: "feeds_required" }, 400);
+  const clean = body.feeds.map((f) => String(f).trim()).filter((f) => /^https?:\/\//.test(f)).slice(0, 6);
+  await setCustomFeeds(c.env.DB, clean);
+  return c.json({ feeds: clean });
 });
 
 discover.get("/queries", async (c) => {
