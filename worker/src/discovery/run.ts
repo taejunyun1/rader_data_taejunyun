@@ -1,4 +1,4 @@
-import { searchWorks, type OpenAlexWork } from "./openalex";
+import { searchWorks, type OpenAlexWork } from "../lib/openalex";
 import { uuid } from "../ingestion/ids";
 
 const MAX_CANDIDATES_PER_RUN = 20;
