@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { VIEWS, type View, type HealthResponse } from "@radar/shared";
 import InboxView from "./views/InboxView";
+import DiscoverView from "./views/DiscoverView";
 import DistillView from "./views/DistillView";
 import RadarView from "./views/RadarView";
 import ReservoirView from "./views/ReservoirView";
@@ -63,6 +64,8 @@ export default function App() {
           <DistillView />
         ) : view === "RESERVOIR" ? (
           <ReservoirView />
+        ) : view === "DISCOVER" ? (
+          <DiscoverView />
         ) : view === "SETTINGS" ? (
           <SettingsView />
         ) : (
