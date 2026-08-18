@@ -3,23 +3,14 @@ import { PRESETS, type PresetName, type RadarParams } from "@radar/shared";
 import homepageProjects from "../data/homepage-projects.json";
 import { analyzeSource } from "../analysis/analyze";
 import { createSource } from "../ingestion/store";
+import { PARAMS_KEY, loadParams } from "../lib/params";
 
 const settings = new Hono<{ Bindings: Env }>();
 
-const DEFAULT_PARAMS: RadarParams = PRESETS.BALANCED;
-const PARAMS_KEY = "radar_params_v1";
 const VALID_PRESETS = Object.keys(PRESETS) as PresetName[];
 
 settings.get("/params", async (c) => {
-  const row = await c.env.DB.prepare("SELECT value FROM kv WHERE key = ?").bind(PARAMS_KEY).first<{ value: string }>();
-  if (row) {
-    try {
-      return c.json(JSON.parse(row.value) as RadarParams);
-    } catch {
-      /* fallthrough */
-    }
-  }
-  return c.json(DEFAULT_PARAMS);
+  return c.json(await loadParams(c.env.DB));
 });
 
 settings.put("/params", async (c) => {
@@ -32,8 +23,7 @@ settings.put("/params", async (c) => {
     params = PRESETS[body.preset as PresetName];
   } else {
     const clamp01 = (v: unknown, fallback: number) => (typeof v === "number" && v >= 0 && v <= 1 ? v : fallback);
-    const current = await c.env.DB.prepare("SELECT value FROM kv WHERE key = ?").bind(PARAMS_KEY).first<{ value: string }>();
-    const base: RadarParams = current ? { ...DEFAULT_PARAMS, ...(JSON.parse(current.value) as RadarParams) } : DEFAULT_PARAMS;
+    const base = await loadParams(c.env.DB);
     params = {
       familiarity: clamp01(body.familiarity, base.familiarity),
       researchDepth: clamp01(body.researchDepth, base.researchDepth),

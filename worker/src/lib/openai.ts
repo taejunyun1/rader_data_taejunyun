@@ -11,6 +11,14 @@ export interface OpenAiCallOptions {
   maxOutputTokens?: number;
 }
 
+export interface OpenAiCallResult {
+  text: string;
+  costUsd: number;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+}
+
 interface ChatCompletionResponse {
   choices?: { message: { content: string } }[];
   usage?: { prompt_tokens: number; completion_tokens: number };
@@ -20,7 +28,7 @@ interface ChatCompletionResponse {
 const PRICE_PER_M_HIGH = { input: 0.4, output: 1.6 };
 const PRICE_PER_M_LOW = { input: 0.1, output: 0.4 };
 
-export async function callOpenAi(env: Env, opts: OpenAiCallOptions): Promise<{ text: string; costUsd: number; model: string }> {
+export async function callOpenAi(env: Env, opts: OpenAiCallOptions): Promise<OpenAiCallResult> {
   const tier = opts.model ?? "high";
   const model = tier === "high" ? env.MODEL_HIGH : env.MODEL_LOW;
   const url = `${env.OPENAI_BASE_URL}/chat/completions`;
@@ -56,5 +64,38 @@ export async function callOpenAi(env: Env, opts: OpenAiCallOptions): Promise<{ t
   const outputTokens = data.usage?.completion_tokens ?? 0;
   const costUsd = (inputTokens / 1e6) * price.input + (outputTokens / 1e6) * price.output;
 
-  return { text, costUsd, model };
+  await recordAiUsage(env, {
+    purpose: opts.purpose,
+    model,
+    inputTokens,
+    outputTokens,
+    costUsd,
+  });
+
+  return { text, costUsd, model, inputTokens, outputTokens };
+}
+
+async function recordAiUsage(
+  env: Env,
+  u: { purpose: string; model: string; inputTokens: number; outputTokens: number; costUsd: number }
+): Promise<void> {
+  const month = new Date().toISOString().slice(0, 7);
+  const id = crypto.randomUUID();
+  await env.DB
+    .prepare(
+      `INSERT INTO ai_usage (id, month, provider, model, purpose, input_tokens, output_tokens, cost_usd, created_at)
+       VALUES (?, ?, 'openai', ?, ?, ?, ?, ?, ?)`
+    )
+    .bind(id, month, u.model, u.purpose, u.inputTokens, u.outputTokens, u.costUsd, new Date().toISOString())
+    .run()
+    .catch(() => undefined);
+}
+
+export async function monthSpendUsd(env: Env): Promise<number> {
+  const month = new Date().toISOString().slice(0, 7);
+  const row = await env.DB
+    .prepare("SELECT COALESCE(SUM(cost_usd), 0) AS total FROM ai_usage WHERE month = ?")
+    .bind(month)
+    .first<{ total: number }>();
+  return row?.total ?? 0;
 }

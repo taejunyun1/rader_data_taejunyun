@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { HealthResponse } from "@radar/shared";
 import inbox from "./routes/inbox";
+import distillRoute from "./routes/distill";
 import reservoir from "./routes/reservoir";
 import search from "./routes/search";
 import settings from "./routes/settings";
@@ -45,6 +46,7 @@ app.get("/api/me", (c) => {
 });
 
 app.route("/api/inbox", inbox);
+app.route("/api/distill", distillRoute);
 app.route("/api/reservoir", reservoir);
 app.route("/api/search", search);
 app.route("/api/settings", settings);
