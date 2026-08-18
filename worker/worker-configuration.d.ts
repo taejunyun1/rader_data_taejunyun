@@ -14830,3 +14830,11 @@ declare abstract class WorkflowInstance {
         payload: unknown;
     }): Promise<void>;
 }
+
+interface Env {
+  OPENAI_API_KEY: string;
+}
+
+interface Env {
+  CF_AIG_TOKEN: string;
+}

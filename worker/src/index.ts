@@ -39,6 +39,21 @@ app.get("/api/me", (c) => {
   return c.json({ authenticated: true, email: identity.email, name: identity.name });
 });
 
+app.get("/api/debug/ai-check", async (c) => {
+  const { callOpenAi } = await import("./lib/openai");
+  try {
+    const r = await callOpenAi(c.env, {
+      purpose: "debug",
+      model: "low",
+      messages: [{ role: "user", content: "Reply with the single word: ok" }],
+      maxOutputTokens: 200,
+    });
+    return c.json({ ok: true, model: r.model, reply: r.text.trim(), costUsd: r.costUsd });
+  } catch (err) {
+    return c.json({ ok: false, error: (err as Error).message.slice(0, 300) }, 500);
+  }
+});
+
 app.notFound((c) => c.json({ error: "not_found" }, 404));
 
 app.onError((err, c) => {

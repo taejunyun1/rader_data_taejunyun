@@ -1,5 +1,23 @@
-const ECDSA_IMPORT_PARAMS = { name: "ECDSA", namedCurve: "P-384" } as const;
-const ECDSA_VERIFY_PARAMS = { name: "ECDSA", hash: "SHA-384" } as const;
+type KeyImportParams = Parameters<typeof crypto.subtle.importKey>[2];
+type VerifyParams = Parameters<typeof crypto.subtle.verify>[0];
+
+interface JwtVerifyAlgs {
+  importParams: KeyImportParams;
+  verifyParams: VerifyParams;
+}
+
+function algsFor(alg: string): JwtVerifyAlgs {
+  if (alg === "ES384") {
+    return {
+      importParams: { name: "ECDSA", namedCurve: "P-384" },
+      verifyParams: { name: "ECDSA", hash: "SHA-384" },
+    };
+  }
+  return {
+    importParams: { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    verifyParams: { name: "RSASSA-PKCS1-v1_5" },
+  };
+}
 
 export interface AccessIdentity {
   sub: string;
@@ -11,7 +29,7 @@ interface JwtParts {
   header: { alg: string; kid: string };
   payload: {
     iss: string;
-    aud: string;
+    aud?: string | string[];
     sub: string;
     email: string;
     name?: string;
@@ -66,10 +84,14 @@ export async function verifyAccessAssertion(
 ): Promise<AccessIdentity> {
   const { header, payload, signature, signedContent } = decodeJwt(assertion);
 
-  if (header.alg !== "ES384") throw new Error("unexpected_alg");
+  if (header.alg !== "ES384" && header.alg !== "RS256") throw new Error("unexpected_alg");
+  const { importParams, verifyParams } = algsFor(header.alg);
   const issuer = `https://${teamDomain}`;
   if (!payload.iss.startsWith(issuer)) throw new Error("issuer_mismatch");
-  if (expectedAud && payload.aud !== expectedAud) throw new Error("audience_mismatch");
+  if (expectedAud) {
+    const auds = Array.isArray(payload.aud) ? payload.aud : payload.aud ? [payload.aud] : [];
+    if (!auds.includes(expectedAud)) throw new Error("audience_mismatch");
+  }
   if (payload.exp * 1000 < Date.now()) throw new Error("token_expired");
   if (!payload.sub) throw new Error("missing_subject");
 
@@ -83,12 +105,12 @@ export async function verifyAccessAssertion(
   const key = await crypto.subtle.importKey(
     "jwk",
     jwk,
-    ECDSA_IMPORT_PARAMS,
+    importParams,
     false,
     ["verify"]
   );
   const valid = await crypto.subtle.verify(
-    ECDSA_VERIFY_PARAMS,
+    verifyParams,
     key,
     signature as unknown as ArrayBuffer,
     new TextEncoder().encode(signedContent)

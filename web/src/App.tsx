@@ -4,12 +4,19 @@ import { VIEWS, type View, type HealthResponse } from "@radar/shared";
 export default function App() {
   const [view, setView] = useState<View>("RADAR");
   const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [ai, setAi] = useState<string>("checking...");
 
   useEffect(() => {
     fetch("/api/health")
       .then((r) => r.json() as Promise<HealthResponse>)
       .then(setHealth)
       .catch(() => setHealth(null));
+    fetch("/api/debug/ai-check")
+      .then(async (r) => {
+        const d = await r.json();
+        setAi(JSON.stringify(d).slice(0, 220));
+      })
+      .catch(() => setAi("failed: network"));
   }, []);
 
   return (
@@ -51,6 +58,7 @@ export default function App() {
         <p style={{ fontSize: 12, color: health ? "#2a7a2a" : "#b04040" }}>
           API: {health ? `connected (${health.service})` : "not reachable"}
         </p>
+        <p style={{ fontSize: 12, color: "#555" }}>AI check: {ai}</p>
       </main>
     </div>
   );
