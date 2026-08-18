@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { VIEWS, type View, type HealthResponse } from "@radar/shared";
 import InboxView from "./views/InboxView";
+import ReservoirView from "./views/ReservoirView";
 import SettingsView from "./views/SettingsView";
 
 export default function App() {
@@ -54,6 +55,8 @@ export default function App() {
         <h2 style={{ fontSize: 14, letterSpacing: 1, textTransform: "uppercase" }}>{view}</h2>
         {view === "INBOX" ? (
           <InboxView />
+        ) : view === "RESERVOIR" ? (
+          <ReservoirView />
         ) : view === "SETTINGS" ? (
           <SettingsView />
         ) : (

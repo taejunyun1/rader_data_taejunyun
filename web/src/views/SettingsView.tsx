@@ -1,65 +1,138 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { PRESETS, type PresetName, type RadarParams } from "@radar/shared";
 
-const btnStyle: React.CSSProperties = {
-  padding: "6px 14px",
+const PARAM_FIELDS: { key: keyof RadarParams; label: string; left: string; right: string }[] = [
+  { key: "familiarity", label: "Familiarity", left: "New territory", right: "Existing interests" },
+  { key: "researchDepth", label: "Research Depth", left: "Light exploration", right: "Deep research" },
+  { key: "divergence", label: "Divergence", left: "Coherent links", right: "Unexpected links" },
+  { key: "counterStrength", label: "Counter Strength", left: "Mild counterpoint", right: "Strong counter-aesthetic" },
+  { key: "technicalPhotographic", label: "Technical ↔ Photographic", left: "Systems & tech", right: "Image & matter" },
+];
+
+const btn: React.CSSProperties = {
+  padding: "4px 12px",
   border: "1px solid #1a1a1a",
-  background: "#1a1a1a",
-  color: "#ffffff",
+  background: "#fff",
   borderRadius: 4,
   cursor: "pointer",
-  fontSize: 13,
+  fontSize: 12,
 };
-const h3Style: React.CSSProperties = {
-  margin: "0 0 8px",
-  fontSize: 11,
-  letterSpacing: 1.2,
-  textTransform: "uppercase",
-  color: "#777",
-};
+const activeBtn: React.CSSProperties = { ...btn, background: "#1a1a1a", color: "#fff" };
+const h3: React.CSSProperties = { margin: "0 0 8px", fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: "#777" };
 
-interface ImportResult {
-  imported: number;
-  duplicates: number;
-  total: number;
-}
+const PRESET_LABELS: Record<PresetName, string> = {
+  BALANCED: "Balanced",
+  DEEP_RESEARCH: "Deep Research",
+  ARTWORK_EXPLORATION: "Artwork Exploration",
+  COUNTER_HEAVY: "Counter-heavy",
+  TECHNICAL: "Technical",
+};
 
 export default function SettingsView() {
+  const [params, setParams] = useState<RadarParams | null>(null);
   const [msg, setMsg] = useState("");
+  const [syncMsg, setSyncMsg] = useState("");
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/settings/params")
+      .then((r) => r.json() as Promise<RadarParams>)
+      .then(setParams)
+      .catch(() => setParams(null));
+  }, []);
+
+  async function save(next: RadarParams) {
+    setParams(next);
+    setBusy(true);
+    try {
+      const r = await fetch("/api/settings/params", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(next),
+      });
+      setMsg(r.ok ? "Saved." : `Save failed: ${r.status}`);
+    } catch (e) {
+      setMsg(`Save failed: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function applyPreset(p: PresetName) {
+    await save(PRESETS[p]);
+    setMsg(`Preset applied: ${PRESET_LABELS[p]}`);
+  }
 
   async function syncWebsite() {
     setBusy(true);
-    setMsg("Syncing…");
+    setSyncMsg("Syncing…");
     try {
       const r = await fetch("/api/settings/import-homepage", { method: "POST" });
-      const d = (await r.json()) as ImportResult;
-      setMsg(
+      const d = (await r.json()) as { imported: number; duplicates: number; total: number };
+      setSyncMsg(
         r.ok
           ? `Website sync: ${d.imported} imported, ${d.duplicates} duplicates (of ${d.total} projects).`
           : `Sync failed: ${r.status}`
       );
     } catch (e) {
-      setMsg(`Sync failed: ${(e as Error).message}`);
+      setSyncMsg(`Sync failed: ${(e as Error).message}`);
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <div style={{ maxWidth: 720 }}>
-      <div style={{ marginBottom: 22 }}>
-        <h3 style={h3Style}>Website</h3>
-        <button style={btnStyle} disabled={busy} onClick={() => void syncWebsite()}>
-          {busy ? "Syncing…" : "Sync website projects"}
-        </button>
-        {msg && <p style={{ fontSize: 13, color: "#444", marginTop: 8 }}>{msg}</p>}
+    <div style={{ maxWidth: 640 }}>
+      <div style={{ marginBottom: 26 }}>
+        <h3 style={h3}>Parameters</h3>
+        {params ? (
+          <div>
+            {PARAM_FIELDS.map((f) => (
+              <div key={f.key} style={{ marginBottom: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 2 }}>
+                  <span>{f.label}</span>
+                  <span style={{ color: "#777" }}>{params[f.key].toFixed(2)}</span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={params[f.key]}
+                  disabled={busy}
+                  style={{ width: "100%" }}
+                  onChange={(e) => setParams({ ...params, [f.key]: parseFloat(e.target.value) })}
+                  onMouseUp={() => void save(params)}
+                  onTouchEnd={() => void save(params)}
+                />
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#999" }}>
+                  <span>{f.left}</span>
+                  <span>{f.right}</span>
+                </div>
+              </div>
+            ))}
+            {msg && <p style={{ fontSize: 12, color: "#2a7a2a", margin: 0 }}>{msg}</p>}
+          </div>
+        ) : (
+          <p style={{ color: "#666", fontSize: 13 }}>Loading…</p>
+        )}
+      </div>
+
+      <div style={{ marginBottom: 26 }}>
+        <h3 style={h3}>Presets</h3>
+        {(Object.keys(PRESETS) as PresetName[]).map((p) => (
+          <button key={p} style={{ ...btn, marginRight: 6, marginBottom: 6 }} disabled={busy} onClick={() => void applyPreset(p)}>
+            {PRESET_LABELS[p]}
+          </button>
+        ))}
       </div>
 
       <div>
-        <h3 style={h3Style}>Parameters</h3>
-        <p style={{ color: "#666", fontSize: 13 }}>
-          Familiarity / Research Depth / Divergence / Counter Strength / Technical↔Photographic arrive in Phase 2.
-        </p>
+        <h3 style={h3}>Website</h3>
+        <button style={btn} disabled={busy} onClick={() => void syncWebsite()}>
+          {busy ? "Working…" : "Sync website projects"}
+        </button>
+        {syncMsg && <p style={{ fontSize: 13, color: "#444", marginTop: 8 }}>{syncMsg}</p>}
       </div>
     </div>
   );

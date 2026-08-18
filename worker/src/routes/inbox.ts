@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { SOURCE_KINDS, type InboxItem, type ProcessingStatus, type SourceKind } from "@radar/shared";
+import { analyzeSource } from "../analysis/analyze";
 import { fetchAndExtract } from "../ingestion/extractUrl";
 import { uuid } from "../ingestion/ids";
 import { normalizeDoi, normalizeUrl, titleNorm } from "../ingestion/normalize";
@@ -45,6 +46,7 @@ inbox.post("/text", async (c) => {
       original: text,
       extractedText: text,
     });
+    if (!result.duplicateOf) await analyzeSource(c.env, result.sourceId);
     return c.json(result);
   } catch (err) {
     console.error(JSON.stringify({ level: "error", scope: "inbox:text", message: (err as Error).message }));
@@ -75,6 +77,7 @@ inbox.post("/url", async (c) => {
         finalUrl: normalized,
       },
     });
+    if (!result.duplicateOf) await analyzeSource(c.env, result.sourceId);
     return c.json(result);
   } catch (err) {
     const message = (err as Error).message.slice(0, 200);
@@ -129,6 +132,7 @@ inbox.post("/file", async (c) => {
         pdfPages: body?.text ? (body.text.match(/\[page \d+\]/g) ?? []).length : undefined,
       },
     });
+    if (!result.duplicateOf) await analyzeSource(c.env, result.sourceId);
     return c.json(result);
   } catch (err) {
     console.error(JSON.stringify({ level: "error", scope: "inbox:file", message: (err as Error).message }));
@@ -138,6 +142,12 @@ inbox.post("/file", async (c) => {
 
 inbox.post("/retry/:sourceId", async (c) => {
   const sourceId = c.req.param("sourceId");
+
+  if (c.req.query("analyze") === "1") {
+    const result = await analyzeSource(c.env, sourceId);
+    return c.json(result);
+  }
+
   const src = await c.env.DB
     .prepare("SELECT id, canonical_url FROM sources WHERE id = ?")
     .bind(sourceId)
