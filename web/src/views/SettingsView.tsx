@@ -32,6 +32,7 @@ export default function SettingsView() {
   const [params, setParams] = useState<RadarParams | null>(null);
   const [msg, setMsg] = useState("");
   const [syncMsg, setSyncMsg] = useState("");
+  const [exportMsg, setExportMsg] = useState("");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -61,6 +62,20 @@ export default function SettingsView() {
   async function applyPreset(p: PresetName) {
     await save(PRESETS[p]);
     setMsg(`Preset applied: ${PRESET_LABELS[p]}`);
+  }
+
+  async function backupOriginals() {
+    setBusy(true);
+    setExportMsg("Copying originals to export bucket…");
+    try {
+      const r = await fetch("/api/export/originals-to-r2", { method: "POST" });
+      const d = (await r.json()) as { copied?: number; total?: number; prefix?: string };
+      setExportMsg(r.ok ? `Backed up ${d.copied}/${d.total} originals → ${d.prefix}` : `Backup failed: ${r.status}`);
+    } catch (e) {
+      setExportMsg(`Backup failed: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function syncWebsite() {
@@ -125,6 +140,25 @@ export default function SettingsView() {
             {PRESET_LABELS[p]}
           </button>
         ))}
+      </div>
+
+      <div style={{ marginBottom: 26 }}>
+        <h3 style={h3}>Export / Backup</h3>
+        <div style={{ marginBottom: 8 }}>
+          <a href="/api/export/json" style={{ ...btn, textDecoration: "none", display: "inline-block", marginRight: 6 }} download>
+            JSON (full)
+          </a>
+          <a href="/api/export/markdown" style={{ ...btn, textDecoration: "none", display: "inline-block", marginRight: 6 }} download>
+            Markdown
+          </a>
+          <a href="/api/export/csv" style={{ ...btn, textDecoration: "none", display: "inline-block" }} download>
+            CSV (sources)
+          </a>
+        </div>
+        <button style={btn} disabled={busy} onClick={() => void backupOriginals()}>
+          Backup originals to R2
+        </button>
+        {exportMsg && <p style={{ fontSize: 13, color: "#444", marginTop: 8 }}>{exportMsg}</p>}
       </div>
 
       <div>

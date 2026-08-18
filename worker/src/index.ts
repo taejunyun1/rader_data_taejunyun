@@ -3,6 +3,7 @@ import type { HealthResponse } from "@radar/shared";
 import inbox from "./routes/inbox";
 import discoverRoute from "./routes/discover";
 import distillRoute from "./routes/distill";
+import exportRoute from "./routes/export";
 import radarRoute from "./routes/radar";
 import reservoir from "./routes/reservoir";
 import search from "./routes/search";
@@ -50,6 +51,7 @@ app.get("/api/me", (c) => {
 app.route("/api/inbox", inbox);
 app.route("/api/discover", discoverRoute);
 app.route("/api/distill", distillRoute);
+app.route("/api/export", exportRoute);
 app.route("/api/radar", radarRoute);
 app.route("/api/reservoir", reservoir);
 app.route("/api/search", search);
