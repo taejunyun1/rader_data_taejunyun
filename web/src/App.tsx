@@ -8,10 +8,18 @@ import ReservoirView from "./views/ReservoirView";
 import SettingsView from "./views/SettingsView";
 import UsageView from "./views/UsageView";
 
+interface UsageBadge {
+  usedUsd: number;
+  budgetUsd: number;
+  usedPct: number;
+  blocked: boolean;
+}
+
 export default function App() {
   const [view, setView] = useState<View>("RADAR");
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [ai, setAi] = useState<string>("checking...");
+  const [usage, setUsage] = useState<UsageBadge | null>(null);
 
   useEffect(() => {
     fetch("/api/health")
@@ -24,13 +32,26 @@ export default function App() {
         setAi(JSON.stringify(d).slice(0, 220));
       })
       .catch(() => setAi("failed: network"));
+    fetch("/api/usage/summary")
+      .then((r) => r.json() as Promise<UsageBadge>)
+      .then(setUsage)
+      .catch(() => setUsage(null));
   }, []);
+
+  const usageColor = usage
+    ? usage.usedPct >= 100
+      ? "#b04040"
+      : usage.usedPct >= 80
+        ? "#b08020"
+        : "#777"
+    : "#777";
 
   return (
     <div style={{ fontFamily: "system-ui, sans-serif", margin: 0, color: "#1a1a1a" }}>
       <nav
         style={{
           display: "flex",
+          alignItems: "center",
           gap: 16,
           padding: "12px 24px",
           borderBottom: "1px solid #e0e0e0",
@@ -54,6 +75,25 @@ export default function App() {
             {v}
           </button>
         ))}
+        {usage && (
+          <button
+            onClick={() => setView("USAGE")}
+            title="Monthly AI budget — click for details"
+            style={{
+              marginLeft: "auto",
+              background: "transparent",
+              color: usageColor,
+              border: `1px solid ${usageColor}`,
+              borderRadius: 4,
+              padding: "3px 10px",
+              cursor: "pointer",
+              fontSize: 11,
+            }}
+          >
+            ${usage.usedUsd.toFixed(2)} / ${usage.budgetUsd} · {usage.usedPct.toFixed(0)}%
+            {usage.blocked ? " ⛔ blocked" : ""}
+          </button>
+        )}
       </nav>
       <main style={{ padding: 24 }}>
         <h2 style={{ fontSize: 14, letterSpacing: 1, textTransform: "uppercase" }}>{view}</h2>

@@ -1,7 +1,7 @@
 import type { DistillContext } from "./context";
 
 export type PromptVariant = "distill-v1" | "distill-v2-terse";
-export const DEFAULT_PROMPT_VARIANT: PromptVariant = "distill-v1";
+export const DEFAULT_PROMPT_VARIANT: PromptVariant = "distill-v2-terse";
 export const PROMPT_VARIANTS: PromptVariant[] = ["distill-v1", "distill-v2-terse"];
 
 export interface DistillOutput {
