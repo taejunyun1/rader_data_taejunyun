@@ -48,6 +48,7 @@ export default function DistillView() {
   const [msg, setMsg] = useState("");
   const [budget, setBudget] = useState<{ usedPct: number; budgetUsd: number; blocked: boolean; warn: boolean } | null>(null);
   const [kept, setKept] = useState<string[]>([]);
+  const [variant, setVariant] = useState<string>("distill-v1");
 
   const loadSessions = useCallback(async () => {
     const r = await fetch("/api/distill/sessions");
@@ -82,7 +83,7 @@ export default function DistillView() {
       const r = await fetch("/api/distill/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(redistillOf ? { redistillOf, keepElements: kept } : {}),
+        body: JSON.stringify(redistillOf ? { redistillOf, keepElements: kept, promptVariant: variant } : { promptVariant: variant }),
       });
       const d = (await r.json()) as { ok?: boolean; sessionId?: string; error?: string; budgetUsedPct?: number };
       if (r.ok && d.sessionId) {
@@ -133,6 +134,15 @@ export default function DistillView() {
             Re-distill (keep selected)
           </button>
         )}
+        <select
+          value={variant}
+          onChange={(e) => setVariant(e.target.value)}
+          style={{ padding: "5px 8px", border: "1px solid #ccc", borderRadius: 4, fontSize: 12 }}
+          title="Prompt variant (A/B)"
+        >
+          <option value="distill-v1">v1 — standard</option>
+          <option value="distill-v2-terse">v2 — terse</option>
+        </select>
         {budget && (
           <span style={{ fontSize: 11, color: budget.blocked ? "#b04040" : budget.warn ? "#b08020" : "#777" }}>
             budget ${budget.usedPct.toFixed(0)}% of ${budget.budgetUsd}

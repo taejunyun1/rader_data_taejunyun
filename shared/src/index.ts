@@ -1,4 +1,4 @@
-export const VIEWS = ["RADAR", "DISTILL", "RESERVOIR", "INBOX", "DISCOVER", "SETTINGS"] as const;
+export const VIEWS = ["RADAR", "DISTILL", "RESERVOIR", "INBOX", "DISCOVER", "USAGE", "SETTINGS"] as const;
 export type View = (typeof VIEWS)[number];
 
 export const SOURCE_KINDS = [

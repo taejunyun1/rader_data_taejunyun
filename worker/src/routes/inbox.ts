@@ -118,6 +118,8 @@ inbox.post("/file", async (c) => {
   }
 
   const kind: SourceKind = isPdf ? "PAPER_ACADEMIC" : "NOTE";
+  const textStr = typeof text === "string" ? text : "";
+  const isScannedPdf = isPdf && textStr.replace(/\[page \d+\]|\s/g, "").length < 20;
 
   try {
     const result = await createSource(c.env, {
@@ -129,11 +131,12 @@ inbox.post("/file", async (c) => {
       filename,
       metadata: {
         contentType: body?.contentType,
-        pdfPages: body?.text ? (body.text.match(/\[page \d+\]/g) ?? []).length : undefined,
+        pdfPages: textStr ? (textStr.match(/\[page \d+\]/g) ?? []).length : undefined,
+        scannedPdf: isScannedPdf || undefined,
       },
     });
     if (!result.duplicateOf) await analyzeSource(c.env, result.sourceId);
-    return c.json(result);
+    return c.json({ ...result, scannedPdf: isScannedPdf || undefined });
   } catch (err) {
     console.error(JSON.stringify({ level: "error", scope: "inbox:file", message: (err as Error).message }));
     return c.json({ error: "create_failed" }, 500);

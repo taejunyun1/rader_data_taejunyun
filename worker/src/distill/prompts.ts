@@ -1,6 +1,8 @@
 import type { DistillContext } from "./context";
 
-export const PROMPT_VERSION = "distill-v1";
+export type PromptVariant = "distill-v1" | "distill-v2-terse";
+export const DEFAULT_PROMPT_VARIANT: PromptVariant = "distill-v1";
+export const PROMPT_VARIANTS: PromptVariant[] = ["distill-v1", "distill-v2-terse"];
 
 export interface DistillOutput {
   keywords: string[];
@@ -35,7 +37,8 @@ function paramLine(p: DistillContext["params"]): string {
   ].join("\n");
 }
 
-export function distillPrompt(ctx: DistillContext): string {
+export function distillPrompt(ctx: DistillContext, variant: PromptVariant = "distill-v1"): string {
+  const terse = variant === "distill-v2-terse";
   const sources = ctx.sources
     .map((s) => {
       const bits = [`[${s.kind}${s.year ? ` ${s.year}` : ""}${s.signals.length ? `; signals: ${s.signals.join("/")}` : ""}] ${s.title}`];
@@ -81,7 +84,17 @@ HARD RULES:
 - Never fabricate quotes. Distinguish source fragments (quoted above) from your synthesis.
 - Respect the user's parameters: high divergence → allow more unexpected links; low familiarity → stay closer to existing keywords.
 - The photographer's own works (PERSONAL_WORK) are the center of gravity: connect outward from them, do not ignore them.
-- Language: match the dominant language of the reservoir (Korean materials → Korean output is fine; mixed is fine).`;
+- Language: match the dominant language of the reservoir (Korean materials → Korean output is fine; mixed is fine).${
+    terse
+      ? `
+
+TERSE MODE (v2 variant):
+- thoughts_fragments: each ≤ 2 sentences, no preamble — one dense claim per line.
+- questions: sharply specific (a nameable method could answer each).
+- research/artwork_directions: ≤ 1 sentence each, must contain a concrete material or method.
+- Cut all hedging words ("might", "could be seen as"). Prefer nouns and verbs over abstraction.`
+      : ""
+  }`;
 }
 
 export function criticPrompt(distillJson: string): string {

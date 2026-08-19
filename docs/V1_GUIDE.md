@@ -37,6 +37,13 @@ Discovery 탐색 ─────┘                              └─ Radar (�
 | **시맨틱 검색** | Cloudflare Vectorize(`research-radar-embeddings`, bge-m3 1024차원). 분석 완료 후 자동 임베딩, 키워드+의미 병합 검색 |
 | **Discovery 확장** | OpenAlex + **arXiv**(모멘텀 키워드) + **RSS/Atom 피드**(최대 6개, 사용자 지정). 주간 cron에 모두 포함 |
 
+### V2 (250819)
+| 기능 | 내용 |
+|------|------|
+| **Usage 대시보드** | USAGE 탭 — 월 예산 게이지, 목적별/모델별 비용, 일별 지출 차트, 월 히스토리, Distill 평균 단가 (`/api/usage/summary`) |
+| **Distill 프롬프트 A/B** | DISTILL 탭 — 프롬프트 변형 선택(v1 standard / v2-terse). 세션에 `prompt_version` 기록되어 결과 비교 가능 |
+| **스캔 PDF 감지** | 텍스트 레이어 없는 PDF 업로드 시 원본 보존 + 명시적 안내("핵심 구절을 노트로 추가하세요"), `scannedPdf` 메타데이터 기록 |
+
 ---
 
 ## 3. 일상 사용 가이드
@@ -114,6 +121,7 @@ processing_jobs / ai_usage / kv
 | `/api/discover` | run / candidates/:id/:action / queries / feeds |
 | `/api/settings` | params GET/PUT, import-homepage |
 | `/api/signals` | POST 기록, GET summary |
+| `/api/usage` | GET summary — 월별 비용 집계 (V2) |
 | `/api/export` | json/csv/markdown 다운로드, originals-to-r2 백업 |
 
 ### Ingestion 파이프라인 (스펙 3문서의 순서 그대로)
@@ -175,4 +183,4 @@ INPUT → 식별 → dedup(DOI→canonical URL→title+author→SHA-256) → R2 
 - PDF가 스캔(텍스트 레이어 없음)이면 원본만 보존되고 분석은 수동 노트로 대체
 - 책(Flusser 등)은 OpenAlex 검증 대상 밖 → unverified 배지는 정상
 - Distill 문장 품질은 Reservoir 크기에 비례 — 지금은 개인 작업 중심 편향(Radar가 감지 중). 논문 PDF를 계속 넣으면 Counter/Distill 품질 상승
-- 후보(V2): Google IdP 로그인(현재 PIN), 게이트웨이 로그 기반 비용 리포트, Distill 프롬프트 A/B(prompt_version 이미 기록됨)
+- 후보(V3): 게이트웨이 로그 GraphQL 연동(Workers AI 무료분까지 포함한 전체 비용), Distill 자동 A/B 비교 뷰, Google IdP(현재 PIN 유지)

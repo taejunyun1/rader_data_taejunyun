@@ -6,6 +6,7 @@ import DistillView from "./views/DistillView";
 import RadarView from "./views/RadarView";
 import ReservoirView from "./views/ReservoirView";
 import SettingsView from "./views/SettingsView";
+import UsageView from "./views/UsageView";
 
 export default function App() {
   const [view, setView] = useState<View>("RADAR");
@@ -66,6 +67,8 @@ export default function App() {
           <ReservoirView />
         ) : view === "DISCOVER" ? (
           <DiscoverView />
+        ) : view === "USAGE" ? (
+          <UsageView />
         ) : view === "SETTINGS" ? (
           <SettingsView />
         ) : (

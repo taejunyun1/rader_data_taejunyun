@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { loadParams } from "../lib/params";
 import { budgetPct, runDistill, verifyQueueItems } from "../distill/run";
-import type { DistillOutput } from "../distill/prompts";
+import { PROMPT_VARIANTS, type DistillOutput, type PromptVariant } from "../distill/prompts";
 
 const distill = new Hono<{ Bindings: Env }>();
 
@@ -16,15 +16,20 @@ distill.get("/budget", async (c) => {
 });
 
 distill.post("/run", async (c) => {
-  const body = (await c.req.json<{ redistillOf?: string; keepElements?: string[] }>().catch(() => ({}))) as {
+  const body = (await c.req.json<{ redistillOf?: string; keepElements?: string[]; promptVariant?: string }>().catch(() => ({}))) as {
     redistillOf?: string;
     keepElements?: string[];
+    promptVariant?: string;
   };
+  const variant: PromptVariant | undefined = PROMPT_VARIANTS.includes(body.promptVariant as PromptVariant)
+    ? (body.promptVariant as PromptVariant)
+    : undefined;
   const params = await loadParams(c.env.DB);
   try {
     const result = await runDistill(c.env, params, {
       redistillOf: body.redistillOf,
       keepElements: body.keepElements,
+      promptVariant: variant,
     });
     if (!result.ok) return c.json(result, 429);
     c.executionCtx.waitUntil(

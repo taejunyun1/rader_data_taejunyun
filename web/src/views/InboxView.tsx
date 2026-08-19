@@ -92,22 +92,21 @@ export default function InboxView() {
         setMsg(`Extracting text from ${f.name}…`);
         try {
           const { text, pageCount } = await extractPdfText(f);
-          if (!text.trim()) {
-            setMsg(`${f.name}: no extractable text (scanned PDF?) — kept original for manual note.`);
-          }
+          const hasText = text.replace(/\[page \d+\]|\s/g, "").length >= 20;
           const originalBase64 = f.size <= 10_000_000 ? await fileToBase64(f) : undefined;
           const d = await post("/file", {
             filename: f.name,
-            text: text || undefined,
+            text: hasText ? text : undefined,
             originalBase64,
             contentType: "application/pdf",
           });
           if (d) {
-            setMsg(
-              d.duplicateOf
-                ? "Duplicate — linked to existing source."
-                : `Added: ${f.name} (${pageCount} pages${text.trim() ? "" : ", no text layer"})`
-            );
+            if (d.duplicateOf) setMsg("Duplicate — linked to existing source.");
+            else if (!hasText)
+              setMsg(
+                `${f.name}: ${pageCount} pages, NO text layer (scanned PDF). Original preserved — add key passages as a note for analysis.`
+              );
+            else setMsg(`Added: ${f.name} (${pageCount} pages)`);
           }
         } catch (err) {
           setMsg(`${f.name}: PDF extraction failed — ${(err as Error).message}`);

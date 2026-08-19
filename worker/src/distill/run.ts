@@ -4,14 +4,15 @@ import { callOpenAi, monthSpendUsd } from "../lib/openai";
 import { verifyWork } from "../lib/openalex";
 import { buildDistillContext, type DistillContext } from "./context";
 import {
-  PROMPT_VERSION,
   counterPrompt,
   criticPrompt,
+  DEFAULT_PROMPT_VARIANT,
   distillPrompt,
   extractJsonLoose,
   type CounterOutput,
   type CriticOutput,
   type DistillOutput,
+  type PromptVariant,
 } from "./prompts";
 
 export type DistillRunResult =
@@ -41,7 +42,7 @@ function asValidated(raw: unknown, kind: string): unknown {
 export async function runDistill(
   env: Env,
   params: RadarParams,
-  opts: { redistillOf?: string; keepElements?: string[] } = {}
+  opts: { redistillOf?: string; keepElements?: string[]; promptVariant?: PromptVariant } = {}
 ): Promise<DistillRunResult> {
   const budgetUsedPct = await budgetPct(env);
   if (budgetUsedPct >= 100) {
@@ -74,6 +75,8 @@ export async function runDistill(
 
   const sys = "You are Distill, a precise research synthesis engine. Output only valid JSON.";
 
+  const variant = opts.promptVariant ?? DEFAULT_PROMPT_VARIANT;
+
   const distillRes = await callOpenAi(env, {
     purpose: "distill",
     model: "high",
@@ -81,7 +84,7 @@ export async function runDistill(
     maxOutputTokens: 4000,
     messages: [
       { role: "system", content: sys },
-      { role: "user", content: distillPrompt(ctx) + keepNote },
+      { role: "user", content: distillPrompt(ctx, variant) + keepNote },
     ],
   });
   const distill = asValidated(extractJsonLoose(distillRes.text), "distill");
@@ -136,7 +139,7 @@ export async function runDistill(
         JSON.stringify(counter),
         opts.redistillOf ?? null,
         distillRes.model,
-        PROMPT_VERSION,
+        variant,
         totalCost,
         ts
       ),

@@ -10,6 +10,7 @@ import search from "./routes/search";
 import settings from "./routes/settings";
 import signals from "./routes/signals";
 import syncRoute from "./routes/sync";
+import usageRoute from "./routes/usage";
 import { verifyAccessAssertion, extractAssertion, type AccessIdentity } from "./lib/access";
 
 type AppEnv = { Bindings: Env; Variables: { identity?: AccessIdentity } };
@@ -72,6 +73,7 @@ app.route("/api/search", search);
 app.route("/api/settings", settings);
 app.route("/api/signals", signals);
 app.route("/api/sync", syncRoute);
+app.route("/api/usage", usageRoute);
 
 app.get("/api/debug/ai-check", async (c) => {
   const { callOpenAi } = await import("./lib/openai");
