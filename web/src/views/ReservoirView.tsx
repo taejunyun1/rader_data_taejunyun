@@ -9,6 +9,7 @@ interface ReservoirItem {
   origin: string | null;
   year: number | null;
   createdAt: string;
+  topics: string | null;
   keywordCount: number;
   signalCount: number;
 }
@@ -50,20 +51,32 @@ const chip: React.CSSProperties = {
 export default function ReservoirView() {
   const [items, setItems] = useState<ReservoirItem[]>([]);
   const [kindFilter, setKindFilter] = useState<string>("");
+  const [topicFilter, setTopicFilter] = useState<string>("");
+  const [topics, setTopics] = useState<{ topic: string; count: number }[]>([]);
   const [detail, setDetail] = useState<SourceDetail | null>(null);
   const [msg, setMsg] = useState("");
   const [query, setQuery] = useState("");
   const [searchHits, setSearchHits] = useState<{ sourceId: string; title: string; matched: string; snippet: string }[] | null>(null);
 
   const load = useCallback(async () => {
-    const r = await fetch(`/api/reservoir${kindFilter ? `?kind=${kindFilter}` : ""}`);
+    const qs = new URLSearchParams();
+    if (kindFilter) qs.set("kind", kindFilter);
+    if (topicFilter) qs.set("topic", topicFilter);
+    const r = await fetch(`/api/reservoir${qs.toString() ? `?${qs}` : ""}`);
     const d = (await r.json()) as { items?: ReservoirItem[] };
     setItems(d.items ?? []);
-  }, [kindFilter]);
+  }, [kindFilter, topicFilter]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    fetch("/api/reservoir/topics")
+      .then((r) => r.json() as Promise<{ topics?: { topic: string; count: number }[] }>)
+      .then((d) => setTopics(d.topics ?? []))
+      .catch(() => setTopics([]));
+  }, [items]);
 
   async function openDetail(id: string, keepMsg = true) {
     if (!keepMsg) setMsg("");
@@ -236,12 +249,38 @@ export default function ReservoirView() {
               </button>
             ))}
           </div>
+          {topics.length > 0 && (
+            <div style={{ marginBottom: 10, display: "flex", flexWrap: "wrap", gap: 4, maxWidth: 700 }}>
+              {topics.slice(0, 14).map((t) => (
+                <button
+                  key={t.topic}
+                  onClick={() => setTopicFilter(topicFilter === t.topic ? "" : t.topic)}
+                  style={{
+                    fontSize: 10,
+                    padding: "1px 8px",
+                    borderRadius: 10,
+                    cursor: "pointer",
+                    border: `1px solid ${topicFilter === t.topic ? "#4a6fa5" : "#ddd"}`,
+                    background: topicFilter === t.topic ? "#4a6fa5" : "#f5f5f5",
+                    color: topicFilter === t.topic ? "#fff" : "#555",
+                  }}
+                >
+                  {t.topic} {t.count}
+                </button>
+              ))}
+              {topicFilter && (
+                <button style={{ fontSize: 10, padding: "1px 8px", borderRadius: 10, border: "none", background: "none", color: "#999", cursor: "pointer" }} onClick={() => setTopicFilter("")}>
+                  clear ×
+                </button>
+              )}
+            </div>
+          )}
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <tbody>
               {items.map((it) => (
                 <tr key={it.id} style={{ borderBottom: "1px solid #eee" }}>
                   <td style={{ padding: "7px 6px 7px 0" }}>
-                    <a href="#" style={{ color: "#1a1a1a" }} onClick={(e) => { e.preventDefault(); void openDetail(it.id, false); }}>
+                    <a href="#" style={{ color: "#1a1a1a" }} onClick={(e) => { e.preventDefault(); void openDetail(it.id); }}>
                       {it.title}
                     </a>
                     <span style={{ color: "#999", marginLeft: 8, fontSize: 11 }}>
@@ -249,6 +288,15 @@ export default function ReservoirView() {
                       {it.keywordCount > 0 ? ` · ${it.keywordCount} kw` : ""}
                       {it.signalCount > 0 ? ` · ★${it.signalCount}` : ""}
                     </span>
+                    {it.topics && (
+                      <div style={{ marginTop: 2 }}>
+                        {(JSON.parse(it.topics) as string[]).map((t) => (
+                          <span key={t} style={{ fontSize: 9, background: "#eef2f8", color: "#4a6fa5", padding: "0 6px", borderRadius: 8, marginRight: 4 }}>
+                            {t}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </td>
                 </tr>
               ))}

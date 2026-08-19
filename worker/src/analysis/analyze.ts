@@ -1,5 +1,6 @@
 import { SOURCE_KINDS, type ProcessingStatus, type SourceKind } from "@radar/shared";
 import { analysisPrompt, validateAnalysis, type SourceAnalysisPayload } from "./prompt";
+import { inferTopics } from "./topics";
 import { ensureEmbedding } from "../lib/embed";
 import { uuid } from "../ingestion/ids";
 
@@ -60,6 +61,7 @@ export async function analyzeSource(env: Env, sourceId: string): Promise<Analyze
         ts,
       });
       await applyClassification(env, sourceId, payload, src.kind as SourceKind);
+      await applyTopics(env, sourceId, payload);
       await indexAnalysis(env, sourceId, payload, ts);
       await ensureEmbedding(env, sourceId).catch((e: Error) =>
         console.warn(JSON.stringify({ level: "warn", scope: "embed", sourceId, message: e.message }))
@@ -137,6 +139,28 @@ async function indexAnalysis(env: Env, sourceId: string, payload: SourceAnalysis
     );
   }
   if (stmts.length) await env.DB.batch(stmts);
+}
+
+async function applyTopics(env: Env, sourceId: string, payload: SourceAnalysisPayload): Promise<void> {
+  const topics = inferTopics({
+    keywords: payload.keywords,
+    important_fragments: payload.important_fragments,
+    summary: payload.summary,
+  });
+  const existing = await env.DB.prepare("SELECT topics FROM sources WHERE id = ?").bind(sourceId).first<{ topics: string | null }>();
+  let merged: string[] = topics;
+  if (existing?.topics) {
+    try {
+      const prev = JSON.parse(existing.topics) as string[];
+      merged = [...new Set([...prev, ...topics])].slice(0, 4);
+    } catch {
+      merged = topics;
+    }
+  }
+  await env.DB
+    .prepare("UPDATE sources SET topics = ?, updated_at = ? WHERE id = ?")
+    .bind(JSON.stringify(merged), new Date().toISOString(), sourceId)
+    .run();
 }
 
 async function setSourceStatus(env: Env, sourceId: string, status: ProcessingStatus) {

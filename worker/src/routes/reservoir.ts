@@ -5,6 +5,7 @@ const reservoir = new Hono<{ Bindings: Env }>();
 reservoir.get("/", async (c) => {
   const kind = c.req.query("kind");
   const status = c.req.query("status");
+  const topic = c.req.query("topic");
   const params: (string | number)[] = [];
   let where = "1=1";
   if (kind) {
@@ -15,10 +16,14 @@ reservoir.get("/", async (c) => {
     params.push(status);
     where += " AND s.status = ?";
   }
+  if (topic) {
+    params.push(`%"${topic}"%`);
+    where += " AND s.topics LIKE ?";
+  }
   const limit = Math.min(parseInt(c.req.query("limit") ?? "50", 10) || 50, 200);
 
   const rows = await c.env.DB.prepare(
-    `SELECT s.id, s.title, s.kind, s.reliability, s.status, s.origin, s.year,
+    `SELECT s.id, s.title, s.kind, s.reliability, s.status, s.origin, s.year, s.topics AS topics,
             s.canonical_url AS canonicalUrl, s.created_at AS createdAt,
             (SELECT COUNT(*) FROM keywords k WHERE k.source_id = s.id) AS keywordCount,
             (SELECT COUNT(*) FROM user_signals us WHERE us.source_id = s.id AND us.action IN ('keep','develop','watch','ignore')) AS signalCount
@@ -31,13 +36,58 @@ reservoir.get("/", async (c) => {
   return c.json({ items: rows.results ?? [] });
 });
 
+reservoir.get("/topics", async (c) => {
+  const rows = await c.env.DB
+    .prepare(`SELECT topics FROM sources WHERE topics IS NOT NULL`)
+    .all<{ topics: string }>();
+  const counts = new Map<string, number>();
+  for (const r of rows.results ?? []) {
+    try {
+      for (const t of JSON.parse(r.topics) as string[]) counts.set(t, (counts.get(t) ?? 0) + 1);
+    } catch {
+      /* skip */
+    }
+  }
+  const topics = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([topic, n]) => ({ topic, count: n }));
+  return c.json({ topics });
+});
+
+reservoir.post("/retag-all", async (c) => {
+  const { inferTopics } = await import("../analysis/topics");
+  const rows = await c.env.DB
+    .prepare(
+      `SELECT s.id, a.payload_json FROM sources s
+       JOIN source_analysis a ON a.source_id = s.id
+       WHERE a.id IN (SELECT MAX(id) FROM source_analysis GROUP BY source_id)`
+    )
+    .all<{ id: string; payload_json: string }>();
+
+  const stmts: D1PreparedStatement[] = [];
+  const ts = new Date().toISOString();
+  for (const r of rows.results ?? []) {
+    try {
+      const payload = JSON.parse(r.payload_json) as { keywords?: string[]; important_fragments?: string[]; summary?: string };
+      const topics = inferTopics(payload);
+      stmts.push(
+        c.env.DB
+          .prepare("UPDATE sources SET topics = ?, updated_at = ? WHERE id = ?")
+          .bind(JSON.stringify(topics), ts, r.id)
+      );
+    } catch {
+      /* skip */
+    }
+  }
+  if (stmts.length) await c.env.DB.batch(stmts);
+  return c.json({ retagged: stmts.length });
+});
+
 reservoir.get("/:sourceId", async (c) => {
   const id = c.req.param("sourceId");
   const src = await c.env.DB
     .prepare(
       `SELECT id, kind, title, authors, year, canonical_url AS canonicalUrl, doi, reliability,
               provenance_class AS provenanceClass, status, origin, origins_json AS origins, r2_key AS r2Key,
-              metadata_json AS metadata, created_at AS createdAt, updated_at AS updatedAt
+              topics, metadata_json AS metadata, created_at AS createdAt, updated_at AS updatedAt
        FROM sources WHERE id = ?`
     )
     .bind(id)

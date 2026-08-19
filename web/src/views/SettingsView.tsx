@@ -92,6 +92,20 @@ export default function SettingsView() {
     }
   }
 
+  async function retagTopics() {
+    setBusy(true);
+    setExportMsg("Re-tagging topics from analysis…");
+    try {
+      const r = await fetch("/api/reservoir/retag-all", { method: "POST" });
+      const d = (await r.json()) as { retagged?: number };
+      setExportMsg(r.ok ? `Re-tagged ${d.retagged ?? 0} sources.` : `Failed: ${r.status}`);
+    } catch (e) {
+      setExportMsg(`Failed: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function syncWebsite() {
     setBusy(true);
     setSyncMsg("Syncing…");
@@ -174,6 +188,9 @@ export default function SettingsView() {
         </button>
         <button style={{ ...btn, marginLeft: 6 }} disabled={busy} onClick={() => void buildIndex()}>
           Build semantic index
+        </button>
+        <button style={{ ...btn, marginLeft: 6 }} disabled={busy} onClick={() => void retagTopics()}>
+          Re-tag topics
         </button>
         {exportMsg && <p style={{ fontSize: 13, color: "#444", marginTop: 8 }}>{exportMsg}</p>}
       </div>
