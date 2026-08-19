@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { runTask, useTasks } from "../lib/tasks";
 
 interface Candidate {
   id: string;
@@ -26,6 +27,8 @@ export default function DiscoverView() {
   const [savedQueries, setSavedQueries] = useState<string[]>([]);
   const [feeds, setFeeds] = useState("");
   const [feedMsg, setFeedMsg] = useState("");
+  const tasks = useTasks();
+  const discoverBusy = tasks.some((t) => t.label === "Discovery" && t.status === "running");
 
   const load = useCallback(async () => {
     const r = await fetch(`/api/discover/candidates?status=${statusFilter}`);
@@ -63,17 +66,16 @@ export default function DiscoverView() {
   }
 
   async function runDiscovery() {
-    setBusy(true);
-    setMsg("Collecting from OpenAlex…");
-    try {
+    await runTask("Discovery", async (setTaskMsg) => {
+      setTaskMsg("collecting…");
       const r = await fetch("/api/discover/run", { method: "POST" });
       const d = (await r.json()) as { collected?: number; queries?: string[]; error?: string };
-      setMsg(r.ok ? `Collected ${d.collected} new candidates (queries: ${d.queries?.join(", ")}).` : `Failed: ${d.error}`);
+      if (!r.ok) throw new Error(`Failed: ${d.error ?? r.status}`);
+      setTaskMsg(`${d.collected} collected`);
+      setMsg(`Collected ${d.collected} new candidates (queries: ${d.queries?.join(", ")}).`);
       setStatusFilter("CANDIDATE");
       await load();
-    } finally {
-      setBusy(false);
-    }
+    });
   }
 
   async function act(id: string, action: string) {
@@ -101,8 +103,8 @@ export default function DiscoverView() {
   return (
     <div style={{ maxWidth: 760 }}>
       <div style={{ marginBottom: 14 }}>
-        <button style={btn} disabled={busy} onClick={() => void runDiscovery()}>
-          {busy ? "Collecting…" : "Run discovery now"}
+        <button style={btn} disabled={discoverBusy} onClick={() => void runDiscovery()}>
+          {discoverBusy ? "Collecting…" : "Run discovery now"}
         </button>
         <span style={{ fontSize: 11, color: "#777", marginLeft: 10 }}>
           weekly cron auto-runs · max 20/run

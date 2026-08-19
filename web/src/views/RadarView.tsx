@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { RadarPeriod } from "@radar/shared";
+import { runTask, useTasks } from "../lib/tasks";
 
 interface Stats {
   newSources: number;
@@ -26,12 +27,19 @@ const tabBtn: React.CSSProperties = { padding: "4px 12px", border: "1px solid #c
 const activeTab: React.CSSProperties = { ...tabBtn, background: "#1a1a1a", color: "#fff", borderColor: "#1a1a1a" };
 const h4: React.CSSProperties = { margin: "16px 0 6px", fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: "#777" };
 
+let lastSynth: Synthesis | null = null;
+
 export default function RadarView() {
   const [period, setPeriod] = useState<RadarPeriod>("WEEKLY");
   const [stats, setStats] = useState<Stats | null>(null);
-  const [synth, setSynth] = useState<Synthesis | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [synth, setSynth] = useState<Synthesis | null>(lastSynth);
   const [msg, setMsg] = useState("");
+  const tasks = useTasks();
+  const synthBusy = tasks.some((t) => t.label === "Radar synthesis" && t.status === "running");
+
+  useEffect(() => {
+    setSynth(lastSynth);
+  }, []);
 
   useEffect(() => {
     fetch(`/api/radar/stats?period=${period}`)
@@ -41,26 +49,23 @@ export default function RadarView() {
   }, [period]);
 
   async function runSynthesis() {
-    setBusy(true);
-    setMsg("Synthesizing… ~20s");
-    try {
+    await runTask("Radar synthesis", async (setTaskMsg) => {
+      setTaskMsg(`${period.toLowerCase()}…`);
       const r = await fetch("/api/radar/synthesize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ period }),
       });
       if (r.ok) {
-        setSynth((await r.json()) as Synthesis);
+        const s = (await r.json()) as Synthesis;
+        lastSynth = s;
+        setSynth(s);
         setMsg("");
       } else {
         const d = (await r.json()) as { error?: string };
-        setMsg(`Failed: ${d.error ?? r.status}`);
+        throw new Error(`Failed: ${d.error ?? r.status}`);
       }
-    } catch (e) {
-      setMsg(`Failed: ${(e as Error).message}`);
-    } finally {
-      setBusy(false);
-    }
+    });
   }
 
   return (
@@ -71,8 +76,8 @@ export default function RadarView() {
             {p}
           </button>
         ))}
-        <button style={{ ...btn, marginLeft: 8 }} disabled={busy} onClick={() => void runSynthesis()}>
-          {busy ? "Synthesizing…" : "Run Radar synthesis"}
+        <button style={{ ...btn, marginLeft: 8 }} disabled={synthBusy} onClick={() => void runSynthesis()}>
+          {synthBusy ? "Synthesizing…" : "Run Radar synthesis"}
         </button>
       </div>
       {msg && <p style={{ fontSize: 12, color: "#2a7a2a" }}>{msg}</p>}

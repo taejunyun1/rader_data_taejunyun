@@ -7,6 +7,7 @@ import RadarView from "./views/RadarView";
 import ReservoirView from "./views/ReservoirView";
 import SettingsView from "./views/SettingsView";
 import UsageView from "./views/UsageView";
+import { useTasks } from "./lib/tasks";
 
 interface UsageBadge {
   usedUsd: number;
@@ -20,6 +21,7 @@ export default function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [ai, setAi] = useState<string>("checking...");
   const [usage, setUsage] = useState<UsageBadge | null>(null);
+  const tasks = useTasks();
 
   useEffect(() => {
     fetch("/api/health")
@@ -75,25 +77,42 @@ export default function App() {
             {v}
           </button>
         ))}
-        {usage && (
-          <button
-            onClick={() => setView("USAGE")}
-            title="Monthly AI budget — click for details"
-            style={{
-              marginLeft: "auto",
-              background: "transparent",
-              color: usageColor,
-              border: `1px solid ${usageColor}`,
-              borderRadius: 4,
-              padding: "3px 10px",
-              cursor: "pointer",
-              fontSize: 11,
-            }}
-          >
-            ${usage.usedUsd.toFixed(2)} / ${usage.budgetUsd} · {usage.usedPct.toFixed(0)}%
-            {usage.blocked ? " ⛔ blocked" : ""}
-          </button>
-        )}
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
+          {tasks.length > 0 && (
+            <div style={{ display: "flex", gap: 8, fontSize: 11, maxWidth: 340, overflow: "hidden" }}>
+              {tasks.slice(-3).map((t) => (
+                <span
+                  key={t.id}
+                  title={`${t.label}${t.message ? ` — ${t.message}` : ""}`}
+                  style={{
+                    color: t.status === "failed" ? "#b04040" : t.status === "running" ? "#4a6fa5" : "#2a7a2a",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {t.status === "running" ? "⟳" : t.status === "done" ? "✓" : "✗"} {t.label}
+                </span>
+              ))}
+            </div>
+          )}
+          {usage && (
+            <button
+              onClick={() => setView("USAGE")}
+              title="Monthly AI budget — click for details"
+              style={{
+                background: "transparent",
+                color: usageColor,
+                border: `1px solid ${usageColor}`,
+                borderRadius: 4,
+                padding: "3px 10px",
+                cursor: "pointer",
+                fontSize: 11,
+              }}
+            >
+              ${usage.usedUsd.toFixed(2)} / ${usage.budgetUsd} · {usage.usedPct.toFixed(0)}%
+              {usage.blocked ? " ⛔ blocked" : ""}
+            </button>
+          )}
+        </div>
       </nav>
       <main style={{ padding: 24 }}>
         <h2 style={{ fontSize: 14, letterSpacing: 1, textTransform: "uppercase" }}>{view}</h2>

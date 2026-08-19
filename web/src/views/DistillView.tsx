@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { runTask, useTasks } from "../lib/tasks";
 
 interface DistillOutput {
   keywords: string[];
@@ -49,6 +50,9 @@ export default function DistillView() {
   const [budget, setBudget] = useState<{ usedPct: number; budgetUsd: number; blocked: boolean; warn: boolean } | null>(null);
   const [kept, setKept] = useState<string[]>([]);
   const [variant, setVariant] = useState<string>("distill-v2-terse");
+  const tasks = useTasks();
+  const distillBusy = tasks.some((t) => t.label === "Distill" || t.label === "Re-distill") && tasks.some((t) => t.status === "running");
+  const runningTaskMsg = tasks.find((t) => (t.label === "Distill" || t.label === "Re-distill") && t.status === "running")?.message;
 
   const loadSessions = useCallback(async () => {
     const r = await fetch("/api/distill/sessions");
@@ -77,29 +81,34 @@ export default function DistillView() {
       setMsg("Monthly AI budget exhausted — Distill is blocked until next month.");
       return;
     }
-    setBusy(true);
-    setMsg(redistillOf ? `Re-distilling (keeping: ${kept.join(", ") || "none"})…` : "Distilling… this takes 30-60s.");
-    try {
+    const isRedistill = Boolean(redistillOf);
+    await runTask(isRedistill ? "Re-distill" : "Distill", async (setTaskMsg) => {
+      setTaskMsg("running…");
       const r = await fetch("/api/distill/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(redistillOf ? { redistillOf, keepElements: kept, promptVariant: variant } : { promptVariant: variant }),
+        body: JSON.stringify(
+          redistillOf ? { redistillOf, keepElements: kept, promptVariant: variant } : { promptVariant: variant }
+        ),
       });
       const d = (await r.json()) as { ok?: boolean; sessionId?: string; error?: string; budgetUsedPct?: number };
-      if (r.ok && d.sessionId) {
-        setKept([]);
-        await loadSessions();
-        await openSession(d.sessionId);
-        setMsg(`Done. Cost: $${(await (await fetch(`/api/distill/sessions/${d.sessionId}`)).json()).session.costUsd?.toFixed(4) ?? "?"}`);
-        fetch("/api/distill/budget").then((x) => x.json()).then(setBudget).catch(() => undefined);
-      } else {
-        setMsg(`Failed: ${d.error ?? r.status}`);
+      if (!r.ok || !d.sessionId) {
+        throw new Error(`Failed: ${d.error ?? r.status}`);
       }
-    } catch (e) {
-      setMsg(`Failed: ${(e as Error).message}`);
-    } finally {
-      setBusy(false);
-    }
+      setKept([]);
+      await loadSessions();
+      await openSession(d.sessionId);
+      const detail = await fetch(`/api/distill/sessions/${d.sessionId}`);
+      if (detail.ok) {
+        const s = (await detail.json()) as { session: { costUsd: number } };
+        setTaskMsg(`$${s.session.costUsd?.toFixed(4) ?? "?"}`);
+      }
+      fetch("/api/distill/budget")
+        .then((x) => x.json())
+        .then(setBudget)
+        .catch(() => undefined);
+      setMsg("Done — see latest session above.");
+    });
   }
 
   async function verifyQueue() {
@@ -126,11 +135,11 @@ export default function DistillView() {
   return (
     <div style={{ maxWidth: 760 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-        <button style={btn} disabled={busy} onClick={() => void runDistill()}>
-          {busy ? "Distilling…" : data ? "Distill again" : "Run Distill"}
+        <button style={btn} disabled={distillBusy} onClick={() => void runDistill()}>
+          {distillBusy ? "Distilling…" : data ? "Distill again" : "Run Distill"}
         </button>
         {data && (
-          <button style={{ ...smallBtn, padding: "6px 14px" }} disabled={busy} onClick={() => void runDistill(data.session.id)}>
+          <button style={{ ...smallBtn, padding: "6px 14px" }} disabled={distillBusy} onClick={() => void runDistill(data.session.id)}>
             Re-distill (keep selected)
           </button>
         )}
@@ -149,6 +158,7 @@ export default function DistillView() {
           </span>
         )}
       </div>
+      {runningTaskMsg && !msg && <p style={{ fontSize: 12, color: "#4a6fa5", margin: "0 0 10px" }}>⟳ {runningTaskMsg}</p>}
       {msg && <p style={{ fontSize: 12, color: "#2a7a2a", margin: "0 0 10px" }}>{msg}</p>}
 
       {sessions.length > 1 && (
@@ -331,7 +341,7 @@ export default function DistillView() {
           <button style={{ ...smallBtn, marginRight: 6 }} onClick={() => void saveSelection()}>
             Save selection
           </button>
-          <button style={smallBtn} disabled={busy} onClick={() => void runDistill(data.session.id)}>
+          <button style={smallBtn} disabled={distillBusy} onClick={() => void runDistill(data.session.id)}>
             Re-distill with selection
           </button>
         </div>
