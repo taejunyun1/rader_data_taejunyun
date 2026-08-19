@@ -48,8 +48,14 @@ async function handleObsidianSync(
   const ts = new Date().toISOString();
 
   const existing = await env.DB
-    .prepare("SELECT id, file_hash FROM sources WHERE origin = ? OR origins_json LIKE ? LIMIT 1")
-    .bind(origin, `%"${origin}"%`)
+    .prepare(
+      `SELECT id, file_hash FROM sources
+       WHERE origin = ? OR EXISTS (
+         SELECT 1 FROM json_each(COALESCE(NULLIF(origins_json, ''), '[]')) je
+         WHERE je.value = ?
+       ) LIMIT 1`
+    )
+    .bind(origin, origin)
     .first<{ id: string; file_hash: string | null }>();
 
   if (!existing) {
