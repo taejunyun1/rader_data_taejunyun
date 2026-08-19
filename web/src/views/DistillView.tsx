@@ -82,8 +82,9 @@ export default function DistillView() {
       return;
     }
     const isRedistill = Boolean(redistillOf);
-    await runTask(isRedistill ? "Re-distill" : "Distill", async (setTaskMsg) => {
+    await runTask(isRedistill ? "Re-distill" : "Distill", async (setTaskMsg, setProgress) => {
       setTaskMsg("running…");
+      setProgress(20);
       const r = await fetch("/api/distill/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -95,6 +96,7 @@ export default function DistillView() {
       if (!r.ok || !d.sessionId) {
         throw new Error(`Failed: ${d.error ?? r.status}`);
       }
+      setProgress(75);
       setKept([]);
       await loadSessions();
       await openSession(d.sessionId);

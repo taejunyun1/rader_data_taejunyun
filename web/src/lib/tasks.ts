@@ -6,6 +6,7 @@ export interface Task {
   status: "running" | "done" | "failed";
   startedAt: number;
   message?: string;
+  progress?: number; // 0..100
 }
 
 type Listener = (tasks: Task[]) => void;
@@ -38,9 +39,9 @@ export function isTaskRunning(labelPrefix: string): boolean {
 
 export async function runTask(
   label: string,
-  fn: (setMessage: (m: string) => void) => Promise<void>
+  fn: (setMessage: (m: string) => void, setProgress: (p: number) => void) => Promise<void>
 ): Promise<void> {
-  const task: Task = { id: crypto.randomUUID(), label, status: "running", startedAt: Date.now() };
+  const task: Task = { id: crypto.randomUUID(), label, status: "running", startedAt: Date.now(), progress: 0 };
   tasks = [...tasks, task];
   emit();
 
@@ -48,11 +49,16 @@ export async function runTask(
     task.message = m;
     emit();
   };
+  const setProgress = (p: number) => {
+    task.progress = Math.max(0, Math.min(100, Math.round(p)));
+    emit();
+  };
 
   try {
-    await fn(setMessage);
+    await fn(setMessage, setProgress);
     if (task.status === "running") {
       task.status = "done";
+      task.progress = 100;
       task.message = "done";
     }
   } catch (e) {

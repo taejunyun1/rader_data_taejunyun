@@ -66,11 +66,13 @@ export default function DiscoverView() {
   }
 
   async function runDiscovery() {
-    await runTask("Discovery", async (setTaskMsg) => {
+    await runTask("Discovery", async (setTaskMsg, setProgress) => {
       setTaskMsg("collecting…");
+      setProgress(25);
       const r = await fetch("/api/discover/run", { method: "POST" });
       const d = (await r.json()) as { collected?: number; queries?: string[]; error?: string };
       if (!r.ok) throw new Error(`Failed: ${d.error ?? r.status}`);
+      setProgress(80);
       setTaskMsg(`${d.collected} collected`);
       setMsg(`Collected ${d.collected} new candidates (queries: ${d.queries?.join(", ")}).`);
       setStatusFilter("CANDIDATE");

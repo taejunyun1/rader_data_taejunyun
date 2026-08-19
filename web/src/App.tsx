@@ -79,7 +79,7 @@ export default function App() {
         ))}
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
           {tasks.length > 0 && (
-            <div style={{ display: "flex", gap: 8, fontSize: 11, maxWidth: 340, overflow: "hidden" }}>
+            <div style={{ display: "flex", gap: 10, fontSize: 11, maxWidth: 340, overflow: "hidden" }}>
               {tasks.slice(-3).map((t) => (
                 <span
                   key={t.id}
@@ -87,9 +87,38 @@ export default function App() {
                   style={{
                     color: t.status === "failed" ? "#b04040" : t.status === "running" ? "#4a6fa5" : "#2a7a2a",
                     whiteSpace: "nowrap",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
                   }}
                 >
-                  {t.status === "running" ? "⟳" : t.status === "done" ? "✓" : "✗"} {t.label}
+                  {t.status === "running" ? (
+                    <>
+                      <span style={{ display: "inline-flex", gap: 3 }}>
+                        {[0, 1, 2, 3, 4].map((i) => {
+                          const filled = ((t.progress ?? 0) / 100) * 5 > i;
+                          return (
+                            <span
+                              key={i}
+                              style={{
+                                width: 4,
+                                height: 4,
+                                borderRadius: "50%",
+                                background: filled ? "#4a6fa5" : "#d5d5d5",
+                                display: "inline-block",
+                              }}
+                            />
+                          );
+                        })}
+                      </span>
+                      {t.label}
+                      <span style={{ color: "#999", fontSize: 10 }}>{t.progress ?? 0}%</span>
+                    </>
+                  ) : (
+                    <>
+                      {t.status === "done" ? "✓" : "✗"} {t.label}
+                    </>
+                  )}
                 </span>
               ))}
             </div>

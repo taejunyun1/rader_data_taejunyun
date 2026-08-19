@@ -49,14 +49,16 @@ export default function RadarView() {
   }, [period]);
 
   async function runSynthesis() {
-    await runTask("Radar synthesis", async (setTaskMsg) => {
+    await runTask("Radar synthesis", async (setTaskMsg, setProgress) => {
       setTaskMsg(`${period.toLowerCase()}…`);
+      setProgress(30);
       const r = await fetch("/api/radar/synthesize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ period }),
       });
       if (r.ok) {
+        setProgress(85);
         const s = (await r.json()) as Synthesis;
         lastSynth = s;
         setSynth(s);
