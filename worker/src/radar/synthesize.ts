@@ -98,7 +98,7 @@ Produce the report as strict JSON:
 SECTIONS REQUIRED (exactly these headings):
 ${SECTION_DEFS[period].map((s) => `- ${s}`).join("\n")}
 
-Rules: grounded in given data only; if data is thin, say so honestly in the items. Match the reservoir language (Korean ok). No praise, no filler.`;
+Rules: grounded in given data only; if data is thin, say so honestly in the items. Write all prose in Korean — keep proper nouns (titles, names, technical terms) in original language. No praise, no filler.`;
 
   const res = await callOpenAi(env, {
     purpose: `radar-${period.toLowerCase()}`,

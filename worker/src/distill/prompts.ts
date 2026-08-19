@@ -84,7 +84,7 @@ HARD RULES:
 - Never fabricate quotes. Distinguish source fragments (quoted above) from your synthesis.
 - Respect the user's parameters: high divergence → allow more unexpected links; low familiarity → stay closer to existing keywords.
 - The photographer's own works (PERSONAL_WORK) are the center of gravity: connect outward from them, do not ignore them.
-- Language: match the dominant language of the reservoir (Korean materials → Korean output is fine; mixed is fine).${
+- Language: write ALL prose in Korean (thoughts, questions, gaps, directions, experiment, why_read). Keep proper nouns verbatim in original language: book/paper titles, author names, artist names, technical terms (e.g. "Towards a Philosophy of Photography — Vilém Flusser", "NeRF", "wet plate"). Keyword terms may stay in original language when they are established technical terms, but add Korean gloss where natural (e.g. "인덱스 index").${
     terse
       ? `
 
@@ -121,7 +121,7 @@ Return strict JSON:
   "overall": "one sentence: sound / sound-with-cautions / needs-revision, and why"
 }
 
-Keep warnings to what a careful reader would actually flag. No praise.`;
+Keep warnings to what a careful reader would actually flag. No praise. Write warnings and overall in Korean (proper nouns stay in original language).`;
 }
 
 export function counterPrompt(distillJson: string, counterStrength: number): string {
@@ -148,7 +148,7 @@ Return strict JSON:
   ]
 }
 
-Rules: 2-4 axes. 1-2 suggestions only (the strongest). Every grounding item must be real. Match the edition's language.`;
+Rules: 2-4 axes. 1-2 suggestions only (the strongest). Every grounding item must be real. Write in Korean; keep artist/work/method names in original language.`;
 }
 
 export function extractJsonLoose(text: string): unknown {
