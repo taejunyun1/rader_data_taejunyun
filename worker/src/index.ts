@@ -11,6 +11,7 @@ import settings from "./routes/settings";
 import signals from "./routes/signals";
 import syncRoute from "./routes/sync";
 import usageRoute from "./routes/usage";
+import { syncHomepageReading } from "./homepage/reading";
 import { verifyAccessAssertion, extractAssertion, type AccessIdentity } from "./lib/access";
 
 type AppEnv = { Bindings: Env; Variables: { identity?: AccessIdentity } };
@@ -107,6 +108,15 @@ app.onError((err, c) => {
 export default {
   fetch: app.fetch,
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+    if (event.cron === "0 1 * * *") {
+      ctx.waitUntil(
+        syncHomepageReading(env)
+          .then((result) => console.log(JSON.stringify({ level: "info", cron: event.cron, homepageReading: result })))
+          .catch((err) => console.error(JSON.stringify({ level: "error", scope: "cron:homepage-reading", message: (err as Error).message })))
+      );
+      return;
+    }
+
     ctx.waitUntil(
       (async () => {
         const { createWeeklySnapshotWithSynthesis } = await import("./radar/snapshot");

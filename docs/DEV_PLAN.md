@@ -14,7 +14,7 @@
 - **원본 항상 R2 보존 후 처리**: extraction 실패해도 원본은 남음(provenance 원칙)
 - **모델 2계층**: Workers AI(무료할당) = 분류/요약/키워드, AI Gateway→OpenAI = Distill/Critic/Counter/Radar synthesis (D10)
 - **PDF는 브라우저에서 pdf.js 추출** (D5), **Obsidian은 .md 업로드** (D3), **홈페이지는 소스 데이터 import** (D2)
-- **Discovery = 홈페이지 키워드 시드 + OpenAlex/arXiv/RSS, 주간 cron, 자동 수집 상한** (D6)
+- **Discovery = 홈페이지 키워드 시드 + 홈페이지 읽을거리 R2 sync + OpenAlex/arXiv/RSS, 주간 cron, 자동 수집 상한** (D6)
 
 ## D1 초기 스키마 (Phase 1 마이그레이션)
 
@@ -166,7 +166,7 @@ Read Next 후보 전건 OpenAlex 존재 검증(openalex_id 발급된 것만 제�
 ## Phase 5 — Discovery (OpenAlex + curated editorial feeds)
 
 ### Task 5.1: 후보 수집 파이프라인
-홈페이지 프로젝트에서 분석된 키워드(최대 2개)를 우선 시드로 사용하고, 최근 모멘텀 키워드를 결합 → OpenAlex 쿼리 생성 → arXiv 보완 검색 → 큐레이션 RSS/Atom(Artforum, Hyperallergic, ARTnews) 수집 → discovery_candidates. 주간 cron, 자동 수집 상한 주 20건.
+홈페이지 프로젝트·읽을거리에서 분석된 키워드(최대 2개)를 우선 시드로 사용하고, 최근 모멘텀 키워드를 결합 → OpenAlex 쿼리 생성 → arXiv 보완 검색 → 큐레이션 RSS/Atom(Artforum, Hyperallergic, ARTnews) 수집 → discovery_candidates. 주간 cron, 자동 수집 상한 주 20건. 읽을거리 원본 후보는 homepage_artist Action이 R2 스냅샷으로 전달하고, Radar 일일 cron이 Reservoir에 업서트한다.
 **AC**: cron 1회 실행 후 candidates 상한 이하 유입, relevance_score 기록. **Scope: M**
 
 ### Task 5.2: Discover UI

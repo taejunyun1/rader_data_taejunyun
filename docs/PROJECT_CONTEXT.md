@@ -56,7 +56,7 @@ Research Radar는 사진작가 윤태준의 개인 연구 편집 도구다. 챗�
 | Distill | context selection, Distill/Critic/Counter, Re-distill, 비용 원장 | V0 필수 |
 | Reading Queue | OpenAlex 존재 검증과 verified 표시 | V0 필수 |
 | Radar | 주/월/년 통계·합성 UI, 주간 snapshot cron | V0 필수 |
-| Discovery | 홈페이지 키워드 시드 + OpenAlex + arXiv + RSS/Atom | 홈페이지 Sync 자료가 외부 탐색 기준점으로 우선 반영됨 |
+| Discovery | 홈페이지 프로젝트·읽을거리 키워드 시드 + OpenAlex + arXiv + RSS/Atom | homepage_artist R2 스냅샷이 일일 cron으로 Reservoir에 반영됨 |
 | Obsidian | CLI sync와 버전 히스토리 | V1 확장, V0 아님 |
 | Usage | 월 비용·목적·모델·일별 차트 | V2 확장 |
 | Export | JSON/Markdown/CSV 및 R2 원본 백업 | V0 필수 |
