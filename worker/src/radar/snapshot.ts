@@ -119,3 +119,20 @@ export async function createWeeklySnapshotIfDue(env: Env): Promise<string | null
   const stats = await computeStats(env.DB, start.toISOString(), end.toISOString());
   return saveSnapshot(env.DB, "WEEKLY", stats, start.toISOString(), end.toISOString());
 }
+
+export async function createWeeklySnapshotWithSynthesis(env: Env): Promise<string | null> {
+  const snapshotId = await createWeeklySnapshotIfDue(env);
+  if (!snapshotId) return null;
+
+  try {
+    const { synthesizeRadar } = await import("./synthesize");
+    const synthesis = await synthesizeRadar(env, "WEEKLY");
+    await env.DB
+      .prepare("UPDATE radar_snapshots SET synthesis_json = ?, synthesis_cost = ? WHERE id = ?")
+      .bind(JSON.stringify(synthesis), synthesis.costUsd, snapshotId)
+      .run();
+  } catch (err) {
+    console.error(JSON.stringify({ level: "error", scope: "cron:synthesis", message: (err as Error).message }));
+  }
+  return snapshotId;
+}

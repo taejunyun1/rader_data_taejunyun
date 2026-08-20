@@ -113,6 +113,19 @@ export default function DistillView() {
     });
   }
 
+  async function importQueueItem(itemId: string) {
+    setMsg("Importing to Reservoir…");
+    const r = await fetch(`/api/distill/queue-import/${itemId}`, { method: "POST" });
+    const d = (await r.json()) as { status?: string; sourceId?: string; detail?: string };
+    setMsg(
+      d.status === "imported"
+        ? "Imported to Reservoir — analysis queued."
+        : d.status === "duplicate"
+          ? "Already in Reservoir (duplicate linked)."
+          : `Import failed: ${d.detail ?? r.status}`
+    );
+  }
+
   async function verifyQueue() {
     if (!data) return;
     setMsg("Verifying reading queue via OpenAlex…");
@@ -246,6 +259,9 @@ export default function DistillView() {
                     {q.verified ? "verified" : "unverified"}
                   </span>
                   {q.whyRead && <p style={{ margin: "2px 0 0", color: "#555", fontSize: 12 }}>why: {q.whyRead}</p>}
+                  <button style={{ ...smallBtn, marginTop: 4 }} onClick={() => void importQueueItem(q.id)}>
+                    → Reservoir
+                  </button>
                 </div>
               ))}
             </>
@@ -326,6 +342,10 @@ export default function DistillView() {
               ))}
             </>
           )}
+
+          <button style={{ ...smallBtn, marginLeft: 12 }} onClick={() => window.open(`/api/distill/sessions/${data.session.id}/markdown`, "_blank")}>
+            ↓ .md (Obsidian)
+          </button>
 
           <h4 style={h4}>Select to keep / re-distill</h4>
           <div style={{ marginBottom: 8 }}>

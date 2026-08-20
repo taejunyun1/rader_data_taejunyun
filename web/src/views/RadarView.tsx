@@ -33,12 +33,30 @@ export default function RadarView() {
   const [period, setPeriod] = useState<RadarPeriod>("WEEKLY");
   const [stats, setStats] = useState<Stats | null>(null);
   const [synth, setSynth] = useState<Synthesis | null>(lastSynth);
+  const [topics, setTopics] = useState<{ topic: string; count: number }[]>([]);
   const [msg, setMsg] = useState("");
+
+  useEffect(() => {
+    fetch("/api/reservoir/topics")
+      .then((r) => r.json() as Promise<{ topics?: { topic: string; count: number }[] }>)
+      .then((d) => setTopics(d.topics ?? []))
+      .catch(() => setTopics([]));
+  }, []);
   const tasks = useTasks();
   const synthBusy = tasks.some((t) => t.label === "Radar synthesis" && t.status === "running");
 
   useEffect(() => {
     setSynth(lastSynth);
+    fetch("/api/radar/snapshots")
+      .then((r) => r.json() as Promise<{ snapshots?: { synthesis: Synthesis | null; createdAt: string }[] }>)
+      .then((d) => {
+        const auto = d.snapshots?.find((s) => s.synthesis);
+        if (auto?.synthesis && !lastSynth) {
+          lastSynth = auto.synthesis;
+          setSynth(auto.synthesis);
+        }
+      })
+      .catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -152,6 +170,19 @@ export default function RadarView() {
               <p style={{ fontSize: 13 }}>{stats.topKeptSources.map((s) => s.title).join(" · ")}</p>
             </>
           )}
+
+          <h4 style={h4}>Research map (topics)</h4>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+            {topics.length > 0 ? (
+              topics.slice(0, 12).map((t) => (
+                <span key={t.topic} style={{ fontSize: 11, background: "#eef2f8", color: "#4a6fa5", padding: "2px 9px", borderRadius: 10 }}>
+                  {t.topic} · {t.count}
+                </span>
+              ))
+            ) : (
+              <span style={{ fontSize: 12, color: "#999" }}>no topic tags yet</span>
+            )}
+          </div>
 
           <h4 style={h4}>Reservoir composition</h4>
           <p style={{ fontSize: 12, color: "#666" }}>{Object.entries(stats.kindBreakdown).map(([k, v]) => `${k}: ${v}`).join(" · ") || "empty"}</p>

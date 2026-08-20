@@ -109,9 +109,9 @@ export default {
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
     ctx.waitUntil(
       (async () => {
-        const { createWeeklySnapshotIfDue } = await import("./radar/snapshot");
+        const { createWeeklySnapshotWithSynthesis } = await import("./radar/snapshot");
         try {
-          const id = await createWeeklySnapshotIfDue(env);
+          const id = await createWeeklySnapshotWithSynthesis(env);
           console.log(JSON.stringify({ level: "info", cron: event.cron, snapshot: id ?? "skipped" }));
         } catch (err) {
           console.error(JSON.stringify({ level: "error", scope: "cron:snapshot", message: (err as Error).message }));

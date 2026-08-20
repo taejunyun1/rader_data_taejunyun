@@ -1,19 +1,9 @@
 import type { RadarPeriod } from "@radar/shared";
 import { computeStats, windowFor } from "./snapshot";
 import { callOpenAi } from "../lib/openai";
+import type { RadarSynthesis, SynthesisSection } from "./types";
 
-export interface SynthesisSection {
-  heading: string;
-  items: string[];
-}
-
-export interface RadarSynthesis {
-  period: RadarPeriod;
-  narrative: string;
-  sections: SynthesisSection[];
-  biasWatch: string[];
-  costUsd: number;
-}
+export type { RadarSynthesis } from "./types";
 
 const SECTION_DEFS: Record<RadarPeriod, string[]> = {
   WEEKLY: [

@@ -1,4 +1,5 @@
 import type { RadarParams } from "@radar/shared";
+import { semanticSearch } from "../lib/embed";
 
 export interface ContextSourceRef {
   id: string;
@@ -8,6 +9,7 @@ export interface ContextSourceRef {
   summary: string | null;
   fragments: string[];
   signals: string[];
+  resurfaced?: boolean;
 }
 
 export interface DistillContext {
@@ -69,9 +71,26 @@ export async function buildDistillContext(env: Env, params: RadarParams): Promis
 
   const sourceIds = [...new Set([...signalMap.keys(), ...(keywordMatches ?? []).map((m) => m.id)])].slice(0, 12);
 
+  const resurfacedIds = new Set<string>();
+  try {
+    const momentumQuery = (kwRows.results ?? []).slice(0, 5).map((k) => k.keyword).join(", ");
+    if (momentumQuery) {
+      const semantic = await semanticSearch(env, momentumQuery, 8);
+      for (const hit of semantic) {
+        if (sourceIds.length + resurfacedIds.size >= 14) break;
+        if (sourceIds.includes(hit.sourceId) || resurfacedIds.has(hit.sourceId)) continue;
+        resurfacedIds.add(hit.sourceId);
+      }
+    }
+  } catch {
+    /* semantic layer unavailable — keyword-only context */
+  }
+
   const sources: ContextSourceRef[] = [];
   let budget = MAX_CONTEXT_CHARS;
-  for (const id of sourceIds) {
+  const allIds = [...sourceIds, ...resurfacedIds];
+  for (const id of allIds) {
+    const isResurfaced = resurfacedIds.has(id);
     const src = await env.DB
       .prepare("SELECT id, title, kind, year FROM sources WHERE id = ?")
       .bind(id)
@@ -103,6 +122,7 @@ export async function buildDistillContext(env: Env, params: RadarParams): Promis
       summary: summary?.slice(0, 500) ?? null,
       fragments: frags.map((f) => f.slice(0, 200)),
       signals: signalMap.get(id) ?? [],
+      resurfaced: isResurfaced || undefined,
     };
     const size = JSON.stringify(entry).length;
     if (size > budget) break;

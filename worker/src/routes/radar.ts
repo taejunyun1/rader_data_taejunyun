@@ -16,7 +16,8 @@ radar.get("/stats", async (c) => {
 
 radar.get("/snapshots", async (c) => {
   const rows = await c.env.DB.prepare(
-    `SELECT id, period, window_start AS windowStart, window_end AS windowEnd, stats_json AS statsJson, created_at AS createdAt
+    `SELECT id, period, window_start AS windowStart, window_end AS windowEnd, stats_json AS statsJson,
+            synthesis_json AS synthesisJson, synthesis_cost AS synthesisCost, created_at AS createdAt
      FROM radar_snapshots ORDER BY created_at DESC LIMIT 26`
   ).all<Record<string, unknown>>();
   const snapshots = (rows.results ?? []).map((r) => ({
@@ -28,7 +29,15 @@ radar.get("/snapshots", async (c) => {
         return null;
       }
     })(),
+    synthesis: (() => {
+      try {
+        return r.synthesisJson ? JSON.parse(String(r.synthesisJson)) : null;
+      } catch {
+        return null;
+      }
+    })(),
     statsJson: undefined,
+    synthesisJson: undefined,
   }));
   return c.json({ snapshots });
 });

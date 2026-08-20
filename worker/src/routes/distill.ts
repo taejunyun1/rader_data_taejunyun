@@ -135,6 +135,19 @@ distill.get("/sessions/:id", async (c) => {
   });
 });
 
+distill.post("/queue-import/:itemId", async (c) => {
+  const itemId = c.req.param("itemId");
+  const item = await c.env.DB
+    .prepare("SELECT title, author, openalex_id AS openalexId FROM reading_queue WHERE id = ?")
+    .bind(itemId)
+    .first<{ title: string; author: string | null; openalexId: string | null }>();
+  if (!item) return c.json({ error: "not_found" }, 404);
+
+  const { importQueuedItem } = await import("../distill/queueImport");
+  const result = await importQueuedItem(c.env, item);
+  return c.json(result, result.status === "failed" ? 500 : 200);
+});
+
 distill.post("/sessions/:id/select", async (c) => {
   const id = c.req.param("id");
   const body = await c.req.json<{ kept?: string[]; note?: string }>().catch(() => null);
@@ -145,6 +158,95 @@ distill.post("/sessions/:id/select", async (c) => {
     .bind(JSON.stringify({ kept: body.kept, note: body.note ?? null, at: ts }), id)
     .run();
   return c.json({ ok: true });
+});
+
+distill.get("/sessions/:id/markdown", async (c) => {
+  const id = c.req.param("id");
+  const row = await c.env.DB
+    .prepare("SELECT output_json, critic_output_json, counter_output_json, created_at FROM distill_sessions WHERE id = ?")
+    .bind(id)
+    .first<Record<string, string | null>>();
+  if (!row) return c.json({ error: "not_found" }, 404);
+
+  const parse = <T,>(v: string | null | undefined): T | null => {
+    if (!v) return null;
+    try {
+      return JSON.parse(v) as T;
+    } catch {
+      return null;
+    }
+  };
+
+  const o = parse<{
+    keywords?: string[];
+    thoughts_fragments?: string[];
+    questions?: string[];
+    read_next?: { title: string; author?: string; why_read: string }[];
+    research_gaps?: { gap: string; kind: string }[];
+    research_directions?: string[];
+    artwork_directions?: string[];
+    small_experiment?: string;
+  }>(row.output_json);
+  const critic = parse<{ warnings?: { category: string; note: string }[]; overall?: string }>(row.critic_output_json);
+  const counter = parse<{ axes?: { from: string; to: string }[]; suggestions?: { direction: string; grounding?: { name: string; kind: string; note: string }[] }[] }>(row.counter_output_json);
+
+  const date = String(row.created_at ?? "").slice(0, 10);
+  const lines: string[] = [`---`, `source: research-radar`, `session: ${id}`, `date: ${date}`, `---`, ``, `# Research Radar Distill — ${date}`, ``];
+
+  if (o?.keywords?.length) lines.push(`**키워드**: ${o.keywords.join(", ")}`, ``);
+  if (o?.thoughts_fragments?.length) {
+    lines.push(`## Thoughts`, ``);
+    for (const t of o.thoughts_fragments) lines.push(`- ${t}`);
+    lines.push(``);
+  }
+  if (o?.questions?.length) {
+    lines.push(`## Questions`, ``);
+    for (const q of o.questions) lines.push(`- ${q}`);
+    lines.push(``);
+  }
+  if (o?.read_next?.length) {
+    lines.push(`## Read Next`, ``);
+    for (const r of o.read_next) lines.push(`- **${r.title}**${r.author ? ` — ${r.author}` : ""}: ${r.why_read}`);
+    lines.push(``);
+  }
+  if (o?.research_gaps?.length) {
+    lines.push(`## Research Gaps`, ``);
+    for (const g of o.research_gaps) lines.push(`- ${g.gap} [${g.kind}]`);
+    lines.push(``);
+  }
+  if (o?.research_directions?.length) {
+    lines.push(`## Research Directions`, ``);
+    for (const d of o.research_directions) lines.push(`- ${d}`);
+    lines.push(``);
+  }
+  if (o?.artwork_directions?.length) {
+    lines.push(`## Artwork Directions`, ``);
+    for (const d of o.artwork_directions) lines.push(`- ${d}`);
+    lines.push(``);
+  }
+  if (o?.small_experiment) lines.push(`## Small Experiment`, ``, o.small_experiment, ``);
+  if (critic) {
+    lines.push(`## Critic`, ``, `_${critic.overall ?? ""}_`, ``);
+    for (const w of critic.warnings ?? []) lines.push(`- ⚠ [${w.category}] ${w.note}`);
+    lines.push(``);
+  }
+  if (counter) {
+    lines.push(`## Counter`, ``);
+    for (const a of counter.axes ?? []) lines.push(`- ${a.from} → ${a.to}`);
+    lines.push(``);
+    for (const s of counter.suggestions ?? []) {
+      lines.push(`**${s.direction}**`, ``);
+      for (const g of s.grounding ?? []) lines.push(`- ${g.name} (${g.kind}): ${g.note}`);
+      lines.push(``);
+    }
+  }
+
+  return new Response(lines.join("\n"), {
+    headers: {
+      "Content-Type": "text/markdown; charset=utf-8",
+      "Content-Disposition": `attachment; filename="radar-distill-${date}.md"`,
+    },
+  });
 });
 
 export default distill;

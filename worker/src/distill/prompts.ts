@@ -41,7 +41,9 @@ export function distillPrompt(ctx: DistillContext, variant: PromptVariant = "dis
   const terse = variant === "distill-v2-terse";
   const sources = ctx.sources
     .map((s) => {
-      const bits = [`[${s.kind}${s.year ? ` ${s.year}` : ""}${s.signals.length ? `; signals: ${s.signals.join("/")}` : ""}] ${s.title}`];
+      const bits = [
+        `[${s.kind}${s.year ? ` ${s.year}` : ""}${s.signals.length ? `; signals: ${s.signals.join("/")}` : ""}${s.resurfaced ? "; RESURFACED (older material relevant again — connect it to current momentum)" : ""}] ${s.title}`,
+      ];
       if (s.summary) bits.push(`  summary: ${s.summary}`);
       for (const f of s.fragments) bits.push(`  fragment: "${f}"`);
       return bits.join("\n");
