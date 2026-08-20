@@ -107,35 +107,39 @@ app.onError((err, c) => {
 
 export default {
   fetch: app.fetch,
-  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+  async scheduled(event: ScheduledEvent, env: Env) {
     if (event.cron === "0 1 * * *") {
-      ctx.waitUntil(
-        syncHomepageReading(env)
-          .then((result) => console.log(JSON.stringify({ level: "info", cron: event.cron, homepageReading: result })))
-          .catch((err) => console.error(JSON.stringify({ level: "error", scope: "cron:homepage-reading", message: (err as Error).message })))
-      );
+      try {
+        const result = await syncHomepageReading(env);
+        console.log(JSON.stringify({ level: "info", cron: event.cron, homepageReading: result }));
+      } catch (err) {
+        console.error(
+          JSON.stringify({
+            level: "error",
+            scope: "cron:homepage-reading",
+            message: (err as Error).message,
+            stack: (err as Error).stack,
+          })
+        );
+      }
       return;
     }
 
-    ctx.waitUntil(
-      (async () => {
-        const { createWeeklySnapshotWithSynthesis } = await import("./radar/snapshot");
-        try {
-          const id = await createWeeklySnapshotWithSynthesis(env);
-          console.log(JSON.stringify({ level: "info", cron: event.cron, snapshot: id ?? "skipped" }));
-        } catch (err) {
-          console.error(JSON.stringify({ level: "error", scope: "cron:snapshot", message: (err as Error).message }));
-        }
-        try {
-          const { runDiscovery } = await import("./discovery/run");
-          const { loadParams } = await import("./lib/params");
-          const params = await loadParams(env.DB);
-          const result = await runDiscovery(env, params.divergence);
-          console.log(JSON.stringify({ level: "info", cron: event.cron, discovery: result.collected, queries: result.queries }));
-        } catch (err) {
-          console.error(JSON.stringify({ level: "error", scope: "cron:discovery", message: (err as Error).message }));
-        }
-      })()
-    );
+    const { createWeeklySnapshotWithSynthesis } = await import("./radar/snapshot");
+    try {
+      const id = await createWeeklySnapshotWithSynthesis(env);
+      console.log(JSON.stringify({ level: "info", cron: event.cron, snapshot: id ?? "skipped" }));
+    } catch (err) {
+      console.error(JSON.stringify({ level: "error", scope: "cron:snapshot", message: (err as Error).message }));
+    }
+    try {
+      const { runDiscovery } = await import("./discovery/run");
+      const { loadParams } = await import("./lib/params");
+      const params = await loadParams(env.DB);
+      const result = await runDiscovery(env, params.divergence);
+      console.log(JSON.stringify({ level: "info", cron: event.cron, discovery: result.collected, queries: result.queries }));
+    } catch (err) {
+      console.error(JSON.stringify({ level: "error", scope: "cron:discovery", message: (err as Error).message }));
+    }
   },
 };
