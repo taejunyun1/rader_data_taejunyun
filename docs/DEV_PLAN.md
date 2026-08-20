@@ -163,15 +163,18 @@ Read Next 후보 전건 OpenAlex 존재 검증(openalex_id 발급된 것만 제�
 
 **Checkpoint P4**: 주간 스냅샷 생성 → Radar 화면 확인 → Read Next 전건 실존 클릭 확인.
 
-## Phase 5 — Discovery (OpenAlex)
+## Phase 5 — Discovery (OpenAlex + curated editorial feeds)
 
 ### Task 5.1: 후보 수집 파이프라인
-모멘텀 키워드(최근 신호 증가분) → OpenAlex 쿼리 생성(AFFINITY/DIVERGENCE 비율은 Divergence 파라미터로 조정) → Workers AI 관련성 필터 → discovery_candidates. 주간 cron, 자동 수집 상한 주 20건.
+모멘텀 키워드(최근 신호 증가분) → OpenAlex 쿼리 생성 → arXiv 보완 검색 → 큐레이션 RSS/Atom(Artforum, Hyperallergic, ARTnews) 수집 → discovery_candidates. 주간 cron, 자동 수집 상한 주 20건.
 **AC**: cron 1회 실행 후 candidates 상한 이하 유입, relevance_score 기록. **Scope: M**
 
 ### Task 5.2: Discover UI
 후보 풀 목록 + Keep/Watch/Ignore. Keep는 Reservoir로 승격(DISCOVERY reliability), 자동 수집은 핵심 Reservoir로 직행 금지(스펙 원칙).
 **AC**: 승격된 자료만 Reservoir 검색에 등장. **Scope: M**
+
+### Task 5.3: 큐레이션 출처와 학술 연동
+e-flux Journal/Announcements와 RISS는 실제 읽기 링크를 우선 제공한다. RISS 자동 수집은 공식 OpenAPI 키 확보 후 별도 provider adapter로 추가하며, 무료 원문·기관 인증·초록만 보기 접근 상태를 후보에 표시한다.
 
 **Checkpoint P5**: 주간 자동 실행 → 후보 → Keep 승격 → 검색 노출 확인.
 

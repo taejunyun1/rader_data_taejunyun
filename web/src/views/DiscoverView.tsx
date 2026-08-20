@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { DISCOVERY_SOURCE_PRESETS } from "@radar/shared";
 import { runTask, useTasks } from "../lib/tasks";
 
 interface Candidate {
@@ -142,6 +143,28 @@ export default function DiscoverView() {
         {feedMsg && <span style={{ fontSize: 11, color: "#2a7a2a", marginLeft: 8 }}>{feedMsg}</span>}
       </div>
 
+      <div style={{ marginBottom: 18, borderTop: "1px solid #eee", borderBottom: "1px solid #eee", padding: "12px 0" }}>
+        <h4 style={h4}>추천 출처 · 자동 수집과 읽기 링크</h4>
+        <div style={{ display: "grid", gap: 8 }}>
+          {DISCOVERY_SOURCE_PRESETS.map((source) => (
+            <div key={source.id} style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 14 }}>
+              <div>
+                <a href={source.url} target="_blank" rel="noreferrer" style={{ color: "#1a1a1a", fontSize: 13 }}>
+                  {source.name} ↗
+                </a>
+                <span style={{ color: "#777", fontSize: 11, marginLeft: 8 }}>{source.description}</span>
+              </div>
+              <span style={{ color: source.feedUrl ? "#26734d" : source.id === "riss" ? "#9a6500" : "#777", fontSize: 10, whiteSpace: "nowrap" }}>
+                {source.feedUrl ? "자동 수집" : source.id === "riss" ? "API 연결 필요" : "읽기 링크"}
+              </span>
+            </div>
+          ))}
+        </div>
+        <p style={{ color: "#777", fontSize: 11, margin: "10px 0 0" }}>
+          자동 수집은 공개 RSS/Atom 피드만 사용합니다. e-flux와 RISS는 우선 실제 읽기 링크로 제공하고, RISS API 연동 후 학술 후보 수집을 연결합니다.
+        </p>
+      </div>
+
       <div style={{ marginBottom: 8 }}>
         {["CANDIDATE", "KEPT", "WATCHED", "IGNORED"].map((s) => (
           <button key={s} style={{ ...smallBtn, marginRight: 4, ...(s === statusFilter ? { background: "#1a1a1a", color: "#fff" } : {}) }} onClick={() => setStatusFilter(s)}>
@@ -162,6 +185,11 @@ export default function DiscoverView() {
                 </a>
               ) : (
                 c.title
+              )}
+              {(c.externalUrl || c.openalexId) && (
+                <a href={c.externalUrl ?? c.openalexId ?? "#"} target="_blank" rel="noreferrer" style={{ color: "#26734d", fontSize: 11, marginLeft: 8 }}>
+                  읽기 ↗
+                </a>
               )}
               {c.provider && c.provider !== "openalex" && (
                 <span style={{ fontSize: 10, background: "#eef", color: "#446", padding: "1px 6px", borderRadius: 3, marginLeft: 6 }}>

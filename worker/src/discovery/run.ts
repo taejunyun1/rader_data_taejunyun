@@ -2,6 +2,7 @@ import { searchWorks, type OpenAlexWork } from "../lib/openalex";
 import { searchArxiv } from "../lib/arxiv";
 import { fetchFeed } from "../lib/rss";
 import { uuid } from "../ingestion/ids";
+import { DEFAULT_DISCOVERY_FEEDS } from "@radar/shared";
 
 const MAX_CANDIDATES_PER_RUN = 20;
 const DISCOVERY_QUERIES_KEY = "discovery_queries_v1";
@@ -41,16 +42,16 @@ export async function customQueries(db: D1Database): Promise<string[]> {
 }
 
 export async function customFeeds(db: D1Database): Promise<string[]> {
-  return loadListKV(db, DISCOVERY_FEEDS_KEY, 6);
+  return loadListKV(db, DISCOVERY_FEEDS_KEY, 6, DEFAULT_DISCOVERY_FEEDS);
 }
 
 export async function setCustomFeeds(db: D1Database, feeds: string[]): Promise<void> {
   await saveListKV(db, DISCOVERY_FEEDS_KEY, feeds, 6);
 }
 
-async function loadListKV(db: D1Database, key: string, max: number): Promise<string[]> {
+async function loadListKV(db: D1Database, key: string, max: number, fallback: string[] = []): Promise<string[]> {
   const row = await db.prepare("SELECT value FROM kv WHERE key = ?").bind(key).first<{ value: string }>();
-  if (!row) return [];
+  if (!row) return fallback.slice(0, max);
   try {
     const v = JSON.parse(row.value) as string[];
     return Array.isArray(v) ? v.filter((q) => typeof q === "string" && q.trim()).slice(0, max) : [];

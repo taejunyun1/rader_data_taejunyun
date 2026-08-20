@@ -3,8 +3,11 @@ import { runDiscovery, customQueries, setCustomQueries, customFeeds, setCustomFe
 import { loadParams } from "../lib/params";
 import { createSource } from "../ingestion/store";
 import { searchWorks } from "../lib/openalex";
+import { DISCOVERY_SOURCE_PRESETS } from "@radar/shared";
 
 const discover = new Hono<{ Bindings: Env }>();
+
+discover.get("/sources", (c) => c.json({ items: DISCOVERY_SOURCE_PRESETS }));
 
 discover.get("/candidates", async (c) => {
   const status = c.req.query("status") ?? "CANDIDATE";

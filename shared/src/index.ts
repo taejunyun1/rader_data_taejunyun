@@ -54,6 +54,69 @@ export type QueuePriority = "MUST" | "WORTH" | "REFERENCE";
 
 export type DiscoveryStatus = "CANDIDATE" | "KEPT" | "WATCHED" | "IGNORED";
 
+export interface DiscoverySourcePreset {
+  id: string;
+  name: string;
+  category: "ARTS" | "ACADEMIC" | "EDITORIAL";
+  url: string;
+  feedUrl: string | null;
+  description: string;
+}
+
+/** Curated entry points shown in Discover. Only public RSS/Atom feeds are auto-collected. */
+export const DISCOVERY_SOURCE_PRESETS: readonly DiscoverySourcePreset[] = [
+  {
+    id: "e-flux-journal",
+    name: "e-flux Journal",
+    category: "ARTS",
+    url: "https://www.e-flux.com/journal",
+    feedUrl: null,
+    description: "동시대 미술·이론·이미지 비평을 읽는 출발점",
+  },
+  {
+    id: "e-flux-announcements",
+    name: "e-flux Announcements",
+    category: "ARTS",
+    url: "https://www.e-flux.com/announcements",
+    feedUrl: null,
+    description: "전시·기관·오픈콜·교육 프로그램 소식",
+  },
+  {
+    id: "artforum",
+    name: "Artforum",
+    category: "ARTS",
+    url: "https://www.artforum.com/",
+    feedUrl: "https://www.artforum.com/feed",
+    description: "전시 비평·인터뷰·동시대 미술 뉴스",
+  },
+  {
+    id: "hyperallergic",
+    name: "Hyperallergic",
+    category: "EDITORIAL",
+    url: "https://hyperallergic.com/",
+    feedUrl: "https://hyperallergic.com/feed/",
+    description: "미술계 현장과 비평, 디지털·뉴미디어 관련 읽을거리",
+  },
+  {
+    id: "artnews",
+    name: "ARTnews",
+    category: "EDITORIAL",
+    url: "https://www.artnews.com/",
+    feedUrl: "https://www.artnews.com/c/art-news/feed/",
+    description: "미술계 주요 뉴스와 작가·기관 동향",
+  },
+  {
+    id: "riss",
+    name: "RISS",
+    category: "ACADEMIC",
+    url: "https://www.riss.kr/",
+    feedUrl: null,
+    description: "국내 학술지·학위논문 검색 출발점 — API 키 연동 필요",
+  },
+] as const;
+
+export const DEFAULT_DISCOVERY_FEEDS = DISCOVERY_SOURCE_PRESETS.flatMap((source) => (source.feedUrl ? [source.feedUrl] : []));
+
 export interface HealthResponse {
   ok: true;
   service: string;

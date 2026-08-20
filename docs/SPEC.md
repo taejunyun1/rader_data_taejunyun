@@ -15,7 +15,7 @@
 | D3 | Obsidian 입력 | UI 업로드(V0) — 브라우저에서 .md 파일/폴더 drag&drop | 로컬 싱크 CLI는 V1 후보 |
 | D4 | Google Drive | **V0 제외** — 수동 다운로드 후 업로드로 대체 | OAuth 개발 없음 |
 | D5 | PDF 텍스트 추출 | 브라우저 pdf.js로 업로드 시 추출 → 원본(PDF) R2 저장 + 추출 텍스트 전송 | 서버 측 PDF 파서 불필요 |
-| D6 | Discovery 소스 | **OpenAlex 단일** (무료 API, 키 불필요, mailto polite pool) | Reading Queue 존재 검증에도 OpenAlex 사용 |
+| D6 | Discovery 소스 | OpenAlex(학술 기본) + arXiv + 큐레이션 RSS/Atom(Artforum, Hyperallergic, ARTnews) | e-flux·RISS는 우선 실제 읽기 링크로 제공하고, RISS API는 키 연동 후 학술 후보 수집에 추가 |
 | D7 | 프론트엔드 | Vite + React SPA, Workers Static Assets 배포 | 동일 Worker에서 API + 정적 자산 서빙 |
 | D8 | 인증 | Cloudflare Access + Google IdP | Worker에서 Access JWT(Cf-Access-Jwt-Assertion) 검증 |
 | D9 | UI 언어 | 영어 (Distill/Critic 등 스펙 용어와 일치) | 콘텐츠(자료 원문)는 원어 그대로 |
@@ -35,7 +35,7 @@ radar.taejunyun.com
         ├─ R2  — 원본 보존 (PDF/MD/웹 snapshot/export)
         ├─ Workers AI — 저비용: 분류/요약/키워드/후보 필터
         └─ AI Gateway → OpenAI — 고품질: Distill/Critic/Counter/Radar synthesis
-OpenAlex API — Discovery 소스 + Reading Queue 존재 검증
+OpenAlex API — 학술 Discovery 기본 소스 + Reading Queue 존재 검증
 ```
 
 ### 저장소 구조 (모노레포, pnpm workspaces)
