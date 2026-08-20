@@ -15,6 +15,7 @@ export interface DiscoveryRunResult {
 }
 
 export async function momentumKeywords(db: D1Database, limit = 4): Promise<string[]> {
+  const homepage = await homepageKeywords(db, Math.min(2, limit));
   const rows = await db
     .prepare(
       `SELECT keyword, COUNT(*) AS n FROM keywords
@@ -23,7 +24,7 @@ export async function momentumKeywords(db: D1Database, limit = 4): Promise<strin
     )
     .bind(limit)
     .all<{ keyword: string }>();
-  const kws = (rows.results ?? []).map((r) => r.keyword);
+  const kws = [...homepage, ...(rows.results ?? []).map((r) => r.keyword)];
   if (kws.length < limit) {
     const fallback = await db
       .prepare(`SELECT keyword, COUNT(*) AS n FROM keywords GROUP BY keyword ORDER BY n DESC LIMIT ?`)
@@ -34,7 +35,24 @@ export async function momentumKeywords(db: D1Database, limit = 4): Promise<strin
       if (kws.length >= limit) break;
     }
   }
-  return kws;
+  return [...new Set(kws)].slice(0, limit);
+}
+
+async function homepageKeywords(db: D1Database, limit: number): Promise<string[]> {
+  if (limit <= 0) return [];
+  const rows = await db
+    .prepare(
+      `SELECT k.keyword, COUNT(*) AS n
+       FROM keywords k
+       JOIN sources s ON s.id = k.source_id
+       WHERE s.origin = 'homepage'
+       GROUP BY k.keyword
+       ORDER BY n DESC, k.keyword ASC
+       LIMIT ?`
+    )
+    .bind(limit)
+    .all<{ keyword: string }>();
+  return (rows.results ?? []).map((r) => r.keyword).filter(Boolean);
 }
 
 export async function customQueries(db: D1Database): Promise<string[]> {

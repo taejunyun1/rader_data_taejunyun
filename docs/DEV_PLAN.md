@@ -14,7 +14,7 @@
 - **원본 항상 R2 보존 후 처리**: extraction 실패해도 원본은 남음(provenance 원칙)
 - **모델 2계층**: Workers AI(무료할당) = 분류/요약/키워드, AI Gateway→OpenAI = Distill/Critic/Counter/Radar synthesis (D10)
 - **PDF는 브라우저에서 pdf.js 추출** (D5), **Obsidian은 .md 업로드** (D3), **홈페이지는 소스 데이터 import** (D2)
-- **Discovery = OpenAlex 단일, 주간 cron, 자동 수집 상한** (D6)
+- **Discovery = 홈페이지 키워드 시드 + OpenAlex/arXiv/RSS, 주간 cron, 자동 수집 상한** (D6)
 
 ## D1 초기 스키마 (Phase 1 마이그레이션)
 
@@ -92,7 +92,7 @@ R2 PUT(원본) → 순차 dedup: DOI → canonical URL → title+author → file
 **AC**: PDF 업로드 → R2 원본 + 추출 텍스트 저장. 스���본(추출 0자)은 경고 후 저장. **Scope: M**
 
 ### Task 1.5: 홈페이지 PROJECT import
-taejunyun.com 소스의 정적 생성 데이터 → PROJECT 단위(title/year/url/statement/전시/images[])로 Personal Work 소스 등록. 이미지는 URL reference만(R2 미저장). Settings의 "Sync website" 버튼으로 수동 트리거.
+taejunyun.com 소스의 정적 생성 데이터(`scripts/extract-homepage.mjs`) → PROJECT 단위(title/year/url/statement/전시/images[])로 Personal Work 소스 등록. 이미지는 URL reference만(R2 미저장). Settings의 "Sync website" 버튼으로 수동 트리거.
 **AC**: 전체 프로젝트가 Personal Work 소스로 등록, 재실행 시 중복 없음. **Scope: M**
 
 ### Task 1.6: Inbox UI + processing_jobs
@@ -166,7 +166,7 @@ Read Next 후보 전건 OpenAlex 존재 검증(openalex_id 발급된 것만 제�
 ## Phase 5 — Discovery (OpenAlex + curated editorial feeds)
 
 ### Task 5.1: 후보 수집 파이프라인
-모멘텀 키워드(최근 신호 증가분) → OpenAlex 쿼리 생성 → arXiv 보완 검색 → 큐레이션 RSS/Atom(Artforum, Hyperallergic, ARTnews) 수집 → discovery_candidates. 주간 cron, 자동 수집 상한 주 20건.
+홈페이지 프로젝트에서 분석된 키워드(최대 2개)를 우선 시드로 사용하고, 최근 모멘텀 키워드를 결합 → OpenAlex 쿼리 생성 → arXiv 보완 검색 → 큐레이션 RSS/Atom(Artforum, Hyperallergic, ARTnews) 수집 → discovery_candidates. 주간 cron, 자동 수집 상한 주 20건.
 **AC**: cron 1회 실행 후 candidates 상한 이하 유입, relevance_score 기록. **Scope: M**
 
 ### Task 5.2: Discover UI
@@ -208,6 +208,6 @@ Phase 0: 1 / Phase 1: 2–3 / Phase 2: 2 / Phase 3: 2–3 / Phase 4: 2 / Phase 5
 
 ## Open Questions (구현 중 재확인 대상)
 
-- taejunyun.com 정적 데이터의 실제 형식(JSON/MD 구조) — Task 1.5 착수 시 소스 확인 필요
+- taejunyun.com 정적 데이터의 실제 형식(JSON/MD 구조) — `scripts/extract-homepage.mjs`가 `homeWorkspace.mjs`/`images.js`를 읽어 추출
 - 초기 관심축 키워드(스펙 나열분)를 seeds로 주입할지 — Task 2.1에서 기본값 제안 후 확인
 - Distill 기본 모델 선택(mini급 확정이나 구체 모델명은 config로 Phase 3에서 확정)

@@ -9,6 +9,26 @@ const settings = new Hono<{ Bindings: Env }>();
 
 const VALID_PRESETS = Object.keys(PRESETS) as PresetName[];
 
+settings.get("/homepage", (c) => {
+  const data = homepageProjects as {
+    siteBase: string;
+    extractedAt: string;
+    projects: HomepageProject[];
+  };
+  return c.json({
+    siteBase: data.siteBase,
+    extractedAt: data.extractedAt,
+    projects: data.projects.map((p) => ({
+      slug: p.slug,
+      title: p.title,
+      year: p.year,
+      projectUrl: p.projectUrl,
+      imageCount: p.imageCount,
+      videoCount: p.videoUrls.length,
+    })),
+  });
+});
+
 settings.get("/params", async (c) => {
   return c.json(await loadParams(c.env.DB));
 });

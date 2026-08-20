@@ -35,7 +35,7 @@ Discovery 탐색 ─────┘                              └─ Radar (�
 | **Obsidian 상시 싱크** | 로컬 볼트 ↔ Radar 자동 동기화. launchd로 맥 부팅 시 백그라운드 상시 가동(30초 스캔). 변경 파일만 버전 히스토리로 업로드 |
 | **CLI 인증** | `CLI_TOKEN` Bearer + Cloudflare Access Service Token(`radar-cli`) 이중 인증. Bypass 정책으로 CLI 경로만 관문 통과 |
 | **시맨틱 검색** | Cloudflare Vectorize(`research-radar-embeddings`, bge-m3 1024차원). 분석 완료 후 자동 임베딩, 키워드+의미 병합 검색 |
-| **Discovery 확장** | OpenAlex + **arXiv**(모멘텀 키워드) + **RSS/Atom 피드**(최대 6개, 사용자 지정). 주간 cron에 모두 포함 |
+| **Discovery 확장** | 홈페이지 프로젝트 키워드 시드 + OpenAlex + **arXiv**(모멘텀 키워드) + **RSS/Atom 피드**(최대 6개, 사용자 지정). 주간 cron에 모두 포함 |
 
 ### V2 (250819)
 | 기능 | 내용 |
@@ -145,7 +145,7 @@ INPUT → 식별 → dedup(DOI→canonical URL→title+author→SHA-256) → R2 
 - 잘린 JSON 복구 파서 내장(truncation 대응)
 
 ### Radar
-- **주간 cron**(월 12:00 KST): 순수 SQL 집계 스냅샷(6일 내 중복 스킵) + Discovery(OpenAlex+arXiv+RSS, 최대 20건/회)
+- **주간 cron**(월 12:00 KST): 순수 SQL 집계 스냅샷(6일 내 중복 스킵) + Discovery(홈페이지 키워드 시드+OpenAlex+arXiv+RSS, 최대 20건/회)
 - **합성은 사용자 실행**: SQL 통계 + 전체 키워드(편향 비교용) + 최근 Distill → 주/월/년 섹션 리포트 + biasWatch
 - 시간정책: 오래된 자료는 버리지 않고 현재 관심과 연결되면 Resurface
 

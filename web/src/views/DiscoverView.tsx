@@ -15,6 +15,15 @@ interface Candidate {
   externalUrl?: string | null;
 }
 
+interface HomepageProject {
+  slug: string;
+  title: string;
+  year: number | null;
+  projectUrl: string;
+  imageCount: number;
+  videoCount: number;
+}
+
 const btn: React.CSSProperties = { padding: "6px 14px", border: "1px solid #1a1a1a", background: "#1a1a1a", color: "#fff", borderRadius: 4, cursor: "pointer", fontSize: 13 };
 const smallBtn: React.CSSProperties = { padding: "3px 10px", border: "1px solid #1a1a1a", background: "#fff", borderRadius: 4, cursor: "pointer", fontSize: 11 };
 const h4: React.CSSProperties = { margin: "0 0 8px", fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: "#777" };
@@ -28,6 +37,8 @@ export default function DiscoverView() {
   const [savedQueries, setSavedQueries] = useState<string[]>([]);
   const [feeds, setFeeds] = useState("");
   const [feedMsg, setFeedMsg] = useState("");
+  const [homepageProjects, setHomepageProjects] = useState<HomepageProject[]>([]);
+  const [homepageExtractedAt, setHomepageExtractedAt] = useState<string | null>(null);
   const tasks = useTasks();
   const discoverBusy = tasks.some((t) => t.label === "Discovery" && t.status === "running");
 
@@ -52,6 +63,13 @@ export default function DiscoverView() {
     fetch("/api/discover/feeds")
       .then((r) => r.json() as Promise<{ feeds: string[] }>)
       .then((d) => setFeeds((d.feeds ?? []).join("\n")))
+      .catch(() => undefined);
+    fetch("/api/settings/homepage")
+      .then((r) => r.json() as Promise<{ extractedAt?: string; projects?: HomepageProject[] }>)
+      .then((d) => {
+        setHomepageProjects(d.projects ?? []);
+        setHomepageExtractedAt(d.extractedAt ?? null);
+      })
       .catch(() => undefined);
   }, []);
 
@@ -164,6 +182,28 @@ export default function DiscoverView() {
           자동 수집은 공개 RSS/Atom 피드만 사용합니다. e-flux와 RISS는 우선 실제 읽기 링크로 제공하고, RISS API 연동 후 학술 후보 수집을 연결합니다.
         </p>
       </div>
+
+      {homepageProjects.length > 0 && (
+        <div style={{ marginBottom: 18, borderBottom: "1px solid #eee", paddingBottom: 14 }}>
+          <h4 style={h4}>내 홈페이지 기반 출발점</h4>
+          <p style={{ color: "#777", fontSize: 11, margin: "0 0 9px" }}>
+            홈페이지 프로젝트에서 추출·분석된 키워드를 Discovery 검색어에 우선 반영합니다.
+            {homepageExtractedAt ? ` 마지막 추출 ${new Date(homepageExtractedAt).toLocaleDateString("ko-KR")}.` : ""}
+          </p>
+          <div style={{ display: "grid", gap: 6 }}>
+            {homepageProjects.slice(0, 5).map((project) => (
+              <div key={project.slug} style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 12 }}>
+                <a href={project.projectUrl} target="_blank" rel="noreferrer" style={{ color: "#1a1a1a" }}>
+                  {project.title} ↗
+                </a>
+                <span style={{ color: "#777", fontSize: 10, whiteSpace: "nowrap" }}>
+                  {project.year ?? "연도 미상"} · 이미지 {project.imageCount} · 영상 {project.videoCount}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div style={{ marginBottom: 8 }}>
         {["CANDIDATE", "KEPT", "WATCHED", "IGNORED"].map((s) => (
