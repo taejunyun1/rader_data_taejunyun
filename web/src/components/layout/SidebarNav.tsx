@@ -21,7 +21,7 @@ function NavButton({ view, active, count, onNavigate }: { view: View; active: bo
 export default function SidebarNav({ view, onNavigate, usage, counts = {} }: SidebarNavProps) {
   return (
     <aside className="sidebar-nav" aria-label="주 탐색">
-      <div className="sidebar-nav__brand" aria-label="Research Radar">Research <span>Radar</span></div>
+      <div className="sidebar-nav__brand" aria-label="리서치 레이더">리서치 <span>레이더</span></div>
       <nav className="sidebar-nav__primary">
         {PRIMARY_VIEWS.map((item) => <NavButton key={item} view={item} active={item === view} count={counts[item]} onNavigate={onNavigate} />)}
       </nav>

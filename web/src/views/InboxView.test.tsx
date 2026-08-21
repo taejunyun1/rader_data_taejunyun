@@ -13,7 +13,7 @@ beforeEach(() => {
 describe("InboxView", () => {
   it("prioritizes original preservation with Korean capture actions", async () => {
     render(<InboxView />);
-    expect(await screen.findByRole("heading", { name: "받은편지함" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "받은 자료" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "메모 보존하기" })).toBeDisabled();
     await userEvent.type(screen.getByPlaceholderText("읽은 문장이나 메모를 붙여 넣으세요"), "읽을 문장");
     expect(screen.getByRole("button", { name: "메모 보존하기" })).toBeEnabled();

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { SourceAccess } from "../lib/sourceAccess";
 import { deriveSourceAccess } from "../lib/sourceAccess";
 import { formatDateKo } from "../lib/ui";
+import { labelOf, ORIGIN_LABELS, PROVENANCE_LABELS, RELIABILITY_LABELS, SOURCE_KIND_LABELS } from "../lib/labels";
 import PageHeader from "../components/layout/PageHeader";
 import StatusMessage from "../components/ui/StatusMessage";
 import DecisionRail from "../components/reading/DecisionRail";
@@ -15,6 +16,8 @@ interface ReservoirItem {
   title: string;
   kind: string;
   reliability: string;
+  titleKo?: string | null;
+  originalTitle?: string | null;
   status: string;
   origin: string | null;
   year: number | null;
@@ -36,7 +39,7 @@ interface SourceDetail {
 }
 
 const KINDS = ["", "PERSONAL_WORK", "PERSONAL_TEXT", "PAPER_ACADEMIC", "BOOK_ARTICLE", "ARTIST_ARTWORK", "TECHNICAL", "WEB", "NOTE", "DISCOVERY"];
-const KIND_LABELS: Record<string, string> = { "": "전체 유형", PERSONAL_WORK: "개인 작업", PERSONAL_TEXT: "개인 텍스트", PAPER_ACADEMIC: "학술 논문", BOOK_ARTICLE: "책·아티클", ARTIST_ARTWORK: "작가·작품", TECHNICAL: "기술 자료", WEB: "웹 자료", NOTE: "메모", DISCOVERY: "발견 자료" };
+const KIND_LABELS: Record<string, string> = { "": "전체 유형", ...SOURCE_KIND_LABELS };
 
 function safeTopics(value: string | null): string[] {
   if (!value) return [];
@@ -44,7 +47,7 @@ function safeTopics(value: string | null): string[] {
 }
 
 function toIndexItem(item: ReservoirItem): SourceIndexItem {
-  return { id: item.id, title: item.title, meta: [KIND_LABELS[item.kind] ?? item.kind, item.reliability, item.year].filter(Boolean).join(" · "), tags: safeTopics(item.topics), access: deriveSourceAccess({ href: item.canonicalUrl }) };
+  return { id: item.id, title: item.titleKo?.trim() || item.title, meta: [KIND_LABELS[item.kind] ?? item.kind, labelOf(RELIABILITY_LABELS, item.reliability), item.year].filter(Boolean).join(" · "), tags: safeTopics(item.topics), access: deriveSourceAccess({ href: item.canonicalUrl }) };
 }
 
 function toReadingDocument(detail: SourceDetail): ReadingDocument {
@@ -53,11 +56,16 @@ function toReadingDocument(detail: SourceDetail): ReadingDocument {
   const fragments = detail.analysis?.important_fragments ?? detail.fragments.map((fragment) => fragment.text);
   const questions = detail.analysis?.questions ?? detail.questions.map((question) => question.question);
   const keywords = detail.analysis?.keywords ?? detail.keywords.map((keyword) => keyword.keyword);
+  const rawTitle = String(source.title ?? "제목 없음");
+  const translatedTitle = typeof source.titleKo === "string" ? source.titleKo.trim() : "";
+  const title = translatedTitle || rawTitle;
+  const originalTitle = typeof source.originalTitle === "string" ? source.originalTitle : translatedTitle && translatedTitle !== rawTitle ? rawTitle : undefined;
   return {
     id: String(source.id),
-    title: String(source.title ?? "제목 없음"),
-    byline: [source.authors, source.year, source.origin].filter(Boolean).map(String).join(" · "),
-    provenance: `${String(source.provenanceClass ?? "SOURCE")} · ${String(source.reliability ?? "")}`,
+    title,
+    originalTitle,
+    byline: [source.authors, source.year, labelOf(ORIGIN_LABELS, source.origin, "출처 정보 없음")].filter(Boolean).map(String).join(" · "),
+    provenance: `${labelOf(PROVENANCE_LABELS, source.provenanceClass, "원자료")} · ${labelOf(RELIABILITY_LABELS, source.reliability)}`,
     access: deriveSourceAccess({ href: source.canonicalUrl ? String(source.canonicalUrl) : null }),
     summary,
     fragments,

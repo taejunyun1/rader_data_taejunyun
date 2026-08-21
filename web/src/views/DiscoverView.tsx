@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { DiscoverySourcePreset, View } from "@radar/shared";
 import { DISCOVERY_SOURCE_PRESETS } from "@radar/shared";
 import { deriveSourceAccess } from "../lib/sourceAccess";
+import { labelOf, PROVIDER_LABELS } from "../lib/labels";
 import { runTask, useTasks } from "../lib/tasks";
 import PageHeader from "../components/layout/PageHeader";
 import DecisionRail from "../components/reading/DecisionRail";
@@ -15,6 +16,8 @@ interface Candidate {
   id: string;
   openalexId: string | null;
   title: string;
+  titleKo?: string | null;
+  originalTitle?: string | null;
   authors: string | null;
   year: number | null;
   relevanceScore: number | null;
@@ -47,8 +50,8 @@ function candidateAccess(candidate: Candidate) {
 function toIndexItem(candidate: Candidate): SourceIndexItem {
   return {
     id: candidate.id,
-    title: candidate.title,
-    meta: ["후보", candidate.provider, candidate.year, candidate.relevanceScore == null ? null : `관련도 ${candidate.relevanceScore.toFixed(2)}`].filter(Boolean).join(" · "),
+    title: candidate.titleKo?.trim() || candidate.title,
+    meta: ["후보", labelOf(PROVIDER_LABELS, candidate.provider), candidate.year, candidate.relevanceScore == null ? null : `관련도 ${candidate.relevanceScore.toFixed(2)}`].filter(Boolean).join(" · "),
     tags: candidate.queryUsed ? [candidate.queryUsed] : [],
     access: candidateAccess(candidate),
   };
@@ -57,8 +60,9 @@ function toIndexItem(candidate: Candidate): SourceIndexItem {
 function toReadingDocument(candidate: Candidate): ReadingDocument {
   return {
     id: candidate.id,
-    title: candidate.title,
-    byline: [candidate.authors, candidate.year, candidate.provider].filter(Boolean).map(String).join(" · "),
+    title: candidate.titleKo?.trim() || candidate.title,
+    originalTitle: candidate.originalTitle?.trim() || (candidate.titleKo?.trim() ? candidate.title : undefined),
+    byline: [candidate.authors, candidate.year, labelOf(PROVIDER_LABELS, candidate.provider)].filter(Boolean).map(String).join(" · "),
     provenance: `발견 후보 · ${candidate.queryUsed ? `검색어 ${candidate.queryUsed}` : "검색어 정보 없음"}`,
     access: candidateAccess(candidate),
     summary: null,
@@ -82,7 +86,7 @@ export default function DiscoverView({ onNavigate }: { onNavigate: (view: View) 
   const [homepageProjects, setHomepageProjects] = useState<HomepageProject[]>([]);
   const [homepageExtractedAt, setHomepageExtractedAt] = useState<string | null>(null);
   const tasks = useTasks();
-  const discoverBusy = tasks.some((task) => task.label === "Discovery" && task.status === "running");
+  const discoverBusy = tasks.some((task) => task.label === "발견 수집" && task.status === "running");
 
   const load = useCallback(async () => {
     setListError("");
@@ -105,7 +109,7 @@ export default function DiscoverView({ onNavigate }: { onNavigate: (view: View) 
   }, []);
 
   async function runDiscovery() {
-    await runTask("Discovery", async (setTaskMsg, setProgress) => {
+    await runTask("발견 수집", async (setTaskMsg, setProgress) => {
       setTaskMsg("후보를 모으는 중");
       setProgress(25);
       const response = await fetch("/api/discover/run", { method: "POST" });
@@ -171,7 +175,7 @@ export default function DiscoverView({ onNavigate }: { onNavigate: (view: View) 
       <details className="discovery-settings">
         <summary>발견 범위와 수집 출처 조정</summary>
         <div className="discovery-settings__grid">
-          <section><h2>검색어</h2><p>한 줄에 하나씩, 최대 4개를 추가합니다. 기본 모멘텀 검색어에 더해집니다.</p><textarea value={queries} onChange={(event) => setQueries(event.target.value)} placeholder="computational photography\ndeep learning image formation" /><button className="ui-button-secondary" onClick={() => void saveQueries()}>검색어 저장</button></section>
+          <section><h2>검색어</h2><p>한 줄에 하나씩, 최대 4개를 추가합니다. 기본 모멘텀 검색어에 더해집니다.</p><textarea value={queries} onChange={(event) => setQueries(event.target.value)} placeholder="예: 계산 사진\n예: 이미지 형성" /><button className="ui-button-secondary" onClick={() => void saveQueries()}>검색어 저장</button></section>
           <section><h2>RSS·Atom 피드</h2><p>공개 피드만 자동 수집합니다. 한 줄에 하나씩, 최대 6개입니다.</p><textarea value={feeds} onChange={(event) => setFeeds(event.target.value)} placeholder="https://some-journal.org/rss" /><button className="ui-button-secondary" onClick={() => void saveFeeds()}>피드 저장</button>{feedMsg && <span className="table-note">{feedMsg}</span>}</section>
         </div>
         <section className="discovery-sources"><h2>추천 출처 · 직접 읽기</h2><p>자동 수집 여부와 관계없이, 아래 링크에서 실제 자료를 확인할 수 있습니다.</p>{DISCOVERY_SOURCE_PRESETS.map((source: DiscoverySourcePreset) => <div className="discovery-source__row" key={source.id}><a href={source.url} target="_blank" rel="noreferrer">{source.name} ↗</a><span>{source.description} · {source.feedUrl ? "자동 수집" : source.id === "riss" ? "기관·검색 확인" : "직접 읽기"}</span></div>)}</section>

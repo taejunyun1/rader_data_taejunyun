@@ -64,7 +64,7 @@ export async function runTask(
     if (task.status === "running") {
       task.status = "done";
       task.progress = 100;
-      task.message = "done";
+      task.message = "완료";
     }
   } catch (e) {
     task.status = "failed";

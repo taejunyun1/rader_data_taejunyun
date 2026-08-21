@@ -8,6 +8,7 @@ export default function ReadingPane({ document }: { document: ReadingDocument })
       <header className="reading-pane__header">
         <p className="reading-pane__kicker">현재 자료</p>
         <h2 id="reading-pane-title">{document.title}</h2>
+        {document.originalTitle && document.originalTitle !== document.title && <p className="reading-pane__original-title"><span>원문 제목</span>{document.originalTitle}</p>}
         <p className="reading-pane__byline">{document.byline || "저자·출처 정보 없음"}</p>
         <div className="reading-pane__source"><SourceAccessBadge access={document.access} /></div>
       </header>

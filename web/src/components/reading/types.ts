@@ -11,6 +11,7 @@ export interface SourceIndexItem {
 export interface ReadingDocument {
   id: string;
   title: string;
+  originalTitle?: string;
   byline: string;
   provenance: string;
   access: SourceAccess;
