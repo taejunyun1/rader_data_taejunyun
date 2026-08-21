@@ -8,5 +8,6 @@ export default defineConfig({
     setupFiles: ["./src/test/setup.ts"],
     css: true,
     restoreMocks: true,
+    exclude: ["**/node_modules/**", "tests/e2e/**"],
   },
 });

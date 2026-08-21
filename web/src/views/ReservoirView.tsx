@@ -5,7 +5,7 @@ import { formatDateKo } from "../lib/ui";
 import { labelOf, ORIGIN_LABELS, PROVENANCE_LABELS, RELIABILITY_LABELS, SOURCE_KIND_LABELS } from "../lib/labels";
 import PageHeader from "../components/layout/PageHeader";
 import StatusMessage from "../components/ui/StatusMessage";
-import DecisionRail from "../components/reading/DecisionRail";
+import DecisionBottomSheet from "../components/reading/DecisionBottomSheet";
 import ReadingPane from "../components/reading/ReadingPane";
 import SourceIndex from "../components/reading/SourceIndex";
 import SplitWorkspace from "../components/reading/SplitWorkspace";
@@ -80,6 +80,9 @@ export default function ReservoirView() {
   const [topicFilter, setTopicFilter] = useState("");
   const [topics, setTopics] = useState<{ topic: string; count: number }[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [decisionOpen, setDecisionOpen] = useState(false);
+  const [decisionError, setDecisionError] = useState("");
+  const [pendingAction, setPendingAction] = useState<DecisionAction["id"] | null>(null);
   const [detail, setDetail] = useState<SourceDetail | null>(null);
   const [query, setQuery] = useState("");
   const [searchHits, setSearchHits] = useState<{ sourceId: string; title: string; matched: string; snippet: string }[] | null>(null);
@@ -106,30 +109,35 @@ export default function ReservoirView() {
     fetch("/api/reservoir/topics").then((r) => r.json() as Promise<{ topics?: { topic: string; count: number }[] }>).then((data) => setTopics(data.topics ?? [])).catch(() => setTopics([]));
   }, [items]);
 
-  async function openDetail(id: string) {
+  async function openDetail(id: string, shouldOpen = true) {
     setSelectedId(id);
     setDetailError("");
     setSearchHits(null);
+    setDecisionError("");
+    if (shouldOpen) setDecisionOpen(true);
     try {
       const response = await fetch(`/api/reservoir/${id}`);
       if (!response.ok) throw new Error("detail_failed");
       const next = await response.json() as SourceDetail;
       setDetail(next);
       await fetch("/api/signals", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceId: id, action: "view" }) });
-    } catch { setDetail(null); setDetailError("자료 상세 내용을 불러오지 못했습니다."); }
+    } catch { setDetail(null); setDecisionOpen(false); setDetailError("자료 상세 내용을 불러오지 못했습니다."); }
   }
 
   async function signal(action: DecisionAction["id"]) {
     if (!detail) return;
     const sourceId = String(detail.source.id);
     setActionPending(true);
+    setPendingAction(action);
+    setDecisionError("");
     try {
       const response = await fetch("/api/signals", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceId, action }) });
       if (!response.ok) throw new Error("signal_failed");
       setMsg(`${action === "develop" ? "발전시키기" : action === "keep" ? "보관하기" : action === "watch" ? "관찰하기" : "제외하기"}로 기록했습니다.`);
-      await openDetail(sourceId);
-    } catch { setMsg("분류를 저장하지 못했습니다. 다시 시도해 주세요."); }
-    finally { setActionPending(false); }
+      setDecisionOpen(false);
+      await openDetail(sourceId, false);
+    } catch { setDecisionError("분류를 저장하지 못했습니다. 다시 시도해 주세요."); }
+    finally { setActionPending(false); setPendingAction(null); }
   }
 
   async function runSearch() {
@@ -140,6 +148,7 @@ export default function ReservoirView() {
     setSearchHits(data.hits ?? []);
     setDetail(null);
     setSelectedId(null);
+    setDecisionOpen(false);
   }
 
   async function reanalyze() {
@@ -173,8 +182,8 @@ export default function ReservoirView() {
       {listError ? <StatusMessage kind="error" title={listError} action={<button className="ui-button-secondary" onClick={() => void load()}>다시 시도</button>} /> : <SplitWorkspace
         index={<SourceIndex title="저장소 자료" items={indexItems} selectedId={selectedId} onSelect={(id) => void openDetail(id)} />}
         reading={detailError ? <StatusMessage kind="error" title={detailError} action={<button className="ui-button-secondary" onClick={() => selectedId && void openDetail(selectedId)}>다시 시도</button>} /> : document ? <ReadingPane document={document} /> : <StatusMessage kind="empty" title="읽을 자료를 선택하세요" description="왼쪽 목록에서 자료를 고르면 원문과 분석 내용을 함께 읽을 수 있습니다." />}
-        decision={document ? <DecisionRail pending={actionPending} onAction={signal} secondaryAction={{ label: "다시 분석하기", onClick: reanalyze }}><div className="source-detail-extra"><h3>자료 기록</h3><p>{detail?.versions.length ?? 0}개 버전 · {detail?.signals.length ?? 0}개 판단 기록</p></div></DecisionRail> : null}
       />}
+      {document && <DecisionBottomSheet document={document} open={decisionOpen} pending={actionPending} pendingAction={pendingAction} error={decisionError} onClose={() => setDecisionOpen(false)} onAction={(action) => void signal(action)} secondaryAction={{ label: "다시 분석하기", onClick: reanalyze }}><div className="source-detail-extra"><h3>자료 기록</h3><p>{detail?.versions.length ?? 0}개 버전 · {detail?.signals.length ?? 0}개 판단 기록</p></div></DecisionBottomSheet>}
       {searchHits && <p className="table-note">검색 결과 {searchHits.length}개 · 검색 결과를 선택하면 같은 읽기 화면에서 확인합니다.</p>}
       {detail && <p className="table-note">마지막 확인: {formatDateKo(String(detail.source.createdAt ?? ""))}</p>}
     </div>

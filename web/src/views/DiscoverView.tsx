@@ -5,7 +5,7 @@ import { deriveSourceAccess } from "../lib/sourceAccess";
 import { labelOf, PROVIDER_LABELS } from "../lib/labels";
 import { runTask, useTasks } from "../lib/tasks";
 import PageHeader from "../components/layout/PageHeader";
-import DecisionRail from "../components/reading/DecisionRail";
+import DecisionBottomSheet from "../components/reading/DecisionBottomSheet";
 import ReadingPane from "../components/reading/ReadingPane";
 import SourceIndex from "../components/reading/SourceIndex";
 import SplitWorkspace from "../components/reading/SplitWorkspace";
@@ -76,6 +76,9 @@ export default function DiscoverView({ onNavigate }: { onNavigate: (view: View) 
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [statusFilter, setStatusFilter] = useState("CANDIDATE");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [decisionOpen, setDecisionOpen] = useState(false);
+  const [decisionError, setDecisionError] = useState("");
+  const [pendingAction, setPendingAction] = useState<DecisionAction["id"] | null>(null);
   const [msg, setMsg] = useState("");
   const [listError, setListError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -125,6 +128,8 @@ export default function DiscoverView({ onNavigate }: { onNavigate: (view: View) 
 
   async function act(id: string, action: DecisionAction["id"]) {
     setBusy(true);
+    setPendingAction(action);
+    setDecisionError("");
     try {
       const backendAction = action === "develop" || action === "keep" ? "keep" : action;
       const response = await fetch(`/api/discover/candidates/${id}/${backendAction}`, { method: "POST" });
@@ -133,13 +138,21 @@ export default function DiscoverView({ onNavigate }: { onNavigate: (view: View) 
       if (action === "develop" && data.sourceId) {
         await fetch("/api/signals", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceId: data.sourceId, action: "develop" }) });
         setMsg("발전시키기로 기록했습니다. 저장소에서 이어 읽습니다.");
+        setDecisionOpen(false);
         onNavigate("RESERVOIR");
       } else {
         setMsg(`${action === "keep" ? "보관하기" : action === "watch" ? "관찰하기" : "제외하기"}로 기록했습니다.`);
+        setDecisionOpen(false);
       }
       await load();
-    } catch (error) { setMsg(error instanceof Error ? error.message : "분류를 저장하지 못했습니다."); }
-    finally { setBusy(false); }
+    } catch (error) { setDecisionError(error instanceof Error ? error.message : "분류를 저장하지 못했습니다."); }
+    finally { setBusy(false); setPendingAction(null); }
+  }
+
+  function selectCandidate(id: string) {
+    setSelectedId(id);
+    setDecisionError("");
+    setDecisionOpen(true);
   }
 
   async function saveQueries() {
@@ -168,10 +181,10 @@ export default function DiscoverView({ onNavigate }: { onNavigate: (view: View) 
       </div>
       {msg && <p className="reservoir-message" role="status">{msg}</p>}
       {listError ? <StatusMessage kind="error" title={listError} action={<button className="ui-button-secondary" onClick={() => void load()}>다시 시도</button>} /> : <SplitWorkspace
-        index={<SourceIndex title="발견 후보" items={candidates.map(toIndexItem)} selectedId={selectedId} onSelect={setSelectedId} />}
+        index={<SourceIndex title="발견 후보" items={candidates.map(toIndexItem)} selectedId={selectedId} onSelect={selectCandidate} />}
         reading={document ? <ReadingPane document={document} /> : <StatusMessage kind="empty" title="읽을 후보를 선택하세요" description="왼쪽 목록에서 후보를 고르면 실제 접근 링크와 함께 읽기 질문을 확인할 수 있습니다." />}
-        decision={document ? <DecisionRail actions={DISCOVERY_ACTIONS} pending={busy} onAction={(action) => void act(document.id, action)} /> : null}
       />}
+      {document && <DecisionBottomSheet actions={DISCOVERY_ACTIONS} document={document} open={decisionOpen} pending={busy} pendingAction={pendingAction} error={decisionError} onClose={() => setDecisionOpen(false)} onAction={(action) => void act(document.id, action)} />}
       <details className="discovery-settings">
         <summary>발견 범위와 수집 출처 조정</summary>
         <div className="discovery-settings__grid">

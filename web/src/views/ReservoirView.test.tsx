@@ -20,6 +20,7 @@ describe("ReservoirView", () => {
   it("keeps the index visible while reading a source", async () => {
     render(<ReservoirView />);
     await userEvent.click(await screen.findByRole("option", { name: /자료 A/ }));
+    expect(screen.getByRole("dialog", { name: "읽은 뒤 판단" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "저장소 자료" })).toBeInTheDocument();
     expect(screen.getByText("시스템 해석")).toBeInTheDocument();
     expect(screen.getByText("원문에서 추출한 문장")).toBeInTheDocument();

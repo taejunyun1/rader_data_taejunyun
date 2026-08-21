@@ -22,6 +22,7 @@ describe("DiscoverView", () => {
   it("keeps actual access links visible while reading a candidate", async () => {
     render(<DiscoverView onNavigate={vi.fn()} />);
     await userEvent.click(await screen.findByRole("option", { name: /자료 후보/ }));
+    expect(screen.getByRole("dialog", { name: "읽은 뒤 판단" })).toBeInTheDocument();
     expect(screen.getAllByRole("link", { name: /서지·접근 정보/ })[1]).toHaveAttribute("href", "https://doi.org/10.0000/example");
     expect(screen.getByText("시스템 해석")).toBeInTheDocument();
     expect(screen.getByText("분석 내용 없음")).toBeInTheDocument();
