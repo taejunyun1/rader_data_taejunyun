@@ -24,7 +24,7 @@ export default function App() {
 
   return (
     <AppShell view={view} onNavigate={setView} usage={usage} tasks={tasks}>
-      {view === "RADAR" && <RadarView />}
+      {view === "RADAR" && <RadarView onNavigate={setView} />}
       {view === "INBOX" && <InboxView />}
       {view === "DISTILL" && <DistillView />}
       {view === "RESERVOIR" && <ReservoirView />}

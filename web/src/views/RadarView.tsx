@@ -1,195 +1,40 @@
 import { useEffect, useState } from "react";
-import type { RadarPeriod } from "@radar/shared";
+import type { RadarPeriod, View } from "@radar/shared";
 import { runTask, useTasks } from "../lib/tasks";
+import PageHeader from "../components/layout/PageHeader";
+import StatusMessage from "../components/ui/StatusMessage";
 
-interface Stats {
-  newSources: number;
-  newKeywords: { keyword: string; count: number }[];
-  newQuestions: string[];
-  signalCounts: Record<string, number>;
-  topKeptSources: { title: string; kind: string }[];
-  distillRuns: number;
-  gapsRaised: number;
-  readingQueueSize: number;
-  kindBreakdown: Record<string, number>;
-}
+interface Stats { newSources: number; newKeywords: { keyword: string; count: number }[]; newQuestions: string[]; signalCounts: Record<string, number>; topKeptSources: { title: string; kind: string }[]; distillRuns: number; gapsRaised: number; readingQueueSize: number; kindBreakdown: Record<string, number>; }
+interface Synthesis { period: RadarPeriod; narrative: string; sections: { heading: string; items: string[] }[]; biasWatch: string[]; costUsd: number; }
+interface QueueItem { id: string; title: string; sourceUrl: string | null; verified: number; whyRead: string | null; }
+interface DistillSession { id: string; createdAt: string; }
 
-interface Synthesis {
-  period: RadarPeriod;
-  narrative: string;
-  sections: { heading: string; items: string[] }[];
-  biasWatch: string[];
-  costUsd: number;
-}
+const PERIODS: { value: RadarPeriod; label: string }[] = [{ value: "WEEKLY", label: "이번 주" }, { value: "MONTHLY", label: "이번 달" }, { value: "YEARLY", label: "올해" }];
+const signalLabel: Record<string, string> = { develop: "발전", keep: "보관", watch: "관찰", ignore: "제외", view: "열람" };
 
-const btn: React.CSSProperties = { padding: "6px 14px", border: "1px solid #1a1a1a", background: "#1a1a1a", color: "#fff", borderRadius: 4, cursor: "pointer", fontSize: 13 };
-const tabBtn: React.CSSProperties = { padding: "4px 12px", border: "1px solid #ccc", background: "#fff", borderRadius: 4, cursor: "pointer", fontSize: 12 };
-const activeTab: React.CSSProperties = { ...tabBtn, background: "#1a1a1a", color: "#fff", borderColor: "#1a1a1a" };
-const h4: React.CSSProperties = { margin: "16px 0 6px", fontSize: 11, letterSpacing: 1.2, textTransform: "uppercase", color: "#777" };
-
-let lastSynth: Synthesis | null = null;
-
-export default function RadarView() {
+export default function RadarView({ onNavigate }: { onNavigate: (view: View) => void }) {
   const [period, setPeriod] = useState<RadarPeriod>("WEEKLY");
   const [stats, setStats] = useState<Stats | null>(null);
-  const [synth, setSynth] = useState<Synthesis | null>(lastSynth);
+  const [synthesis, setSynthesis] = useState<Synthesis | null>(null);
+  const [queue, setQueue] = useState<QueueItem[]>([]);
   const [topics, setTopics] = useState<{ topic: string; count: number }[]>([]);
   const [msg, setMsg] = useState("");
-
-  useEffect(() => {
-    fetch("/api/reservoir/topics")
-      .then((r) => r.json() as Promise<{ topics?: { topic: string; count: number }[] }>)
-      .then((d) => setTopics(d.topics ?? []))
-      .catch(() => setTopics([]));
-  }, []);
   const tasks = useTasks();
-  const synthBusy = tasks.some((t) => t.label === "Radar synthesis" && t.status === "running");
+  const busy = tasks.some((task) => task.label === "Radar synthesis" && task.status === "running");
 
-  useEffect(() => {
-    setSynth(lastSynth);
-    fetch("/api/radar/snapshots")
-      .then((r) => r.json() as Promise<{ snapshots?: { synthesis: Synthesis | null; createdAt: string }[] }>)
-      .then((d) => {
-        const auto = d.snapshots?.find((s) => s.synthesis);
-        if (auto?.synthesis && !lastSynth) {
-          lastSynth = auto.synthesis;
-          setSynth(auto.synthesis);
-        }
-      })
-      .catch(() => undefined);
-  }, []);
+  useEffect(() => { fetch(`/api/radar/stats?period=${period}`).then((response) => response.json() as Promise<{ stats?: Stats }>).then((data) => setStats(data.stats ?? null)).catch(() => setStats(null)); }, [period]);
+  useEffect(() => { fetch("/api/reservoir/topics").then((response) => response.json() as Promise<{ topics?: { topic: string; count: number }[] }>).then((data) => setTopics(data.topics ?? [])).catch(() => undefined); fetch("/api/radar/snapshots").then((response) => response.json() as Promise<{ snapshots?: { synthesis: Synthesis | null }[] }>).then((data) => setSynthesis(data.snapshots?.find((snapshot) => snapshot.synthesis)?.synthesis ?? null)).catch(() => undefined); fetch("/api/distill/sessions").then((response) => response.json() as Promise<{ sessions?: DistillSession[] }>).then(async (data) => { const latest = data.sessions?.[0]; if (!latest) return; const detail = await fetch(`/api/distill/sessions/${latest.id}`); if (!detail.ok) return; const result = await detail.json() as { readingQueue?: QueueItem[] }; setQueue((result.readingQueue ?? []).filter((item) => item.verified && item.sourceUrl).slice(0, 3)); }).catch(() => undefined); }, []);
 
-  useEffect(() => {
-    fetch(`/api/radar/stats?period=${period}`)
-      .then((r) => r.json() as Promise<{ stats: Stats }>)
-      .then((d) => setStats(d.stats))
-      .catch(() => setStats(null));
-  }, [period]);
+  async function runSynthesis() { await runTask("Radar synthesis", async (setTaskMsg, setProgress) => { setTaskMsg("기간 서사를 정리하는 중"); setProgress(30); const response = await fetch("/api/radar/synthesize", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ period }) }); const data = await response.json() as Synthesis & { error?: string }; if (!response.ok) throw new Error(data.error ?? "레이더 생성에 실패했습니다."); setProgress(85); setSynthesis(data); setMsg("새 레이더를 만들었습니다."); }); }
 
-  async function runSynthesis() {
-    await runTask("Radar synthesis", async (setTaskMsg, setProgress) => {
-      setTaskMsg(`${period.toLowerCase()}…`);
-      setProgress(30);
-      const r = await fetch("/api/radar/synthesize", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ period }),
-      });
-      if (r.ok) {
-        setProgress(85);
-        const s = (await r.json()) as Synthesis;
-        lastSynth = s;
-        setSynth(s);
-        setMsg("");
-      } else {
-        const d = (await r.json()) as { error?: string };
-        throw new Error(`Failed: ${d.error ?? r.status}`);
-      }
-    });
-  }
-
-  return (
-    <div style={{ maxWidth: 760 }}>
-      <div style={{ marginBottom: 12 }}>
-        {(["WEEKLY", "MONTHLY", "YEARLY"] as RadarPeriod[]).map((p) => (
-          <button key={p} style={p === period ? { ...activeTab, marginRight: 6 } : { ...tabBtn, marginRight: 6 }} onClick={() => setPeriod(p)}>
-            {p}
-          </button>
-        ))}
-        <button style={{ ...btn, marginLeft: 8 }} disabled={synthBusy} onClick={() => void runSynthesis()}>
-          {synthBusy ? "Synthesizing…" : "Run Radar synthesis"}
-        </button>
-      </div>
-      {msg && <p style={{ fontSize: 12, color: "#2a7a2a" }}>{msg}</p>}
-
-      {synth && (
-        <div style={{ background: "#f7f7f5", padding: 16, borderRadius: 6, marginBottom: 20 }}>
-          <p style={{ fontSize: 15, margin: "0 0 8px" }}>{synth.narrative}</p>
-          {synth.sections.map((s, i) => (
-            <div key={i} style={{ marginTop: 10 }}>
-              <h4 style={{ ...h4, margin: "6px 0 2px" }}>{s.heading}</h4>
-              <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
-                {s.items.map((it, j) => (
-                  <li key={j}>{it}</li>
-                ))}
-              </ul>
-            </div>
-          ))}
-          {synth.biasWatch.length > 0 && (
-            <div style={{ marginTop: 12, padding: 8, background: "#f0e8f7", borderRadius: 4 }}>
-              <h4 style={{ ...h4, color: "#5a3a7a", margin: "0 0 2px" }}>Bias watch</h4>
-              {synth.biasWatch.map((b, i) => (
-                <p key={i} style={{ margin: "2px 0", fontSize: 12, color: "#5a3a7a" }}>
-                  ⚠ {b}
-                </p>
-              ))}
-            </div>
-          )}
-          <p style={{ fontSize: 10, color: "#999", margin: "10px 0 0" }}>synthesized · ${synth.costUsd.toFixed(4)}</p>
-        </div>
-      )}
-
-      {stats ? (
-        <div>
-          <h4 style={h4}>Signals ({period.toLowerCase()})</h4>
-          <p style={{ fontSize: 13, margin: "0 0 4px" }}>
-            new sources: <strong>{stats.newSources}</strong> · distills: <strong>{stats.distillRuns}</strong> · gaps raised:{" "}
-            <strong>{stats.gapsRaised}</strong> · reading queue: <strong>{stats.readingQueueSize}</strong>
-          </p>
-          <p style={{ fontSize: 13, margin: "0 0 4px" }}>
-            user actions: {Object.entries(stats.signalCounts).map(([k, v]) => `${k} ${v}`).join(" · ") || "none"}
-          </p>
-
-          {stats.newKeywords.length > 0 && (
-            <>
-              <h4 style={h4}>Rising keywords</h4>
-              <div>
-                {stats.newKeywords.map((k, i) => (
-                  <span key={i} style={{ display: "inline-block", padding: "1px 7px", borderRadius: 3, fontSize: 11, background: "#eee", marginRight: 6 }}>
-                    {k.keyword} ({k.count})
-                  </span>
-                ))}
-              </div>
-            </>
-          )}
-
-          {stats.newQuestions.length > 0 && (
-            <>
-              <h4 style={h4}>Recent questions</h4>
-              <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
-                {stats.newQuestions.slice(0, 5).map((q, i) => (
-                  <li key={i}>{q}</li>
-                ))}
-              </ul>
-            </>
-          )}
-
-          {stats.topKeptSources.length > 0 && (
-            <>
-              <h4 style={h4}>Kept / developed</h4>
-              <p style={{ fontSize: 13 }}>{stats.topKeptSources.map((s) => s.title).join(" · ")}</p>
-            </>
-          )}
-
-          <h4 style={h4}>Research map (topics)</h4>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
-            {topics.length > 0 ? (
-              topics.slice(0, 12).map((t) => (
-                <span key={t.topic} style={{ fontSize: 11, background: "#eef2f8", color: "#4a6fa5", padding: "2px 9px", borderRadius: 10 }}>
-                  {t.topic} · {t.count}
-                </span>
-              ))
-            ) : (
-              <span style={{ fontSize: 12, color: "#999" }}>no topic tags yet</span>
-            )}
-          </div>
-
-          <h4 style={h4}>Reservoir composition</h4>
-          <p style={{ fontSize: 12, color: "#666" }}>{Object.entries(stats.kindBreakdown).map(([k, v]) => `${k}: ${v}`).join(" · ") || "empty"}</p>
-        </div>
-      ) : (
-        <p style={{ color: "#666" }}>Loading stats…</p>
-      )}
-    </div>
-  );
+  return <div className="view-stack"><PageHeader title="레이더" description="읽고 판단한 흔적에서 지금의 연구 방향을 확인합니다." primaryAction={<button className="ui-button" disabled={busy} onClick={() => void runSynthesis()}>{busy ? "정리 중…" : "레이더 새로 만들기"}</button>} />
+    <div className="radar-periods">{PERIODS.map((item) => <button key={item.value} className={`filter-button${period === item.value ? " is-active" : ""}`} onClick={() => setPeriod(item.value)}>{item.label}</button>)}</div>{msg && <p className="reservoir-message" role="status">{msg}</p>}
+    {!stats ? <StatusMessage kind="empty" title="레이더 자료를 불러오는 중입니다" description="신호와 착즙 기록이 쌓이면 이곳에서 흐름을 읽을 수 있습니다." /> : <div className="radar-dashboard"><section className="radar-narrative"><p className="reading-section__label">{PERIODS.find((item) => item.value === period)?.label}의 서사</p>{synthesis ? <><p className="radar-narrative__copy">{synthesis.narrative}</p>{synthesis.sections.map((section) => <div className="radar-section" key={section.heading}><h2>{section.heading}</h2>{section.items.map((item) => <p key={item}>{item}</p>)}</div>)}</> : <p className="distill-copy">아직 생성된 서사가 없습니다. 레이더를 새로 만들어 보세요.</p>}</section>
+      <aside className="radar-side"><section><p className="reading-section__label">지금 직접 읽기</p>{queue.length ? queue.map((item) => <article className="radar-queue" key={item.id}><a href={item.sourceUrl ?? "#"} target="_blank" rel="noreferrer">{item.title} ↗</a><span>{item.whyRead ?? "검증된 다음 읽기"}</span></article>) : <p className="table-note">검증된 읽기 큐가 없습니다.</p>}<button className="ui-button-secondary" onClick={() => onNavigate("DISTILL")}>착즙에서 큐 편집</button></section><section><p className="reading-section__label">다음 행동</p><button className="next-action" onClick={() => onNavigate("DISCOVER")}>새 후보 확인 <span>발견으로 이동 →</span></button><button className="next-action" onClick={() => onNavigate("RESERVOIR")}>보존 자료 다시 읽기 <span>저장소로 이동 →</span></button></section></aside>
+      <section className="radar-metrics"><div><span>새 자료</span><strong>{stats.newSources}</strong></div><div><span>착즙</span><strong>{stats.distillRuns}</strong></div><div><span>연구 공백</span><strong>{stats.gapsRaised}</strong></div><div><span>읽기 큐</span><strong>{stats.readingQueueSize}</strong></div></section>
+      <section className="radar-section radar-section--wide"><h2>상승 신호</h2>{stats.newKeywords.length ? <div className="reading-keywords">{stats.newKeywords.map((item) => <span key={item.keyword}>{item.keyword} · {item.count}</span>)}</div> : <p className="table-note">아직 새로운 키워드가 없습니다.</p>}<h2>남은 질문</h2>{stats.newQuestions.length ? stats.newQuestions.slice(0, 5).map((question) => <p className="reading-question" key={question}><span>?</span>{question}</p>) : <p className="table-note">아직 기록된 질문이 없습니다.</p>}<h2>최근 판단</h2><p className="table-note">{Object.entries(stats.signalCounts).map(([key, count]) => `${signalLabel[key] ?? key} ${count}`).join(" · ") || "기록 없음"}</p></section>
+      <section className="radar-section radar-section--wide"><h2>연구 지형</h2>{topics.length ? <div className="reading-keywords">{topics.slice(0, 14).map((topic) => <span key={topic.topic}>{topic.topic} · {topic.count}</span>)}</div> : <p className="table-note">주제 태그가 아직 없습니다.</p>}<p className="table-note">자료 구성 · {Object.entries(stats.kindBreakdown).map(([kind, count]) => `${kind} ${count}`).join(" · ") || "기록 없음"}</p></section>
+      {synthesis?.biasWatch?.length ? <section className="radar-section radar-section--wide radar-bias"><h2>편향 점검</h2>{synthesis.biasWatch.map((item) => <p key={item}>주의 · {item}</p>)}</section> : null}
+    </div>}
+  </div>;
 }
