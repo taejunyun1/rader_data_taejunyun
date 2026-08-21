@@ -18,7 +18,7 @@ test.beforeEach(async ({ page }) => {
 
 test("dashboard to discover preserves the reading-first flow", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "레이더" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "레이더", exact: true })).toBeVisible();
   await expect(page.getByText("상승 신호")).toBeVisible();
   await page.getByRole("button", { name: "발견", exact: true }).click();
   await expect(page.getByRole("heading", { name: "발견", exact: true })).toBeVisible();

@@ -57,6 +57,49 @@ export const RESEARCH_GAP_LABELS: Record<string, string> = {
   "artistically-possible-academically-untested": "작업 가능성·학술 검증 필요",
 };
 
+export const RADAR_SECTION_LABELS: Record<string, string> = {
+  "rising keywords — what is growing this week": "이번 주 새로 떠오른 키워드",
+  "이번 주 새로 떠오른 키워드": "이번 주 새로 떠오른 키워드",
+  "recurring questions": "반복해서 남은 질문",
+  "반복해서 남은 질문": "반복해서 남은 질문",
+  "interesting sentences/fragments noticed": "눈에 걸린 문장과 단편",
+  "new connections between distant materials": "멀리 있는 자료 사이의 새 연결",
+  "unexpected material": "예상 밖의 자료",
+  "repeating patterns": "반복되는 패턴",
+  "movement of interests (what faded, what grew)": "관심의 이동",
+  "research thread candidates": "연구 흐름 후보",
+  "unresolved questions": "아직 풀리지 않은 질문",
+  "over-concentrated areas (watch for fixation)": "집중이 과한 영역",
+  "long-term research trajectory": "장기 연구 궤적",
+  "recurring problematics across the year": "올해 반복된 문제의식",
+  "new research axes that emerged": "새로 생긴 연구 축",
+  "weakened interests": "약해진 관심",
+  "next research possibilities": "다음 연구 가능성",
+};
+
+export const KEYWORD_LABELS: Record<string, string> = {
+  photography: "사진",
+  theory: "이론",
+  "network-culture": "네트워크 문화",
+  "machine-vision": "기계 비전",
+  ai: "인공지능",
+  data: "데이터",
+  "visual-culture": "시각 문화",
+  "contemporary-art": "동시대 미술",
+  "photography-theory": "사진 이론",
+  "image-theory": "이미지 이론",
+  "data-epistemology": "데이터 인식론",
+  "media-art-history": "미디어 아트 역사",
+  materiality: "물질성",
+  "body-embodiment": "신체·체화",
+  "archive-memory": "아카이브·기억",
+  "surveillance-power": "감시·권력",
+  "network-transmission": "네트워크·전송",
+  "light-optics": "빛·광학",
+  "craft-analog": "공예·아날로그",
+  "sound-audio": "소리·오디오",
+};
+
 export function labelOf(labels: Record<string, string>, value: unknown, fallback = "정보 없음"): string {
   if (value == null || value === "") return fallback;
   return labels[String(value)] ?? String(value);

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { RadarPeriod, View } from "@radar/shared";
 import { runTask, useTasks } from "../lib/tasks";
+import { KEYWORD_LABELS, labelOf, RADAR_SECTION_LABELS, SOURCE_KIND_LABELS } from "../lib/labels";
 import PageHeader from "../components/layout/PageHeader";
 import StatusMessage from "../components/ui/StatusMessage";
 
@@ -10,11 +11,22 @@ interface QueueItem { id: string; title: string; sourceUrl: string | null; verif
 interface DistillSession { id: string; createdAt: string; }
 
 const PERIODS: { value: RadarPeriod; label: string }[] = [{ value: "WEEKLY", label: "이번 주" }, { value: "MONTHLY", label: "이번 달" }, { value: "YEARLY", label: "올해" }];
-const signalLabel: Record<string, string> = { develop: "발전", keep: "보관", watch: "관찰", ignore: "제외", view: "열람" };
-const OBJECT_LABELS: Record<string, string> = { observation: "관찰", recommendation: "추천", reason: "이유", evidence: "근거", direction: "방향", note: "메모", question: "질문", summary: "요약", text: "내용" };
+const signalLabel: Record<string, string> = { develop: "발전", keep: "보관", watch: "관찰", ignore: "제외", view: "열람", import: "가져오기" };
+const OBJECT_LABELS: Record<string, string> = { observation: "관찰", recommendation: "추천", reason: "이유", evidence: "근거", direction: "방향", note: "메모", question: "질문", summary: "요약", text: "내용", overRepeating: "반복되는 영역" };
+
+interface KeywordCount { keyword: string; count: number; }
+
+function keywordLabel(keyword: string): string {
+  return labelOf(KEYWORD_LABELS, keyword, keyword.replaceAll("-", " · "));
+}
+
+function KeywordBoard({ items, label, compact = false }: { items: KeywordCount[]; label: string; compact?: boolean }) {
+  const max = Math.max(...items.map((item) => item.count), 1);
+  return <div className={`radar-keyword-board${compact ? " radar-keyword-board--compact" : ""}`} aria-label={label}>{items.map((item) => { const translated = keywordLabel(item.keyword); return <article className="radar-keyword-card" key={item.keyword} title={translated === item.keyword ? undefined : `원문 키워드: ${item.keyword}`}><div className="radar-keyword-card__top"><strong>{translated}</strong><span>{item.count}회</span></div>{translated !== item.keyword && <small>{item.keyword}</small>}<div className="radar-keyword-card__bar" aria-hidden="true"><span style={{ width: `${Math.max((item.count / max) * 100, 8)}%` }} /></div></article>; })}</div>;
+}
 
 function toRenderableText(value: unknown): string | null {
-  if (typeof value === "string") return value.trim() || null;
+  if (typeof value === "string") return value.trim().replace(/\bDistill\b/gi, "착즙").replace(/\bReservoir\b/gi, "저장소").replace(/\bCounter layer\b/gi, "반대 관점 계층") || null;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   if (Array.isArray(value)) {
     const items = value.map(toRenderableText).filter((item): item is string => Boolean(item));
@@ -34,7 +46,8 @@ function normalizeSynthesis(value: unknown, period: RadarPeriod): Synthesis | nu
     if (!section || typeof section !== "object" || Array.isArray(section)) return null;
     const item = section as Record<string, unknown>;
     const items = (Array.isArray(item.items) ? item.items : [item.items]).map(toRenderableText).filter((text): text is string => Boolean(text));
-    return { heading: toRenderableText(item.heading) ?? "연구 흐름", items };
+    const rawHeading = toRenderableText(item.heading) ?? "연구 흐름";
+    return { heading: RADAR_SECTION_LABELS[rawHeading] ?? rawHeading, items };
   }).filter((section): section is { heading: string; items: string[] } => Boolean(section)) : [];
   return {
     period,
@@ -65,8 +78,8 @@ export default function RadarView({ onNavigate }: { onNavigate: (view: View) => 
     {!stats ? <StatusMessage kind="empty" title="레이더 자료를 불러오는 중입니다" description="신호와 착즙 기록이 쌓이면 이곳에서 흐름을 읽을 수 있습니다." /> : <div className="radar-dashboard"><section className="radar-narrative"><p className="reading-section__label">{PERIODS.find((item) => item.value === period)?.label}의 서사</p>{synthesis ? <><p className="radar-narrative__copy">{synthesis.narrative}</p>{synthesis.sections.map((section) => <div className="radar-section" key={section.heading}><h2>{section.heading}</h2>{section.items.map((item) => <p key={item}>{item}</p>)}</div>)}</> : <p className="distill-copy">아직 생성된 서사가 없습니다. 레이더를 새로 만들어 보세요.</p>}</section>
       <aside className="radar-side"><section><p className="reading-section__label">지금 직접 읽기</p>{queue.length ? queue.map((item) => <article className="radar-queue" key={item.id}><a href={item.sourceUrl ?? "#"} target="_blank" rel="noreferrer">{item.title} ↗</a><span>{item.whyRead ?? "검증된 다음 읽기"}</span></article>) : <p className="table-note">검증된 읽기 큐가 없습니다.</p>}<button className="ui-button-secondary" onClick={() => onNavigate("DISTILL")}>착즙에서 큐 편집</button></section><section><p className="reading-section__label">다음 행동</p><button className="next-action" onClick={() => onNavigate("DISCOVER")}>새 후보 확인 <span>발견으로 이동 →</span></button><button className="next-action" onClick={() => onNavigate("RESERVOIR")}>보존 자료 다시 읽기 <span>저장소로 이동 →</span></button></section></aside>
       <section className="radar-metrics"><div><span>새 자료</span><strong>{stats.newSources}</strong></div><div><span>착즙</span><strong>{stats.distillRuns}</strong></div><div><span>연구 공백</span><strong>{stats.gapsRaised}</strong></div><div><span>읽기 큐</span><strong>{stats.readingQueueSize}</strong></div></section>
-      <section className="radar-section radar-section--wide"><h2>상승 신호</h2>{stats.newKeywords.length ? <div className="reading-keywords">{stats.newKeywords.map((item) => <span key={item.keyword}>{item.keyword} · {item.count}</span>)}</div> : <p className="table-note">아직 새로운 키워드가 없습니다.</p>}<h2>남은 질문</h2>{stats.newQuestions.length ? stats.newQuestions.slice(0, 5).map((question) => <p className="reading-question" key={question}><span>?</span>{question}</p>) : <p className="table-note">아직 기록된 질문이 없습니다.</p>}<h2>최근 판단</h2><p className="table-note">{Object.entries(stats.signalCounts).map(([key, count]) => `${signalLabel[key] ?? key} ${count}`).join(" · ") || "기록 없음"}</p></section>
-      <section className="radar-section radar-section--wide"><h2>연구 지형</h2>{topics.length ? <div className="reading-keywords">{topics.slice(0, 14).map((topic) => <span key={topic.topic}>{topic.topic} · {topic.count}</span>)}</div> : <p className="table-note">주제 태그가 아직 없습니다.</p>}<p className="table-note">자료 구성 · {Object.entries(stats.kindBreakdown).map(([kind, count]) => `${kind} ${count}`).join(" · ") || "기록 없음"}</p></section>
+      <section className="radar-section radar-section--wide"><h2>상승 신호</h2><p className="radar-section__hint">최근 자료에서 새롭게 나타난 키워드입니다. 숫자가 클수록 자주 등장했습니다.</p>{stats.newKeywords.length ? <KeywordBoard items={stats.newKeywords} label="상승 키워드" /> : <p className="table-note">아직 새로운 키워드가 없습니다.</p>}<h2>남은 질문</h2>{stats.newQuestions.length ? stats.newQuestions.slice(0, 5).map((question) => <p className="reading-question" key={question}><span>?</span>{question}</p>) : <p className="table-note">아직 기록된 질문이 없습니다.</p>}<h2>최근 판단</h2><p className="table-note">{Object.entries(stats.signalCounts).map(([key, count]) => `${signalLabel[key] ?? key} ${count}회`).join(" · ") || "기록 없음"}</p></section>
+      <section className="radar-section radar-section--wide"><h2>연구 지형</h2>{topics.length ? <KeywordBoard items={topics.slice(0, 14).map((topic) => ({ keyword: topic.topic, count: topic.count }))} label="연구 지형 키워드" compact /> : <p className="table-note">주제 태그가 아직 없습니다.</p>}<p className="table-note">자료 구성 · {Object.entries(stats.kindBreakdown).map(([kind, count]) => `${labelOf(SOURCE_KIND_LABELS, kind)} ${count}개`).join(" · ") || "기록 없음"}</p></section>
       {synthesis?.biasWatch?.length ? <section className="radar-section radar-section--wide radar-bias"><h2>편향 점검</h2>{synthesis.biasWatch.map((item) => <p key={item}>주의 · {item}</p>)}</section> : null}
     </div>}
   </div>;

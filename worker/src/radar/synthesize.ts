@@ -7,25 +7,25 @@ export type { RadarSynthesis } from "./types";
 
 const SECTION_DEFS: Record<RadarPeriod, string[]> = {
   WEEKLY: [
-    "rising keywords — what is growing this week",
-    "recurring questions",
-    "interesting sentences/fragments noticed",
-    "new connections between distant materials",
-    "unexpected material",
+    "이번 주 새로 떠오른 키워드",
+    "반복해서 남은 질문",
+    "눈에 걸린 문장과 단편",
+    "멀리 있는 자료 사이의 새 연결",
+    "예상 밖의 자료",
   ],
   MONTHLY: [
-    "repeating patterns",
-    "movement of interests (what faded, what grew)",
-    "research thread candidates",
-    "unresolved questions",
-    "over-concentrated areas (watch for fixation)",
+    "반복되는 패턴",
+    "관심의 이동",
+    "연구 흐름 후보",
+    "아직 풀리지 않은 질문",
+    "집중이 과한 영역",
   ],
   YEARLY: [
-    "long-term research trajectory",
-    "recurring problematics across the year",
-    "new research axes that emerged",
-    "weakened interests",
-    "next research possibilities",
+    "장기 연구 궤적",
+    "올해 반복된 문제의식",
+    "새로 생긴 연구 축",
+    "약해진 관심",
+    "다음 연구 가능성",
   ],
 };
 
@@ -88,7 +88,7 @@ Produce the report as strict JSON:
 SECTIONS REQUIRED (exactly these headings):
 ${SECTION_DEFS[period].map((s) => `- ${s}`).join("\n")}
 
-Rules: grounded in given data only; if data is thin, say so honestly in the items. Write all prose in Korean — keep proper nouns (titles, names, technical terms) in original language. No praise, no filler.`;
+Rules: grounded in given data only; if data is thin, say so honestly in the items. Write every heading and explanatory sentence in Korean. Keep proper nouns, source titles, names, and technical keywords in original language when they are source content. Use the exact Korean section headings above. No praise, no filler.`;
 
   const res = await callOpenAi(env, {
     purpose: `radar-${period.toLowerCase()}`,
@@ -114,10 +114,20 @@ const OBJECT_LABELS: Record<string, string> = {
   question: "질문",
   summary: "요약",
   text: "내용",
+  overRepeating: "반복되는 영역",
 };
 
+function localizeRadarText(value: string): string {
+  return value
+    .replace(/\bDistill\b/g, "착즙")
+    .replace(/\bdistill\b/g, "착즙")
+    .replace(/\bReservoir\b/g, "저장소")
+    .replace(/\breservoir\b/g, "저장소")
+    .replace(/\bCounter layer\b/gi, "반대 관점 계층");
+}
+
 function toText(value: unknown): string | null {
-  if (typeof value === "string") return value.trim() || null;
+  if (typeof value === "string") return localizeRadarText(value.trim()) || null;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   if (Array.isArray(value)) {
     const items = value.map(toText).filter((item): item is string => Boolean(item));
