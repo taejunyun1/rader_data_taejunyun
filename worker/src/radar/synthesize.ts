@@ -101,13 +101,56 @@ Rules: grounded in given data only; if data is thin, say so honestly in the item
     ],
   });
 
-  const parsed = extractJson(res.text) as { narrative?: string; sections?: SynthesisSection[]; biasWatch?: string[] } | null;
+  return normalizeSynthesis(extractJson(res.text), period, res.costUsd);
+}
+
+const OBJECT_LABELS: Record<string, string> = {
+  observation: "관찰",
+  recommendation: "추천",
+  reason: "이유",
+  evidence: "근거",
+  direction: "방향",
+  note: "메모",
+  question: "질문",
+  summary: "요약",
+  text: "내용",
+};
+
+function toText(value: unknown): string | null {
+  if (typeof value === "string") return value.trim() || null;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) {
+    const items = value.map(toText).filter((item): item is string => Boolean(item));
+    return items.length ? items.join(" · ") : null;
+  }
+  if (!value || typeof value !== "object") return null;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .map(([key, item]) => {
+      const text = toText(item);
+      return text ? `${OBJECT_LABELS[key] ?? key}: ${text}` : null;
+    })
+    .filter((item): item is string => Boolean(item));
+  return entries.length ? entries.join(" · ") : null;
+}
+
+function normalizeSynthesis(raw: unknown, period: RadarPeriod, costUsd: number): RadarSynthesis {
+  const parsed = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  const sections = Array.isArray(parsed.sections)
+    ? parsed.sections.map((section) => {
+      if (!section || typeof section !== "object" || Array.isArray(section)) return null;
+      const item = section as Record<string, unknown>;
+      const items = (Array.isArray(item.items) ? item.items : [item.items])
+        .map(toText)
+        .filter((value): value is string => Boolean(value));
+      return { heading: toText(item.heading) ?? "연구 흐름", items };
+    }).filter((section): section is SynthesisSection => Boolean(section))
+    : [];
   return {
     period,
-    narrative: parsed?.narrative ?? "synthesis unavailable",
-    sections: parsed?.sections ?? [],
-    biasWatch: parsed?.biasWatch ?? [],
-    costUsd: res.costUsd,
+    narrative: toText(parsed.narrative) ?? "생성된 서사 내용이 없습니다.",
+    sections,
+    biasWatch: Array.isArray(parsed.biasWatch) ? parsed.biasWatch.map(toText).filter((value): value is string => Boolean(value)) : [],
+    costUsd,
   };
 }
 

@@ -11,6 +11,39 @@ interface DistillSession { id: string; createdAt: string; }
 
 const PERIODS: { value: RadarPeriod; label: string }[] = [{ value: "WEEKLY", label: "이번 주" }, { value: "MONTHLY", label: "이번 달" }, { value: "YEARLY", label: "올해" }];
 const signalLabel: Record<string, string> = { develop: "발전", keep: "보관", watch: "관찰", ignore: "제외", view: "열람" };
+const OBJECT_LABELS: Record<string, string> = { observation: "관찰", recommendation: "추천", reason: "이유", evidence: "근거", direction: "방향", note: "메모", question: "질문", summary: "요약", text: "내용" };
+
+function toRenderableText(value: unknown): string | null {
+  if (typeof value === "string") return value.trim() || null;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) {
+    const items = value.map(toRenderableText).filter((item): item is string => Boolean(item));
+    return items.length ? items.join(" · ") : null;
+  }
+  if (!value || typeof value !== "object") return null;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .map(([key, item]) => { const text = toRenderableText(item); return text ? `${OBJECT_LABELS[key] ?? key}: ${text}` : null; })
+    .filter((item): item is string => Boolean(item));
+  return entries.length ? entries.join(" · ") : null;
+}
+
+function normalizeSynthesis(value: unknown, period: RadarPeriod): Synthesis | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  const sections = Array.isArray(raw.sections) ? raw.sections.map((section) => {
+    if (!section || typeof section !== "object" || Array.isArray(section)) return null;
+    const item = section as Record<string, unknown>;
+    const items = (Array.isArray(item.items) ? item.items : [item.items]).map(toRenderableText).filter((text): text is string => Boolean(text));
+    return { heading: toRenderableText(item.heading) ?? "연구 흐름", items };
+  }).filter((section): section is { heading: string; items: string[] } => Boolean(section)) : [];
+  return {
+    period,
+    narrative: toRenderableText(raw.narrative) ?? "생성된 서사 내용이 없습니다.",
+    sections,
+    biasWatch: Array.isArray(raw.biasWatch) ? raw.biasWatch.map(toRenderableText).filter((text): text is string => Boolean(text)) : [],
+    costUsd: typeof raw.costUsd === "number" ? raw.costUsd : 0,
+  };
+}
 
 export default function RadarView({ onNavigate }: { onNavigate: (view: View) => void }) {
   const [period, setPeriod] = useState<RadarPeriod>("WEEKLY");
@@ -23,9 +56,9 @@ export default function RadarView({ onNavigate }: { onNavigate: (view: View) => 
   const busy = tasks.some((task) => task.label === "레이더 생성" && task.status === "running");
 
   useEffect(() => { fetch(`/api/radar/stats?period=${period}`).then((response) => response.json() as Promise<{ stats?: Stats }>).then((data) => setStats(data.stats ?? null)).catch(() => setStats(null)); }, [period]);
-  useEffect(() => { fetch("/api/reservoir/topics").then((response) => response.json() as Promise<{ topics?: { topic: string; count: number }[] }>).then((data) => setTopics(data.topics ?? [])).catch(() => undefined); fetch("/api/radar/snapshots").then((response) => response.json() as Promise<{ snapshots?: { period: RadarPeriod; synthesis: Synthesis | null }[] }>).then((data) => setSynthesis(data.snapshots?.find((snapshot) => snapshot.period === period && snapshot.synthesis)?.synthesis ?? null)).catch(() => setSynthesis(null)); fetch("/api/distill/sessions").then((response) => response.json() as Promise<{ sessions?: DistillSession[] }>).then(async (data) => { const latest = data.sessions?.[0]; if (!latest) return; const detail = await fetch(`/api/distill/sessions/${latest.id}`); if (!detail.ok) return; const result = await detail.json() as { readingQueue?: QueueItem[] }; setQueue((result.readingQueue ?? []).filter((item) => item.verified && item.sourceUrl).slice(0, 3)); }).catch(() => undefined); }, [period]);
+  useEffect(() => { fetch("/api/reservoir/topics").then((response) => response.json() as Promise<{ topics?: { topic: string; count: number }[] }>).then((data) => setTopics(data.topics ?? [])).catch(() => undefined); fetch("/api/radar/snapshots").then((response) => response.json() as Promise<{ snapshots?: { period: RadarPeriod; synthesis: unknown }[] }>).then((data) => setSynthesis(normalizeSynthesis(data.snapshots?.find((snapshot) => snapshot.period === period && snapshot.synthesis)?.synthesis, period))).catch(() => setSynthesis(null)); fetch("/api/distill/sessions").then((response) => response.json() as Promise<{ sessions?: DistillSession[] }>).then(async (data) => { const latest = data.sessions?.[0]; if (!latest) return; const detail = await fetch(`/api/distill/sessions/${latest.id}`); if (!detail.ok) return; const result = await detail.json() as { readingQueue?: QueueItem[] }; setQueue((result.readingQueue ?? []).filter((item) => item.verified && item.sourceUrl).slice(0, 3)); }).catch(() => undefined); }, [period]);
 
-  async function runSynthesis() { await runTask("레이더 생성", async (setTaskMsg, setProgress) => { setTaskMsg("기간 서사를 정리하는 중"); setProgress(30); const response = await fetch("/api/radar/synthesize", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ period }) }); const data = await response.json() as Synthesis & { error?: string }; if (!response.ok) throw new Error(data.error ?? "레이더 생성에 실패했습니다."); setProgress(85); setSynthesis(data); setMsg("새 레이더를 만들었습니다."); }); }
+  async function runSynthesis() { await runTask("레이더 생성", async (setTaskMsg, setProgress) => { setTaskMsg("기간 서사를 정리하는 중"); setProgress(30); const response = await fetch("/api/radar/synthesize", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ period }) }); const data = await response.json() as unknown; if (!response.ok) { const error = data && typeof data === "object" && "error" in data ? String((data as { error?: unknown }).error) : "레이더 생성에 실패했습니다."; throw new Error(error); } setProgress(85); setSynthesis(normalizeSynthesis(data, period)); setMsg("새 레이더를 만들었습니다."); }); }
 
   return <div className="view-stack"><PageHeader title="레이더" description="읽고 판단한 흔적에서 지금의 연구 방향을 확인합니다." primaryAction={<button className="ui-button" disabled={busy} onClick={() => void runSynthesis()}>{busy ? "정리 중…" : "레이더 새로 만들기"}</button>} />
     <div className="radar-periods">{PERIODS.map((item) => <button key={item.value} className={`filter-button${period === item.value ? " is-active" : ""}`} onClick={() => setPeriod(item.value)}>{item.label}</button>)}</div>{msg && <p className="reservoir-message" role="status">{msg}</p>}
