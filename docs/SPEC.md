@@ -18,7 +18,7 @@
 | D6 | Discovery 소스 | OpenAlex(학술 기본) + arXiv + 큐레이션 RSS/Atom(Artforum, Hyperallergic, ARTnews) | e-flux·RISS는 우선 실제 읽기 링크로 제공하고, RISS API는 키 연동 후 학술 후보 수집에 추가 |
 | D7 | 프론트엔드 | Vite + React SPA, Workers Static Assets 배포 | 동일 Worker에서 API + 정적 자산 서빙 |
 | D8 | 인증 | Cloudflare Access + Google IdP | Worker에서 Access JWT(Cf-Access-Jwt-Assertion) 검증 |
-| D9 | UI 언어 | 영어 (Distill/Critic 등 스펙 용어와 일치) | 콘텐츠(자료 원문)는 원어 그대로 |
+| D9 | UI 언어 | 한국어 중심. Distill/Critic/Counter 등 내부 파이프라인 명칭과 고유명사는 원어 병기 가능 | 콘텐츠(자료 원문), 논문 제목·저자·출처명은 원어 그대로 |
 | D10 | 월 AI 예산 | **$10/월** guardrail | D1에 ai_usage 원장, 80% 경고·100% Distill 중단 |
 | D11 | 저장소 | 이 repo에 앱 전체 코드(모노레포: worker + web) | repo명(rader_data_taejunyun) 그대로 사용 |
 
