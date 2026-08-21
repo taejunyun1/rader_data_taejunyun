@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { RadarPeriod } from "@radar/shared";
-import { computeStats, windowFor } from "../radar/snapshot";
+import { computeStats, saveSnapshot, saveSnapshotSynthesis, windowFor } from "../radar/snapshot";
 import { synthesizeRadar } from "../radar/synthesize";
 
 const radar = new Hono<{ Bindings: Env }>();
@@ -47,6 +47,10 @@ radar.post("/synthesize", async (c) => {
   const period = (PERIODS.has(body.period ?? "") ? body.period : "WEEKLY") as RadarPeriod;
   try {
     const result = await synthesizeRadar(c.env, period);
+    const { start, end } = windowFor(period);
+    const stats = await computeStats(c.env.DB, start.toISOString(), end.toISOString());
+    const snapshotId = await saveSnapshot(c.env.DB, period, stats, start.toISOString(), end.toISOString());
+    await saveSnapshotSynthesis(c.env.DB, snapshotId, result);
     return c.json(result);
   } catch (err) {
     const message = (err as Error).message.slice(0, 300);

@@ -1,5 +1,6 @@
 import type { RadarPeriod } from "@radar/shared";
 import { uuid } from "../ingestion/ids";
+import type { RadarSynthesis } from "./types";
 
 export interface SnapshotStats {
   newSources: number;
@@ -109,6 +110,13 @@ export async function saveSnapshot(db: D1Database, period: RadarPeriod, stats: S
   return id;
 }
 
+export async function saveSnapshotSynthesis(db: D1Database, snapshotId: string, synthesis: RadarSynthesis): Promise<void> {
+  await db
+    .prepare("UPDATE radar_snapshots SET synthesis_json = ?, synthesis_cost = ? WHERE id = ?")
+    .bind(JSON.stringify(synthesis), synthesis.costUsd, snapshotId)
+    .run();
+}
+
 export async function createWeeklySnapshotIfDue(env: Env): Promise<string | null> {
   const last = await env.DB.prepare(
     `SELECT created_at FROM radar_snapshots WHERE period = 'WEEKLY' ORDER BY created_at DESC LIMIT 1`
@@ -127,10 +135,7 @@ export async function createWeeklySnapshotWithSynthesis(env: Env): Promise<strin
   try {
     const { synthesizeRadar } = await import("./synthesize");
     const synthesis = await synthesizeRadar(env, "WEEKLY");
-    await env.DB
-      .prepare("UPDATE radar_snapshots SET synthesis_json = ?, synthesis_cost = ? WHERE id = ?")
-      .bind(JSON.stringify(synthesis), synthesis.costUsd, snapshotId)
-      .run();
+    await saveSnapshotSynthesis(env.DB, snapshotId, synthesis);
   } catch (err) {
     console.error(JSON.stringify({ level: "error", scope: "cron:synthesis", message: (err as Error).message }));
   }
