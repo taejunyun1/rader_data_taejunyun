@@ -1,0 +1,5 @@
+interface SelectionTrayProps { options: { id: string; label: string }[]; selected: string[]; pending?: boolean; budgetBlocked?: boolean; onToggle: (id: string) => void; onSave: () => void; onRedistill: () => void; }
+
+export default function SelectionTray({ options, selected, pending = false, budgetBlocked = false, onToggle, onSave, onRedistill }: SelectionTrayProps) {
+  return <aside className="selection-tray" aria-label="재착즙 선택"><p className="reading-section__label">다음 착즙에 남길 범위</p><div className="selection-tray__options">{options.map((option) => <label key={option.id}><input type="checkbox" checked={selected.includes(option.id)} onChange={() => onToggle(option.id)} />{option.label}</label>)}</div><div className="selection-tray__actions"><button className="ui-button-secondary" disabled={pending} onClick={onSave}>선택 저장</button><button className="ui-button" disabled={pending || budgetBlocked} onClick={onRedistill}>{budgetBlocked ? "AI 사용량 한도 도달" : "선택 범위로 다시 착즙"}</button></div></aside>;
+}
