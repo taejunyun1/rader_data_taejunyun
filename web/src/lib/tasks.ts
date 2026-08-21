@@ -33,6 +33,11 @@ export function useTasks(): Task[] {
   return current;
 }
 
+export function dismissTask(id: string): void {
+  tasks = tasks.filter((task) => task.id !== id);
+  emit();
+}
+
 export function isTaskRunning(labelPrefix: string): boolean {
   return tasks.some((t) => t.label.startsWith(labelPrefix) && t.status === "running");
 }

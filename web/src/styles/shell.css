@@ -1,0 +1,28 @@
+.app-shell { min-height: 100vh; display: grid; grid-template-columns: 176px minmax(0, 1fr); background: var(--color-surface); }
+.sidebar-nav { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; gap: 24px; padding: 24px 16px; border-right: 1px solid var(--color-line); background: var(--color-surface); }
+.sidebar-nav__brand { padding: 0 8px; font-size: 15px; font-weight: 800; letter-spacing: -0.03em; }
+.sidebar-nav__brand span { color: var(--color-accent); }
+.sidebar-nav__primary, .sidebar-nav__utility { display: grid; gap: 4px; }
+.sidebar-nav__utility { margin-top: auto; padding-top: 14px; border-top: 1px solid var(--color-line); }
+.sidebar-nav__item, .sidebar-nav__usage { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 36px; padding: 8px 10px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-muted); text-align: left; font-size: 12px; }
+.sidebar-nav__item:hover, .sidebar-nav__usage:hover, .sidebar-nav__item.is-active { background: var(--color-accent-soft); color: var(--color-accent); }
+.sidebar-nav__item.is-active { font-weight: 750; }
+.sidebar-nav__usage { margin-bottom: 3px; color: var(--color-muted); }
+.sidebar-nav__count { color: inherit; font-family: var(--font-mono); font-size: 10px; }
+.app-shell__content { min-width: 0; }
+.app-shell__main { min-width: 0; padding: 0 32px 56px; }
+.page-header { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; gap: 16px; min-height: 72px; padding: 14px 0; border-bottom: 1px solid var(--color-line); background: rgb(255 255 255 / 94%); backdrop-filter: blur(12px); }
+.page-header__title { min-width: 170px; }
+.page-header h1 { margin: 0; font-size: 18px; letter-spacing: -0.04em; }
+.page-header p { margin: 2px 0 0; color: var(--color-muted); font-size: 11px; }
+.page-header__controls { display: flex; flex-wrap: wrap; gap: 6px; }
+.page-header__action { margin-left: auto; }
+.task-center { position: fixed; top: 12px; right: 24px; z-index: 10; display: grid; gap: 6px; width: min(360px, calc(100vw - 32px)); }
+.task-center__item { display: flex; align-items: center; gap: 7px; min-height: 32px; padding: 7px 9px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-surface); box-shadow: 0 7px 24px rgb(23 24 28 / 8%); color: var(--color-muted); font-size: 11px; }
+.task-center__item--running .task-center__status { color: var(--color-accent); }
+.task-center__item--done .task-center__status { color: var(--color-positive); }
+.task-center__item--failed .task-center__status { color: var(--color-danger); }
+.task-center__message { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-ink); }
+.task-center__dismiss { margin-left: auto; border: 0; background: transparent; color: var(--color-muted); font-size: 16px; line-height: 1; }
+@media (max-width: 900px) { .app-shell { grid-template-columns: 64px minmax(0, 1fr); } .sidebar-nav { padding: 16px 8px; } .sidebar-nav__brand { overflow: hidden; padding: 0; font-size: 11px; white-space: nowrap; } .sidebar-nav__item, .sidebar-nav__usage { justify-content: center; padding: 8px 4px; font-size: 0; } .sidebar-nav__item::before { content: "•"; font-size: 18px; line-height: 1; } .sidebar-nav__count { display: none; } .sidebar-nav__usage span:last-child { font-size: 9px; } .app-shell__main { padding: 0 20px 44px; } }
+@media (max-width: 640px) { .app-shell { display: block; } .sidebar-nav { position: fixed; inset: auto 0 0; z-index: 8; display: flex; flex-direction: row; width: 100%; height: 56px; padding: 6px 8px; border-top: 1px solid var(--color-line); border-right: 0; } .sidebar-nav__brand, .sidebar-nav__utility { display: none; } .sidebar-nav__primary { display: grid; grid-template-columns: repeat(5, 1fr); width: 100%; } .sidebar-nav__item { min-height: 42px; } .app-shell__main { padding: 0 14px 76px; } .page-header { position: relative; align-items: flex-start; flex-wrap: wrap; } .page-header__title { min-width: 100%; } .page-header__action { margin-left: 0; } .task-center { top: 8px; right: 8px; } }

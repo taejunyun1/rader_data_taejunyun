@@ -1,0 +1,34 @@
+import type { View } from "@radar/shared";
+import { PRIMARY_VIEWS, UTILITY_VIEWS, VIEW_META } from "../../lib/ui";
+import type { UsageBadge } from "./AppShell";
+
+interface SidebarNavProps {
+  view: View;
+  onNavigate: (view: View) => void;
+  usage: UsageBadge | null;
+  counts?: Partial<Record<View, number>>;
+}
+
+function NavButton({ view, active, count, onNavigate }: { view: View; active: boolean; count?: number; onNavigate: (view: View) => void }) {
+  return (
+    <button className={`sidebar-nav__item${active ? " is-active" : ""}`} aria-current={active ? "page" : undefined} onClick={() => onNavigate(view)}>
+      <span>{VIEW_META[view].label}</span>
+      {typeof count === "number" && <span className="sidebar-nav__count">{count}</span>}
+    </button>
+  );
+}
+
+export default function SidebarNav({ view, onNavigate, usage, counts = {} }: SidebarNavProps) {
+  return (
+    <aside className="sidebar-nav" aria-label="주 탐색">
+      <div className="sidebar-nav__brand" aria-label="Research Radar">Research <span>Radar</span></div>
+      <nav className="sidebar-nav__primary">
+        {PRIMARY_VIEWS.map((item) => <NavButton key={item} view={item} active={item === view} count={counts[item]} onNavigate={onNavigate} />)}
+      </nav>
+      <div className="sidebar-nav__utility">
+        <button className="sidebar-nav__usage" onClick={() => onNavigate("USAGE")}><span>AI 사용량</span><span>{usage ? `${Math.round(usage.usedPct)}%` : "확인 중"}</span></button>
+        {UTILITY_VIEWS.filter((item) => item !== "USAGE").map((item) => <NavButton key={item} view={item} active={item === view} count={counts[item]} onNavigate={onNavigate} />)}
+      </div>
+    </aside>
+  );
+}

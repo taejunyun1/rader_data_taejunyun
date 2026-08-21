@@ -1,0 +1,21 @@
+:root {
+  --color-ink: #17181c;
+  --color-surface: #ffffff;
+  --color-soft: #f7f8fa;
+  --color-line: #e4e6eb;
+  --color-muted: #6f7580;
+  --color-accent: #6547ff;
+  --color-accent-soft: #f1efff;
+  --color-positive: #008d86;
+  --color-positive-soft: #edf9f7;
+  --color-warning: #d85a22;
+  --color-warning-soft: #fff5ef;
+  --color-danger: #b42318;
+  --font-sans: "Pretendard Variable", "Apple SD Gothic Neo", "Noto Sans KR", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", monospace;
+  --focus-ring: 0 0 0 3px rgb(101 71 255 / 20%);
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --shadow-popover: 0 18px 45px rgb(23 24 28 / 14%);
+}
