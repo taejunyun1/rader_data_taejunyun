@@ -22,7 +22,7 @@ export default function DecisionRail({ actions = DEFAULT_DECISION_ACTIONS, pendi
       <h2>읽은 뒤 판단</h2>
       <p className="decision-rail__description">분류는 언제든 바꿀 수 있으며 원자료는 삭제되지 않습니다.</p>
       <div className="decision-rail__actions">
-        {actions.map((action) => <button key={action.id} className={`decision-rail__action decision-rail__action--${action.id}`} disabled={pending} onClick={() => void onAction(action.id)}><strong>{action.label}</strong><span>{action.description}</span></button>)}
+        {actions.map((action) => <button key={action.id} aria-label={action.label} className={`decision-rail__action decision-rail__action--${action.id}`} disabled={pending} onClick={() => void onAction(action.id)}><strong>{action.label}</strong><span>{action.description}</span></button>)}
       </div>
       {secondaryAction && <button className="decision-rail__secondary" disabled={pending} onClick={() => void secondaryAction.onClick()}>{secondaryAction.label}</button>}
       {children}

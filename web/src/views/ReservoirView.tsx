@@ -1,4 +1,14 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { SourceAccess } from "../lib/sourceAccess";
+import { deriveSourceAccess } from "../lib/sourceAccess";
+import { formatDateKo } from "../lib/ui";
+import PageHeader from "../components/layout/PageHeader";
+import StatusMessage from "../components/ui/StatusMessage";
+import DecisionRail from "../components/reading/DecisionRail";
+import ReadingPane from "../components/reading/ReadingPane";
+import SourceIndex from "../components/reading/SourceIndex";
+import SplitWorkspace from "../components/reading/SplitWorkspace";
+import type { DecisionAction, ReadingDocument, SourceIndexItem } from "../components/reading/types";
 
 interface ReservoirItem {
   id: string;
@@ -8,6 +18,7 @@ interface ReservoirItem {
   status: string;
   origin: string | null;
   year: number | null;
+  canonicalUrl: string | null;
   createdAt: string;
   topics: string | null;
   keywordCount: number;
@@ -16,13 +27,7 @@ interface ReservoirItem {
 
 interface SourceDetail {
   source: Record<string, unknown>;
-  analysis: {
-    summary?: string;
-    keywords?: string[];
-    questions?: string[];
-    important_fragments?: string[];
-    classification?: { language?: string; medium?: string };
-  } | null;
+  analysis: { summary?: string; keywords?: string[]; questions?: string[]; important_fragments?: string[] } | null;
   keywords: { keyword: string; weight: number }[];
   questions: { question: string; status: string }[];
   fragments: { text: string }[];
@@ -30,280 +35,140 @@ interface SourceDetail {
   signals: { action: string; created_at: string }[];
 }
 
-const btn: React.CSSProperties = {
-  padding: "4px 12px",
-  border: "1px solid #1a1a1a",
-  background: "#fff",
-  borderRadius: 4,
-  cursor: "pointer",
-  fontSize: 12,
-};
-const activeBtn: React.CSSProperties = { ...btn, background: "#1a1a1a", color: "#fff" };
-const chip: React.CSSProperties = {
-  display: "inline-block",
-  padding: "1px 7px",
-  borderRadius: 3,
-  fontSize: 10,
-  background: "#eee",
-  marginRight: 6,
-};
+const KINDS = ["", "PERSONAL_WORK", "PERSONAL_TEXT", "PAPER_ACADEMIC", "BOOK_ARTICLE", "ARTIST_ARTWORK", "TECHNICAL", "WEB", "NOTE", "DISCOVERY"];
+const KIND_LABELS: Record<string, string> = { "": "전체 유형", PERSONAL_WORK: "개인 작업", PERSONAL_TEXT: "개인 텍스트", PAPER_ACADEMIC: "학술 논문", BOOK_ARTICLE: "책·아티클", ARTIST_ARTWORK: "작가·작품", TECHNICAL: "기술 자료", WEB: "웹 자료", NOTE: "메모", DISCOVERY: "발견 자료" };
+
+function safeTopics(value: string | null): string[] {
+  if (!value) return [];
+  try { return JSON.parse(value) as string[]; } catch { return []; }
+}
+
+function toIndexItem(item: ReservoirItem): SourceIndexItem {
+  return { id: item.id, title: item.title, meta: [KIND_LABELS[item.kind] ?? item.kind, item.reliability, item.year].filter(Boolean).join(" · "), tags: safeTopics(item.topics), access: deriveSourceAccess({ href: item.canonicalUrl }) };
+}
+
+function toReadingDocument(detail: SourceDetail): ReadingDocument {
+  const source = detail.source;
+  const summary = detail.analysis?.summary ?? null;
+  const fragments = detail.analysis?.important_fragments ?? detail.fragments.map((fragment) => fragment.text);
+  const questions = detail.analysis?.questions ?? detail.questions.map((question) => question.question);
+  const keywords = detail.analysis?.keywords ?? detail.keywords.map((keyword) => keyword.keyword);
+  return {
+    id: String(source.id),
+    title: String(source.title ?? "제목 없음"),
+    byline: [source.authors, source.year, source.origin].filter(Boolean).map(String).join(" · "),
+    provenance: `${String(source.provenanceClass ?? "SOURCE")} · ${String(source.reliability ?? "")}`,
+    access: deriveSourceAccess({ href: source.canonicalUrl ? String(source.canonicalUrl) : null }),
+    summary,
+    fragments,
+    questions,
+    keywords,
+  };
+}
 
 export default function ReservoirView() {
   const [items, setItems] = useState<ReservoirItem[]>([]);
-  const [kindFilter, setKindFilter] = useState<string>("");
-  const [topicFilter, setTopicFilter] = useState<string>("");
+  const [kindFilter, setKindFilter] = useState("");
+  const [topicFilter, setTopicFilter] = useState("");
   const [topics, setTopics] = useState<{ topic: string; count: number }[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<SourceDetail | null>(null);
-  const [msg, setMsg] = useState("");
   const [query, setQuery] = useState("");
   const [searchHits, setSearchHits] = useState<{ sourceId: string; title: string; matched: string; snippet: string }[] | null>(null);
+  const [listError, setListError] = useState("");
+  const [detailError, setDetailError] = useState("");
+  const [msg, setMsg] = useState("");
+  const [actionPending, setActionPending] = useState(false);
 
   const load = useCallback(async () => {
-    const qs = new URLSearchParams();
-    if (kindFilter) qs.set("kind", kindFilter);
-    if (topicFilter) qs.set("topic", topicFilter);
-    const r = await fetch(`/api/reservoir${qs.toString() ? `?${qs}` : ""}`);
-    const d = (await r.json()) as { items?: ReservoirItem[] };
-    setItems(d.items ?? []);
+    setListError("");
+    const params = new URLSearchParams();
+    if (kindFilter) params.set("kind", kindFilter);
+    if (topicFilter) params.set("topic", topicFilter);
+    try {
+      const response = await fetch(`/api/reservoir${params.toString() ? `?${params}` : ""}`);
+      if (!response.ok) throw new Error("list_failed");
+      const data = await response.json() as { items?: ReservoirItem[] };
+      setItems(data.items ?? []);
+    } catch { setListError("저장소 자료를 불러오지 못했습니다."); }
   }, [kindFilter, topicFilter]);
 
+  useEffect(() => { void load(); }, [load]);
   useEffect(() => {
-    void load();
-  }, [load]);
-
-  useEffect(() => {
-    fetch("/api/reservoir/topics")
-      .then((r) => r.json() as Promise<{ topics?: { topic: string; count: number }[] }>)
-      .then((d) => setTopics(d.topics ?? []))
-      .catch(() => setTopics([]));
+    fetch("/api/reservoir/topics").then((r) => r.json() as Promise<{ topics?: { topic: string; count: number }[] }>).then((data) => setTopics(data.topics ?? [])).catch(() => setTopics([]));
   }, [items]);
 
-  async function openDetail(id: string, keepMsg = true) {
-    if (!keepMsg) setMsg("");
+  async function openDetail(id: string) {
+    setSelectedId(id);
+    setDetailError("");
     setSearchHits(null);
-    const r = await fetch(`/api/reservoir/${id}`);
-    if (!r.ok) {
-      setDetail(null);
-      return;
-    }
-    setDetail((await r.json()) as SourceDetail);
-    await fetch("/api/signals", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sourceId: id, action: "view" }),
-    });
+    try {
+      const response = await fetch(`/api/reservoir/${id}`);
+      if (!response.ok) throw new Error("detail_failed");
+      const next = await response.json() as SourceDetail;
+      setDetail(next);
+      await fetch("/api/signals", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceId: id, action: "view" }) });
+    } catch { setDetail(null); setDetailError("자료 상세 내용을 불러오지 못했습니다."); }
   }
 
-  async function signal(action: string) {
+  async function signal(action: DecisionAction["id"]) {
     if (!detail) return;
-    await fetch("/api/signals", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sourceId: detail.source.id, action }),
-    });
-    setMsg(`Recorded: ${action}`);
-    await openDetail(String(detail.source.id));
+    const sourceId = String(detail.source.id);
+    setActionPending(true);
+    try {
+      const response = await fetch("/api/signals", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceId, action }) });
+      if (!response.ok) throw new Error("signal_failed");
+      setMsg(`${action === "develop" ? "발전시키기" : action === "keep" ? "보관하기" : action === "watch" ? "관찰하기" : "제외하기"}로 기록했습니다.`);
+      await openDetail(sourceId);
+    } catch { setMsg("분류를 저장하지 못했습니다. 다시 시도해 주세요."); }
+    finally { setActionPending(false); }
   }
 
   async function runSearch() {
-    if (!query.trim()) {
-      setSearchHits(null);
-      return;
-    }
-    const r = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
-    const d = (await r.json()) as { hits?: { sourceId: string; title: string; matched: string; snippet: string }[] };
-    setSearchHits(d.hits ?? []);
+    if (!query.trim()) { setSearchHits(null); return; }
+    const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+    if (!response.ok) { setListError("검색 결과를 불러오지 못했습니다."); return; }
+    const data = await response.json() as { hits?: { sourceId: string; title: string; matched: string; snippet: string }[] };
+    setSearchHits(data.hits ?? []);
     setDetail(null);
+    setSelectedId(null);
   }
 
   async function reanalyze() {
     if (!detail) return;
-    setMsg("Re-analyzing…");
-    const r = await fetch(`/api/inbox/retry/${String(detail.source.id)}?analyze=1`, { method: "POST" });
-    const d = (await r.json()) as { status?: string; error?: string };
-    setMsg(d.status === "analyzed" ? "Analysis complete." : `Analysis failed: ${String(d.error ?? "?").slice(0, 160)}`);
-    await openDetail(String(detail.source.id));
+    setActionPending(true);
+    setMsg("다시 분석하는 중입니다.");
+    try {
+      const response = await fetch(`/api/inbox/retry/${String(detail.source.id)}?analyze=1`, { method: "POST" });
+      const data = await response.json() as { status?: string; error?: string };
+      setMsg(data.status === "analyzed" ? "분석을 완료했습니다." : `분석에 실패했습니다: ${String(data.error ?? "알 수 없는 오류").slice(0, 120)}`);
+      await openDetail(String(detail.source.id));
+    } catch { setMsg("분석을 다시 시작하지 못했습니다."); }
+    finally { setActionPending(false); }
   }
 
-  const kinds = ["", "PERSONAL_WORK", "PERSONAL_TEXT", "PAPER_ACADEMIC", "BOOK_ARTICLE", "ARTIST_ARTWORK", "TECHNICAL", "WEB", "NOTE", "DISCOVERY"];
-
-  if (detail) {
-    const a = detail.analysis;
-    return (
-      <div style={{ maxWidth: 760 }}>
-        <button style={btn} onClick={() => setDetail(null)}>
-          ← Back
-        </button>
-        <h3 style={{ marginBottom: 4 }}>{String(detail.source.title)}</h3>
-        <p style={{ fontSize: 12, color: "#777", marginTop: 0 }}>
-          {String(detail.source.kind)} · {String(detail.source.reliability)} · {String(detail.source.origin)} ·{" "}
-          {detail.source.year ? String(detail.source.year) + " · " : ""}
-          {String(detail.source.createdAt).slice(0, 10)}
-          {detail.source.canonicalUrl ? (
-            <>
-              {" · "}
-              <a href={String(detail.source.canonicalUrl)} target="_blank" rel="noreferrer">
-                source
-              </a>
-            </>
-          ) : null}
-        </p>
-
-        <div style={{ marginBottom: 16 }}>
-          {["keep", "watch", "develop", "ignore"].map((s) => (
-            <button key={s} style={{ ...btn, marginRight: 6 }} onClick={() => void signal(s)}>
-              {s.toUpperCase()}
-            </button>
-          ))}
-          <button style={{ ...btn, marginLeft: 12 }} onClick={() => void reanalyze()}>
-            Re-analyze
-          </button>
-        </div>
-        {msg && <p style={{ fontSize: 12, color: "#2a7a2a" }}>{msg}</p>}
-
-        {a?.summary && (
-          <section style={{ marginBottom: 14 }}>
-            <h4 style={{ margin: "0 0 4px", fontSize: 11, letterSpacing: 1, color: "#777", textTransform: "uppercase" }}>Summary</h4>
-            <p style={{ margin: 0, fontSize: 14 }}>{a.summary}</p>
-          </section>
-        )}
-        {(a?.keywords?.length ?? detail.keywords.length) > 0 && (
-          <section style={{ marginBottom: 14 }}>
-            <h4 style={{ margin: "0 0 4px", fontSize: 11, letterSpacing: 1, color: "#777", textTransform: "uppercase" }}>Keywords</h4>
-            {(a?.keywords ?? detail.keywords.map((k) => k.keyword)).map((k, i) => (
-              <span key={i} style={chip}>
-                {k}
-              </span>
-            ))}
-          </section>
-        )}
-        {(a?.questions?.length ?? 0) > 0 && (
-          <section style={{ marginBottom: 14 }}>
-            <h4 style={{ margin: "0 0 4px", fontSize: 11, letterSpacing: 1, color: "#777", textTransform: "uppercase" }}>Questions</h4>
-            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
-              {a?.questions?.map((q, i) => <li key={i}>{q}</li>)}
-            </ul>
-          </section>
-        )}
-        {(a?.important_fragments?.length ?? 0) > 0 && (
-          <section style={{ marginBottom: 14 }}>
-            <h4 style={{ margin: "0 0 4px", fontSize: 11, letterSpacing: 1, color: "#777", textTransform: "uppercase" }}>Fragments</h4>
-            {a?.important_fragments?.map((f, i) => (
-              <blockquote key={i} style={{ margin: "4px 0", paddingLeft: 10, borderLeft: "2px solid #ccc", fontSize: 13 }}>
-                {f}
-              </blockquote>
-            ))}
-          </section>
-        )}
-        <section>
-          <h4 style={{ margin: "0 0 4px", fontSize: 11, letterSpacing: 1, color: "#777", textTransform: "uppercase" }}>
-            History · versions {detail.versions.length} · signals {detail.signals.length}
-          </h4>
-          <p style={{ fontSize: 12, color: "#999" }}>
-            {detail.signals.slice(0, 8).map((s, i) => (
-              <span key={i}>
-                {i > 0 ? " → " : ""}
-                {s.action}
-              </span>
-            ))}
-          </p>
-        </section>
-      </div>
-    );
-  }
+  const indexItems = useMemo(() => searchHits
+    ? searchHits.map((hit) => ({ id: hit.sourceId, title: hit.title, meta: hit.matched, tags: hit.snippet ? [hit.snippet] : [], access: deriveSourceAccess({ href: null }) }))
+    : items.map(toIndexItem), [items, searchHits]);
+  const document = detail ? toReadingDocument(detail) : null;
 
   return (
-    <div style={{ maxWidth: 760 }}>
-      <div style={{ marginBottom: 14 }}>
-        <input
-          style={{ padding: "6px 10px", border: "1px solid #ccc", borderRadius: 4, fontSize: 13, width: 320, marginRight: 6 }}
-          placeholder="Search reservoir…"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && void runSearch()}
-        />
-        <button style={btn} onClick={() => void runSearch()}>
-          Search
-        </button>
+    <div className="view-stack">
+      <PageHeader title="저장소" description="보존된 자료를 읽고 다음 연구 행동을 기록합니다." primaryAction={<button className="ui-button" onClick={() => { setDetail(null); setSearchHits(null); }}>목록으로 돌아가기</button>} />
+      <div className="reservoir-toolbar">
+        <input className="reservoir-search" value={query} placeholder="제목, 저자, 질문으로 검색" onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void runSearch(); }} />
+        <button className="ui-button-secondary" onClick={() => void runSearch()}>검색</button>
+        <div className="filter-strip">{KINDS.map((kind) => <button key={kind || "all"} className={`filter-button${kindFilter === kind ? " is-active" : ""}`} onClick={() => setKindFilter(kind)}>{KIND_LABELS[kind]}</button>)}</div>
       </div>
-
-      {searchHits ? (
-        <>
-          <p style={{ fontSize: 12, color: "#777" }}>{searchHits.length} results</p>
-          {searchHits.map((h) => (
-            <div key={h.sourceId} style={{ padding: "8px 0", borderBottom: "1px solid #eee" }}>
-              <a href="#" style={{ color: "#1a1a1a", fontSize: 14 }} onClick={(e) => { e.preventDefault(); void openDetail(h.sourceId, false); }}>
-                {h.title}
-              </a>
-              <span style={{ marginLeft: 8, fontSize: 10, background: "#eee", padding: "1px 7px", borderRadius: 3 }}>{h.matched}</span>
-              {h.snippet && <p style={{ margin: "2px 0 0", fontSize: 12, color: "#666" }}>{h.snippet}</p>}
-            </div>
-          ))}
-        </>
-      ) : (
-        <>
-          <div style={{ marginBottom: 10 }}>
-            {kinds.map((k) => (
-              <button key={k} style={k === kindFilter ? activeBtn : { ...btn, marginRight: 4 }} onClick={() => setKindFilter(k)}>
-                {k || "ALL"}
-              </button>
-            ))}
-          </div>
-          {topics.length > 0 && (
-            <div style={{ marginBottom: 10, display: "flex", flexWrap: "wrap", gap: 4, maxWidth: 700 }}>
-              {topics.slice(0, 14).map((t) => (
-                <button
-                  key={t.topic}
-                  onClick={() => setTopicFilter(topicFilter === t.topic ? "" : t.topic)}
-                  style={{
-                    fontSize: 10,
-                    padding: "1px 8px",
-                    borderRadius: 10,
-                    cursor: "pointer",
-                    border: `1px solid ${topicFilter === t.topic ? "#4a6fa5" : "#ddd"}`,
-                    background: topicFilter === t.topic ? "#4a6fa5" : "#f5f5f5",
-                    color: topicFilter === t.topic ? "#fff" : "#555",
-                  }}
-                >
-                  {t.topic} {t.count}
-                </button>
-              ))}
-              {topicFilter && (
-                <button style={{ fontSize: 10, padding: "1px 8px", borderRadius: 10, border: "none", background: "none", color: "#999", cursor: "pointer" }} onClick={() => setTopicFilter("")}>
-                  clear ×
-                </button>
-              )}
-            </div>
-          )}
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-            <tbody>
-              {items.map((it) => (
-                <tr key={it.id} style={{ borderBottom: "1px solid #eee" }}>
-                  <td style={{ padding: "7px 6px 7px 0" }}>
-                    <a href="#" style={{ color: "#1a1a1a" }} onClick={(e) => { e.preventDefault(); void openDetail(it.id); }}>
-                      {it.title}
-                    </a>
-                    <span style={{ color: "#999", marginLeft: 8, fontSize: 11 }}>
-                      {it.kind} · {it.reliability} · {it.status}
-                      {it.keywordCount > 0 ? ` · ${it.keywordCount} kw` : ""}
-                      {it.signalCount > 0 ? ` · ★${it.signalCount}` : ""}
-                    </span>
-                    {it.topics && (
-                      <div style={{ marginTop: 2 }}>
-                        {(JSON.parse(it.topics) as string[]).map((t) => (
-                          <span key={t} style={{ fontSize: 9, background: "#eef2f8", color: "#4a6fa5", padding: "0 6px", borderRadius: 8, marginRight: 4 }}>
-                            {t}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </>
-      )}
+      {topics.length > 0 && <div className="topic-strip" aria-label="주제 필터">{topics.slice(0, 14).map((topic) => <button key={topic.topic} className={`topic-chip${topicFilter === topic.topic ? " is-active" : ""}`} onClick={() => setTopicFilter(topicFilter === topic.topic ? "" : topic.topic)}>{topic.topic} · {topic.count}</button>)}</div>}
+      {msg && <p className="reservoir-message" role="status">{msg}</p>}
+      {listError ? <StatusMessage kind="error" title={listError} action={<button className="ui-button-secondary" onClick={() => void load()}>다시 시도</button>} /> : <SplitWorkspace
+        index={<SourceIndex title="저장소 자료" items={indexItems} selectedId={selectedId} onSelect={(id) => void openDetail(id)} />}
+        reading={detailError ? <StatusMessage kind="error" title={detailError} action={<button className="ui-button-secondary" onClick={() => selectedId && void openDetail(selectedId)}>다시 시도</button>} /> : document ? <ReadingPane document={document} /> : <StatusMessage kind="empty" title="읽을 자료를 선택하세요" description="왼쪽 목록에서 자료를 고르면 원문과 분석 내용을 함께 읽을 수 있습니다." />}
+        decision={document ? <DecisionRail pending={actionPending} onAction={signal} secondaryAction={{ label: "다시 분석하기", onClick: reanalyze }}><div className="source-detail-extra"><h3>자료 기록</h3><p>{detail?.versions.length ?? 0}개 버전 · {detail?.signals.length ?? 0}개 판단 기록</p></div></DecisionRail> : null}
+      />}
+      {searchHits && <p className="table-note">검색 결과 {searchHits.length}개 · 검색 결과를 선택하면 같은 읽기 화면에서 확인합니다.</p>}
+      {detail && <p className="table-note">마지막 확인: {formatDateKo(String(detail.source.createdAt ?? ""))}</p>}
     </div>
   );
 }
