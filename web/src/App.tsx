@@ -28,7 +28,7 @@ export default function App() {
       {view === "INBOX" && <InboxView />}
       {view === "DISTILL" && <DistillView />}
       {view === "RESERVOIR" && <ReservoirView />}
-      {view === "DISCOVER" && <DiscoverView />}
+      {view === "DISCOVER" && <DiscoverView onNavigate={setView} />}
       {view === "USAGE" && <UsageView />}
       {view === "SETTINGS" && <SettingsView />}
     </AppShell>
