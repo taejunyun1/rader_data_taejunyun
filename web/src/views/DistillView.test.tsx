@@ -1,4 +1,5 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import DistillView from "./DistillView";
 
@@ -19,5 +20,19 @@ describe("DistillView", () => {
     expect(screen.getByRole("link", { name: /다음 읽기/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "확인 필요" })).toBeDisabled();
     expect(screen.getByText("연결된 이유")).toBeInTheDocument();
+  });
+
+  it("keeps the counter enabled by default and exposes the counter result", async () => {
+    render(<DistillView />);
+    expect(await screen.findByRole("switch", { name: "반대 관점 포함" })).toBeChecked();
+    expect(screen.getByText("반대 관점 결과가 없습니다.")).toBeInTheDocument();
+  });
+
+  it("sends the counter choice with a new distill run", async () => {
+    render(<DistillView />);
+    await screen.findByRole("heading", { name: "착즙" });
+    await userEvent.click(screen.getByRole("switch", { name: "반대 관점 포함" }));
+    await userEvent.click(screen.getByRole("button", { name: "새로 착즙하기" }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/distill/run", expect.objectContaining({ body: JSON.stringify({ includeCounter: false }) })));
   });
 });

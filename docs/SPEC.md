@@ -63,13 +63,13 @@ OpenAlex API — 학술 Discovery 기본 소스 + Reading Queue 존재 검증
 ### 모델·비용 전략 ($10/월)
 
 - Workers AI(무료 할당): 분류, 짧은 요약, 키워드 추출, 후보 필터 → 사실상 $0
-- OpenAI via AI Gateway: Distill/Critic/Counter/Radar synthesis. mini급 모델 기준 회당 약 $0.005–0.01 → 일일 1회 Distill로도 월 $1 미만. 여유분은 고품질 모델 승격에 사용
+- OpenAI via AI Gateway: Distill/Critic/Counter/Radar synthesis와 사용자가 요청하는 Reservoir 심층 정리. 기본·정밀·최고 정밀 품질은 `MODEL_LOW`/`MODEL_HIGH`/`MODEL_DEEP` 환경변수로 해석한다.
 - 모든 모델명은 wrangler vars/config로 관리(하드코딩 금지 — 스펙 원칙)
 - `ai_usage` 테이블에 호출별 토큰·비용 기록, 월별 집계로 guardrail 적용
 
 ## 3. V0 스코프 (재확인)
 
-**포함**: Inbox / Reservoir / Radar / Distill / Reading Queue / Research Gap / Critic / Counter / 기본 검색(D1 텍스트·metadata) / 사용자 선택 기록(user_signals) / Settings(5 파라미터 + presets) / Discovery(OpenAlex, 강한 상한) / Export·Backup
+**포함**: Inbox / Reservoir / Reservoir 심층 정리 / Radar / Distill / Reading Queue / Research Gap / Critic / Counter(기본 켜짐 토글) / 기본 검색(D1 텍스트·metadata) / 사용자 선택 기록(user_signals) / Settings(5 파라미터 + presets) / Discovery(OpenAlex, 강한 상한) / Export·Backup
 
 **제외** (v0.1 그대로): 일반 챗봇 / Multi-agent UI / Knowledge Graph 시각화 / 다중 사용자 / Admin Panel / Fine-tuning / 복잡한 권한관리 / 과도한 대시보드 / 불필요한 외부 SaaS / **Google Drive 연동** / **로컬 Obsidian 싱크 CLI** / **시맨틱 검색(Vectorize)** — 검색이 실제 병목일 때 재검토
 

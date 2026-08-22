@@ -7,6 +7,7 @@ import PageHeader from "../components/layout/PageHeader";
 import StatusMessage from "../components/ui/StatusMessage";
 import DecisionBottomSheet from "../components/reading/DecisionBottomSheet";
 import ReadingPane from "../components/reading/ReadingPane";
+import type { DeepAnalysisViewModel } from "../components/reading/DeepAnalysisPanel";
 import SourceIndex from "../components/reading/SourceIndex";
 import SplitWorkspace from "../components/reading/SplitWorkspace";
 import type { DecisionAction, ReadingDocument, SourceIndexItem } from "../components/reading/types";
@@ -38,6 +39,8 @@ interface SourceDetail {
   fragments: { text: string }[];
   versions: { version: number; char_count: number; created_at: string }[];
   signals: { action: string; created_at: string }[];
+  deepAnalysis?: DeepAnalysisViewModel | null;
+  deepAnalysisHistory?: { id: string; model?: string; createdAt: string; costUsd?: number }[];
 }
 
 const KINDS = ["", "PERSONAL_WORK", "PERSONAL_TEXT", "PAPER_ACADEMIC", "BOOK_ARTICLE", "ARTIST_ARTWORK", "TECHNICAL", "WEB", "NOTE", "DISCOVERY"];
@@ -119,6 +122,8 @@ export default function ReservoirView() {
   const [detailError, setDetailError] = useState("");
   const [msg, setMsg] = useState("");
   const [actionPending, setActionPending] = useState(false);
+  const [deepProfile, setDeepProfile] = useState<"precision" | "maximum">("precision");
+  const [deepPending, setDeepPending] = useState(false);
 
   const load = useCallback(async () => {
     setListError("");
@@ -151,6 +156,7 @@ export default function ReservoirView() {
       if (!response.ok) throw new Error("detail_failed");
       const next = await response.json() as SourceDetail;
       setDetail(next);
+      if (next.deepAnalysis?.profile) setDeepProfile(next.deepAnalysis.profile);
       await fetch("/api/signals", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceId: id, action: "view" }) });
     } catch { setDetail(null); setDecisionOpen(false); setDetailError("자료 상세 내용을 불러오지 못했습니다."); }
   }
@@ -201,6 +207,29 @@ export default function ReservoirView() {
     finally { setActionPending(false); }
   }
 
+  async function runDeepAnalysis() {
+    if (!detail) return;
+    setDeepPending(true);
+    setMsg("본문을 더 길게 읽고 다시 정리하는 중입니다.");
+    try {
+      const response = await fetch(`/api/reservoir/${String(detail.source.id)}/deep-analysis`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ profile: deepProfile }) });
+      const data = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "deep_analysis_failed");
+      setMsg("심층 정리를 완료했습니다.");
+      await openDetail(String(detail.source.id), false);
+    } catch (error) {
+      setMsg(error instanceof Error && error.message === "monthly_budget_exhausted" ? "이번 달 AI 사용량 한도에 도달했습니다." : "심층 정리를 완료하지 못했습니다.");
+    } finally { setDeepPending(false); }
+  }
+
+  async function openDeepHistory(analysisId: string) {
+    if (!detail) return;
+    const response = await fetch(`/api/reservoir/${String(detail.source.id)}/deep-analysis/${analysisId}`);
+    if (!response.ok) { setMsg("이전 심층 정리를 불러오지 못했습니다."); return; }
+    const data = await response.json() as { analysis?: DeepAnalysisViewModel };
+    if (data.analysis) setDetail((current) => current ? { ...current, deepAnalysis: data.analysis } : current);
+  }
+
   const indexItems = useMemo(() => searchHits
     ? searchHits.map((hit) => ({ id: hit.sourceId, title: hit.title, meta: hit.matched, tags: hit.snippet ? [hit.snippet] : [], access: deriveSourceAccess({ href: null }) }))
     : items.map(toIndexItem), [items, searchHits]);
@@ -223,7 +252,7 @@ export default function ReservoirView() {
       {msg && <p className="reservoir-message" role="status">{msg}</p>}
       {listError ? <StatusMessage kind="error" title={listError} action={<button className="ui-button-secondary" onClick={() => void load()}>다시 시도</button>} /> : <SplitWorkspace
         index={<SourceIndex title="저장소 자료" items={indexItems} selectedId={selectedId} onSelect={(id) => void openDetail(id)} />}
-        reading={detailError ? <StatusMessage kind="error" title={detailError} action={<button className="ui-button-secondary" onClick={() => selectedId && void openDetail(selectedId)}>다시 시도</button>} /> : document ? <ReadingPane document={document} /> : <StatusMessage kind="empty" title="읽을 자료를 선택하세요" description="왼쪽 목록에서 자료를 고르면 원문과 분석 내용을 함께 읽을 수 있습니다." />}
+      reading={detailError ? <StatusMessage kind="error" title={detailError} action={<button className="ui-button-secondary" onClick={() => selectedId && void openDetail(selectedId)}>다시 시도</button>} /> : document ? <><div className="deep-analysis-controls" aria-label="심층 정리 실행"><label htmlFor="deep-analysis-profile">심층 정리 품질</label><select id="deep-analysis-profile" value={deepProfile} onChange={(event) => setDeepProfile(event.target.value as "precision" | "maximum")} disabled={deepPending}><option value="precision">정밀 · 긴 본문 구조화</option><option value="maximum">최고 정밀 · 논거와 연결 검토</option></select><button type="button" className="ui-button" onClick={() => void runDeepAnalysis()} disabled={deepPending}>{deepPending ? "심층 정리 중…" : "심층 정리하기"}</button></div><ReadingPane document={document} deepAnalysis={detail?.deepAnalysis} deepAnalysisHistory={detail?.deepAnalysisHistory} onOpenDeepHistory={(id) => void openDeepHistory(id)} /></> : <StatusMessage kind="empty" title="읽을 자료를 선택하세요" description="왼쪽 목록에서 자료를 고르면 원문과 분석 내용을 함께 읽을 수 있습니다." />}
       />}
       {document && <DecisionBottomSheet document={document} decisionStatus={detail?.source.decisionStatus as DecisionAction["id"] | null} open={decisionOpen} pending={actionPending} pendingAction={pendingAction} error={decisionError} onClose={() => setDecisionOpen(false)} onAction={(action) => void signal(action)} secondaryAction={{ label: "다시 분석하기", onClick: reanalyze }}><div className="source-detail-extra"><h3>자료 기록</h3><p>{detail?.versions.length ?? 0}개 버전 · {detail?.signals.length ?? 0}개 판단 기록</p></div></DecisionBottomSheet>}
       {searchHits && <p className="table-note">검색 결과 {searchHits.length}개 · 검색 결과를 선택하면 같은 읽기 화면에서 확인합니다.</p>}

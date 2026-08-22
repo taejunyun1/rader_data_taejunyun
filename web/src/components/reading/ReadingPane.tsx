@@ -1,8 +1,9 @@
 import SourceAccessBadge from "./SourceAccessBadge";
 import ProvenanceNotice from "./ProvenanceNotice";
 import type { ReadingDocument } from "./types";
+import DeepAnalysisPanel, { type DeepAnalysisViewModel } from "./DeepAnalysisPanel";
 
-export default function ReadingPane({ document }: { document: ReadingDocument }) {
+export default function ReadingPane({ document, deepAnalysis, deepAnalysisHistory = [], onOpenDeepHistory }: { document: ReadingDocument; deepAnalysis?: DeepAnalysisViewModel | null; deepAnalysisHistory?: { id: string; model?: string; createdAt: string; costUsd?: number }[]; onOpenDeepHistory?: (id: string) => void }) {
   return (
     <article className="reading-pane" aria-labelledby="reading-pane-title">
       <header className="reading-pane__header">
@@ -21,6 +22,7 @@ export default function ReadingPane({ document }: { document: ReadingDocument })
         {document.fragments.length > 0 && <section className="reading-section"><p className="reading-section__label">원문에서 추출한 문장</p>{document.fragments.map((fragment, index) => <blockquote key={`${fragment}-${index}`}>{fragment}</blockquote>)}</section>}
         {document.questions.length > 0 && <section className="reading-section"><p className="reading-section__label">읽으며 붙잡을 질문</p>{document.questions.map((question, index) => <p className="reading-question" key={`${question}-${index}`}><span>{String(index + 1).padStart(2, "0")}</span>{question}</p>)}</section>}
         {document.keywords.length > 0 && <section className="reading-section"><p className="reading-section__label">연결된 키워드</p><div className="reading-keywords">{document.keywords.map((keyword) => <span key={keyword}>{keyword}</span>)}</div></section>}
+        {deepAnalysis !== undefined && <DeepAnalysisPanel analysis={deepAnalysis} history={deepAnalysisHistory} onOpenHistory={onOpenDeepHistory} />}
       </div>
     </article>
   );

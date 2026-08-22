@@ -35,6 +35,19 @@
 .reading-question span { color: var(--color-accent); font-family: var(--font-mono); font-size: 10px; }
 .reading-keywords { display: flex; flex-wrap: wrap; gap: 6px; }
 .reading-keywords span { border: 1px solid var(--color-line); border-radius: 999px; padding: 5px 8px; color: var(--color-muted); font-size: 10px; }
+.reading-section__heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; }
+.reading-section__heading h3 { margin: 0; font-size: 18px; letter-spacing: -0.04em; }
+.deep-analysis__meta { margin: 0; color: var(--color-muted); font-family: var(--font-mono); font-size: 9px; }
+.deep-analysis { padding-top: 22px; border-top: 1px solid var(--color-line); }
+.deep-analysis__group { display: grid; gap: 8px; margin-top: 24px; }
+.deep-analysis__group ol { display: grid; gap: 8px; margin: 0; padding-left: 20px; color: var(--color-ink); font-size: 13px; line-height: 1.6; }
+.deep-analysis__argument { display: grid; gap: 5px; padding: 12px 0; border-top: 1px solid var(--color-line); }
+.deep-analysis__argument strong { font-size: 13px; line-height: 1.5; }
+.deep-analysis__argument p { margin: 0; padding-left: 12px; border-left: 2px solid var(--color-line); color: var(--color-muted); font-size: 11px; line-height: 1.6; }
+.deep-analysis__history { margin-top: 24px; padding-top: 14px; border-top: 1px solid var(--color-line); color: var(--color-muted); font-size: 11px; }
+.deep-analysis__history summary { cursor: pointer; color: var(--color-accent); font-weight: 750; }
+.deep-analysis__history div { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.deep-analysis__history button { padding: 5px 8px; border: 1px solid var(--color-line); border-radius: 999px; background: var(--color-surface); color: var(--color-muted); font: inherit; font-size: 10px; }
 .decision-rail h2 { margin: 0 0 5px; font-size: 13px; }
 .decision-rail__description { margin: 0 0 15px; color: var(--color-muted); font-size: 10px; line-height: 1.5; }
 .decision-rail__actions { display: grid; gap: 7px; }

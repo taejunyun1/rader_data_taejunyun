@@ -119,7 +119,7 @@ exportRoute.get("/markdown", async (c) => {
     parts.push(`- added: ${s.created_at.slice(0, 10)}`, ``);
 
     const analysis = await db
-      .prepare(`SELECT payload_json FROM source_analysis WHERE source_id = ? ORDER BY created_at DESC LIMIT 1`)
+      .prepare(`SELECT payload_json FROM source_analysis WHERE source_id = ? AND analysis_type = 'basic' ORDER BY created_at DESC LIMIT 1`)
       .bind(s.id)
       .first<{ payload_json: string }>();
     if (analysis) {

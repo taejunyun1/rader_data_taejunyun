@@ -123,6 +123,10 @@ exact title/author → keywords → questions → summary → fragments 순 후�
 
 **Checkpoint P2**: 자료 업로드 → 자동 분석 → 검색으로 재발견 → 시그널 기록 흐름 완주.
 
+### Task 2.5: Reservoir 심층 정리
+저장소 상세에서 `정밀`/`최고 정밀` 품질을 선택해 active version의 긴 본문을 구간별로 읽고 `source_analysis.analysis_type = deep`으로 별도 보존한다. 기존 basic 분석·검색·착즙 컨텍스트를 덮어쓰지 않는다.
+**AC**: 기본 분석보다 긴 본문을 처리하고, 품질·모델·읽은 글자 수·자료 버전·비용·이력을 확인할 수 있다. **Scope: L**
+
 ## Phase 3 — Distill / Critic / Counter
 
 ### Task 3.1: Context Selection
@@ -137,9 +141,9 @@ AI Gateway→OpenAI. 기본 출력: Keywords 5–7 / Fragments 3–5 / Questions
 Distill 직후 자동 실행. 경고 카테고리 8종(근거부족/논리비약/과도한 일반화/기술오류/용어혼용/출처불일치/진부한 언어/기존 연구 과유사). 학술 근거부족 ↔ 예술적 가능성 구분. 짧게.
 **AC**: 모든 Distill 세션에 critic_output 존재(경고 0건이어도 명시). **Scope: M**
 
-### Task 3.4: Counter 자동
-Distill 키워드·미학 성향에서 반대축 동적 생성(고정 아날로그 추천기 금지). OpenAlex로 실제 사례(작가/텍스트) 근거 보강. 화면에는 강한 방향 1–2개만.
-**AC**: 입력 키워드에 따라 반대축이 매번 다름 + 근거 자료 실존. **Scope: M**
+### Task 3.4: Counter 토글·정합성 검증
+착즙 화면에서 `반대 관점 포함`을 기본 켜짐으로 제공하고 실행 전에 끌 수 있다. 켜진 경우 현재 중심 주장과 동시에 성립할 수 없는 정반대 명제를 생성한 뒤 정면성·내부 정합성·출처 추적·근거 무결성·허수아비 오류를 검증한다. 실패 시 1회 교정하고 최종 실패는 확정 제안으로 표시하지 않는다.
+**AC**: 토글을 끄면 Counter 호출·비용·결과가 없고, 켜면 검증 상태와 정반대 명제·근거가 세션에 저장된다. **Scope: L**
 
 ### Task 3.5: Re-Distill + 비용 guardrail
 부분 선택(요소 단위) 재실행, redistill_of 연결. ai_usage 월 집계 → 80% 경고 배너, 100% 시 Distill 차단(자동 수집·분석은 유지).

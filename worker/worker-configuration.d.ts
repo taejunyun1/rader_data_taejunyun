@@ -12,6 +12,7 @@ interface __BaseEnv_Env {
 	OPENAI_BASE_URL: "https://gateway.ai.cloudflare.com/v1/a58fbe3a0082c49f571d69d08c1227ab/research-radar/openai";
 	MODEL_HIGH: "gpt-5-mini";
 	MODEL_LOW: "gpt-5-nano";
+	MODEL_DEEP: string;
 	MONTHLY_BUDGET_USD: "10";
 	ACCESS_TEAM_DOMAIN: "taejunyun.cloudflareaccess.com";
 	ACCESS_AUD: "5a1f9d13af1d6650e347281d6448a8a36e58210a7c43a24f791a207901ac9e51";
@@ -28,7 +29,7 @@ type StringifyValues<EnvType extends Record<string, unknown>> = {
 	[Binding in keyof EnvType]: EnvType[Binding] extends string ? EnvType[Binding] : string;
 };
 declare namespace NodeJS {
-	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "AI_GATEWAY_BASE_URL" | "OPENAI_BASE_URL" | "MODEL_HIGH" | "MODEL_LOW" | "MONTHLY_BUDGET_USD" | "ACCESS_TEAM_DOMAIN" | "ACCESS_AUD" | "ENVIRONMENT">> {}
+	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "AI_GATEWAY_BASE_URL" | "OPENAI_BASE_URL" | "MODEL_HIGH" | "MODEL_LOW" | "MODEL_DEEP" | "MONTHLY_BUDGET_USD" | "ACCESS_TEAM_DOMAIN" | "ACCESS_AUD" | "ENVIRONMENT">> {}
 }
 
 // Begin runtime types

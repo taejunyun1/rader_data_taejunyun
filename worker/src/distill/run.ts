@@ -6,6 +6,7 @@ import { buildDistillContext, type DistillContext } from "./context";
 import {
   counterPrompt,
   criticPrompt,
+  counterValidationPrompt,
   DEFAULT_PROMPT_VARIANT,
   distillPrompt,
   extractJsonLoose,
@@ -42,7 +43,7 @@ function asValidated(raw: unknown, kind: string): unknown {
 export async function runDistill(
   env: Env,
   params: RadarParams,
-  opts: { redistillOf?: string; keepElements?: string[]; promptVariant?: PromptVariant } = {}
+  opts: { redistillOf?: string; keepElements?: string[]; promptVariant?: PromptVariant; includeCounter?: boolean } = {}
 ): Promise<DistillRunResult> {
   const budgetUsedPct = await budgetPct(env);
   if (budgetUsedPct >= 100) {
@@ -76,6 +77,7 @@ export async function runDistill(
   const sys = "You are Distill, a precise research synthesis engine. Output only valid JSON.";
 
   const variant = opts.promptVariant ?? DEFAULT_PROMPT_VARIANT;
+  const includeCounter = opts.includeCounter ?? true;
 
   const distillRes = await callOpenAi(env, {
     purpose: "distill",
@@ -90,8 +92,7 @@ export async function runDistill(
   const distill = asValidated(extractJsonLoose(distillRes.text), "distill");
   if (!distill) throw new Error("distill_invalid_output");
 
-  const [criticRes, counterRes] = await Promise.all([
-    callOpenAi(env, {
+  const criticRes = await callOpenAi(env, {
       purpose: "critic",
       model: "high",
       jsonMode: true,
@@ -100,23 +101,13 @@ export async function runDistill(
         { role: "system", content: "You are Critic. Output only valid JSON. Be terse." },
         { role: "user", content: criticPrompt(JSON.stringify(distill, null, 1)) },
       ],
-    }),
-    callOpenAi(env, {
-      purpose: "counter",
-      model: "high",
-      jsonMode: true,
-      maxOutputTokens: 3000,
-      messages: [
-        { role: "system", content: "You are Counter. Output only valid JSON. Be terse." },
-        { role: "user", content: counterPrompt(JSON.stringify(distill, null, 1), params.counterStrength) },
-      ],
-    }),
-  ]);
+    });
 
   const critic = asValidated(extractJsonLoose(criticRes.text), "critic") ?? { warnings: [], overall: "critic_parse_failed" };
-  const counter = asValidated(extractJsonLoose(counterRes.text), "counter") ?? { axes: [], suggestions: [] };
+  const counterRun = includeCounter ? await runCounter(env, distill, critic, ctx, params.counterStrength) : null;
+  const counter = counterRun?.output ?? null;
 
-  const totalCost = distillRes.costUsd + criticRes.costUsd + counterRes.costUsd;
+  const totalCost = distillRes.costUsd + criticRes.costUsd + (counterRun?.costUsd ?? 0);
   const sessionId = uuid();
   const ts = new Date().toISOString();
 
@@ -127,8 +118,8 @@ export async function runDistill(
       .prepare(
         `INSERT INTO distill_sessions
          (id, input_context_json, sources_used_json, output_json, critic_output_json, counter_output_json,
-          user_selection_json, redistill_of, model_version, prompt_version, cost_usd, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`
+          counter_enabled, user_selection_json, redistill_of, model_version, prompt_version, cost_usd, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`
       )
       .bind(
         sessionId,
@@ -136,7 +127,8 @@ export async function runDistill(
         JSON.stringify(ctx.sources.map((s) => ({ id: s.id, title: s.title }))),
         JSON.stringify(distill),
         JSON.stringify(critic),
-        JSON.stringify(counter),
+        counter ? JSON.stringify(counter) : null,
+        includeCounter ? 1 : 0,
         opts.redistillOf ?? null,
         distillRes.model,
         variant,
@@ -148,6 +140,87 @@ export async function runDistill(
   ]);
 
   return { ok: true, sessionId, costUsd: totalCost, budgetUsedPct: await budgetPct(env), queueItemIds: queueIds.ids, distillOutput: distill };
+}
+
+async function runCounter(
+  env: Env,
+  distill: DistillOutput,
+  critic: CriticOutput,
+  ctx: DistillContext,
+  counterStrength: number,
+): Promise<{ output: CounterOutput; costUsd: number }> {
+  const distillJson = JSON.stringify(distill, null, 1);
+  const sourceEvidence = [`CRITIC REVIEW:\n${JSON.stringify(critic)}`, ...ctx.sources.map((source) => `${source.title}\n${source.summary ?? ""}\n${source.fragments.map((f) => `- ${f}`).join("\n")}`)].join("\n\n").slice(0, 12_000);
+  const generated = await callOpenAi(env, {
+    purpose: "counter",
+    model: "high",
+    jsonMode: true,
+    maxOutputTokens: 3200,
+    messages: [
+      { role: "system", content: "You are Counter. Output only valid JSON. Be terse but logically explicit." },
+      { role: "user", content: counterPrompt(distillJson, counterStrength, sourceEvidence) },
+    ],
+  });
+  let output = asValidated(extractJsonLoose(generated.text), "counter");
+  if (!output) return { output: { axes: [], suggestions: [], validation: { status: "unverified", issues: ["Counter JSON을 해석하지 못했습니다."] } }, costUsd: generated.costUsd };
+
+  const validation = await validateCounter(env, distillJson, output, sourceEvidence);
+  let totalCost = generated.costUsd + validation.costUsd;
+  if (validation.status === "verified") return { output: { ...output, validation: validation.result }, costUsd: totalCost };
+
+  const repaired = await callOpenAi(env, {
+    purpose: "counter",
+    model: "high",
+    jsonMode: true,
+    maxOutputTokens: 3200,
+    messages: [
+      { role: "system", content: "You are Counter repair. Output only valid JSON." },
+      { role: "user", content: counterPrompt(distillJson, counterStrength, sourceEvidence, validation.result.issues.join("\n")) },
+    ],
+  });
+  totalCost += repaired.costUsd;
+  output = asValidated(extractJsonLoose(repaired.text), "counter") ?? output;
+  const repairedValidation = await validateCounter(env, distillJson, output, sourceEvidence);
+  totalCost += repairedValidation.costUsd;
+  return {
+    output: {
+      ...output,
+      validation: {
+        ...repairedValidation.result,
+        status: repairedValidation.status === "verified" ? "corrected" : "unverified",
+      },
+    },
+    costUsd: totalCost,
+  };
+}
+
+async function validateCounter(env: Env, distillJson: string, counter: CounterOutput, sourceEvidence: string): Promise<{ status: "verified" | "unverified"; result: NonNullable<CounterOutput["validation"]>; costUsd: number }> {
+  const response = await callOpenAi(env, {
+    purpose: "counter_validation",
+    model: "high",
+    jsonMode: true,
+    maxOutputTokens: 1600,
+    messages: [
+      { role: "system", content: "You verify a research counterargument. Output only valid JSON." },
+      { role: "user", content: counterValidationPrompt(distillJson, JSON.stringify(counter, null, 1), sourceEvidence) },
+    ],
+  });
+  const raw = extractJsonLoose(response.text) as Record<string, unknown> | null;
+  const scores = raw?.scores && typeof raw.scores === "object" ? raw.scores as Record<string, unknown> : {};
+  const parsedScores = {
+    directOpposition: numberScore(scores.directOpposition),
+    internalConsistency: numberScore(scores.internalConsistency),
+    sourceTraceability: numberScore(scores.sourceTraceability),
+    groundingIntegrity: numberScore(scores.groundingIntegrity),
+    nonStrawman: numberScore(scores.nonStrawman),
+  };
+  const issues = Array.isArray(raw?.issues) ? raw.issues.filter((item): item is string => typeof item === "string").slice(0, 6) : ["Counter 검증 결과가 불완전합니다."];
+  const verified = raw?.status === "verified" && Object.values(parsedScores).every((score) => score >= 0.75);
+  return { status: verified ? "verified" : "unverified", result: { status: verified ? "verified" : "unverified", issues, scores: parsedScores }, costUsd: response.costUsd };
+}
+
+function numberScore(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
 }
 
 export async function verifyQueueItems(env: Env, d: DistillOutput, ids: string[]): Promise<void> {

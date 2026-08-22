@@ -87,6 +87,24 @@
 .budget-note { margin: 0; color: var(--color-muted); font-family: var(--font-mono); font-size: 10px; }
 .budget-note.is-warning { color: var(--color-warning); }
 .session-strip { display: flex; flex-wrap: wrap; gap: 6px; }
+.distill-primary-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: end; gap: 10px; }
+.toggle-control { display: inline-flex; align-items: center; gap: 7px; color: var(--color-muted); font-size: 10px; white-space: nowrap; }
+.toggle-control input { accent-color: var(--color-accent); }
+.deep-analysis-controls { display: flex; align-items: end; justify-content: end; gap: 8px; max-width: 760px; margin: 0 auto 10px; }
+.deep-analysis-controls label { display: grid; gap: 4px; color: var(--color-muted); font-size: 9px; }
+.deep-analysis-controls select { min-height: 34px; padding: 6px 9px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-surface); color: var(--color-ink); font: inherit; font-size: 11px; }
+.deep-analysis-controls button { min-height: 34px; }
+.distill-counter { padding-top: 24px; border-top: 2px solid var(--color-accent); }
+.distill-counter.is-unverified { border-top-color: var(--color-warning); }
+.counter-contrast { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 12px 0 18px; }
+.counter-contrast > div { display: grid; gap: 7px; padding: 14px; border: 1px solid var(--color-line); background: var(--color-soft); }
+.counter-contrast > div:last-child { border-color: var(--color-accent); background: var(--color-accent-soft); }
+.counter-contrast span { color: var(--color-muted); font-size: 10px; }
+.counter-contrast strong { font-size: 14px; line-height: 1.55; }
+.counter-axis, .counter-suggestion { display: grid; gap: 5px; padding: 12px 0; border-top: 1px solid var(--color-line); }
+.counter-axis strong, .counter-suggestion strong { font-size: 13px; line-height: 1.5; }
+.counter-axis p, .counter-suggestion p { margin: 0; color: var(--color-muted); font-size: 11px; line-height: 1.6; }
+.distill-warning { margin: 8px 0; padding: 10px 12px; border-left: 3px solid var(--color-warning); background: var(--color-warning-soft); color: var(--color-warning); font-size: 11px; line-height: 1.5; }
 .radar-periods { display: flex; flex-wrap: wrap; gap: 6px; }
 .radar-dashboard { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 32px; }
 .radar-narrative { min-width: 0; padding: 24px 0; }
@@ -227,6 +245,7 @@
 @media (max-width: 520px) { .radar-landscape__list { grid-template-columns: 1fr; } }
 @media (max-width: 760px) { .discovery-toolbar, .discovery-settings__grid { grid-template-columns: 1fr; display: grid; } }
 @media (max-width: 760px) { .distill-document-layout { display: block; } .document-outline { position: static; display: flex; overflow-x: auto; gap: 14px; border-right: 0; border-bottom: 1px solid var(--color-line); padding: 12px 0; } .document-outline p { display: none; } .document-outline a { white-space: nowrap; } .queue-card { display: grid; } }
+@media (max-width: 640px) { .deep-analysis-controls, .distill-primary-actions { align-items: stretch; justify-content: stretch; } .deep-analysis-controls { display: grid; grid-template-columns: 1fr; } .deep-analysis-controls select, .deep-analysis-controls button { width: 100%; } .counter-contrast { grid-template-columns: 1fr; } }
 @media (max-width: 960px) { .inbox-review-panel { top: auto; width: 100%; min-width: 0; height: min(78vh, 760px); padding: 54px 22px 28px; border-top: 1px solid var(--color-line); border-left: 0; box-shadow: 0 -14px 36px rgb(23 24 28 / 12%); transform: translateY(104%); } .inbox-review-panel.is-open { transform: translateY(0); } }
 @media (max-width: 760px) { .inbox-layout { display: block; } .inbox-list { margin-top: 24px; } }
 @media (max-width: 760px) { .inbox-toolbar, .inbox-review__heading, .inbox-review__block-heading { display: grid; align-items: start; } .inbox-filters { width: 100%; } .inbox-filters label, .inbox-filters select { width: 100%; } .inbox-review__columns { grid-template-columns: 1fr; } .inbox-review__original { width: fit-content; } }

@@ -109,7 +109,7 @@ export async function buildDistillContext(env: Env, params: RadarParams): Promis
 
     const analysis = await env.DB
       .prepare(
-        `SELECT payload_json FROM source_analysis WHERE source_id = ? ORDER BY created_at DESC LIMIT 1`
+        `SELECT payload_json FROM source_analysis WHERE source_id = ? AND analysis_type = 'basic' ORDER BY created_at DESC LIMIT 1`
       )
       .bind(id)
       .first<{ payload_json: string }>();

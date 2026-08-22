@@ -1,4 +1,7 @@
 import { Hono } from "hono";
+import { analyzeDeepSource } from "../analysis/deepAnalyze";
+import { parseDeepProfile, DEEP_PROFILES } from "../analysis/deepProfiles";
+import { monthSpendUsd } from "../lib/openai";
 
 const reservoir = new Hono<{ Bindings: Env }>();
 
@@ -101,7 +104,8 @@ reservoir.post("/retag-all", async (c) => {
     .prepare(
       `SELECT s.id, a.payload_json FROM sources s
        JOIN source_analysis a ON a.source_id = s.id
-       WHERE a.id IN (SELECT MAX(id) FROM source_analysis GROUP BY source_id)`
+       WHERE a.analysis_type = 'basic'
+         AND a.id IN (SELECT MAX(id) FROM source_analysis WHERE analysis_type = 'basic' GROUP BY source_id)`
     )
     .all<{ id: string; payload_json: string }>();
 
@@ -124,6 +128,33 @@ reservoir.post("/retag-all", async (c) => {
   return c.json({ retagged: stmts.length });
 });
 
+reservoir.post("/:sourceId/deep-analysis", async (c) => {
+  const sourceId = c.req.param("sourceId");
+  const body: { profile?: unknown } = await c.req.json<{ profile?: unknown }>().catch(() => ({} as { profile?: unknown }));
+  const profile = parseDeepProfile(body.profile);
+  const budget = parseFloat(c.env.MONTHLY_BUDGET_USD) || 10;
+  if ((await monthSpendUsd(c.env)) >= budget) return c.json({ error: "monthly_budget_exhausted" }, 429);
+  try {
+    const result = await analyzeDeepSource(c.env, sourceId, profile);
+    return c.json({ status: "completed", profile, profileLabel: DEEP_PROFILES[profile].label, ...result });
+  } catch (err) {
+    const message = (err as Error).message.slice(0, 200);
+    const status = message === "source_not_found" ? 404 : message === "deep_analysis_text_missing" ? 422 : 500;
+    return c.json({ error: message }, status);
+  }
+});
+
+reservoir.get("/:sourceId/deep-analysis/:analysisId", async (c) => {
+  const row = await c.env.DB.prepare(
+    `SELECT payload_json, model, prompt_version AS promptVersion, created_at AS createdAt
+     FROM source_analysis WHERE id = ? AND source_id = ? AND analysis_type = 'deep'`
+  ).bind(c.req.param("analysisId"), c.req.param("sourceId")).first<Record<string, unknown>>();
+  if (!row) return c.json({ error: "not_found" }, 404);
+  let analysis: unknown = null;
+  try { analysis = JSON.parse(String(row.payload_json)); } catch { return c.json({ error: "invalid_analysis" }, 500); }
+  return c.json({ analysis, meta: { model: row.model, promptVersion: row.promptVersion, createdAt: row.createdAt } });
+});
+
 reservoir.get("/:sourceId", async (c) => {
   const id = c.req.param("sourceId");
   const cycle = await researchCycleMeta(c.env.DB);
@@ -144,14 +175,22 @@ reservoir.get("/:sourceId", async (c) => {
     .first<Record<string, unknown>>();
   if (!src) return c.json({ error: "not_found" }, 404);
 
-  const [analysis, kws, qs, frags, versions, sigs] = await Promise.all([
+  const [analysis, deepAnalysis, deepHistory, kws, qs, frags, versions, sigs] = await Promise.all([
     c.env.DB
       .prepare(
         `SELECT payload_json, model, prompt_version, created_at FROM source_analysis
-         WHERE source_id = ? ORDER BY created_at DESC LIMIT 1`
+         WHERE source_id = ? AND analysis_type = 'basic' ORDER BY created_at DESC LIMIT 1`
       )
       .bind(id)
       .all<Record<string, unknown>>(),
+    c.env.DB.prepare(
+      `SELECT payload_json, model, prompt_version, created_at FROM source_analysis
+       WHERE source_id = ? AND analysis_type = 'deep' ORDER BY created_at DESC LIMIT 1`
+    ).bind(id).first<Record<string, unknown>>(),
+    c.env.DB.prepare(
+      `SELECT id, analysis_type AS analysisType, model, prompt_version AS promptVersion, cost_usd AS costUsd, created_at AS createdAt
+       FROM source_analysis WHERE source_id = ? AND analysis_type = 'deep' ORDER BY created_at DESC LIMIT 10`
+    ).bind(id).all<Record<string, unknown>>(),
     c.env.DB.prepare("SELECT keyword, weight FROM keywords WHERE source_id = ?").bind(id).all<{ keyword: string; weight: number }>(),
     c.env.DB.prepare("SELECT question, status FROM questions WHERE source_id = ?").bind(id).all<{ question: string; status: string }>(),
     c.env.DB.prepare("SELECT text FROM fragments WHERE source_id = ? LIMIT 10").bind(id).all<{ text: string }>(),
@@ -173,12 +212,24 @@ reservoir.get("/:sourceId", async (c) => {
     analysisPayload = null;
   }
 
+  let deepAnalysisPayload: unknown = null;
+  try {
+    if (typeof deepAnalysis?.payload_json === "string") deepAnalysisPayload = JSON.parse(deepAnalysis.payload_json);
+  } catch {
+    deepAnalysisPayload = null;
+  }
+
   return c.json({
     source: src,
     analysis: analysisPayload,
     analysisMeta: analysis.results?.[0]
       ? { model: analysis.results[0].model, promptVersion: analysis.results[0].prompt_version, createdAt: analysis.results[0].created_at }
       : null,
+    deepAnalysis: deepAnalysisPayload,
+    deepAnalysisMeta: deepAnalysis
+      ? { model: deepAnalysis.model, promptVersion: deepAnalysis.prompt_version, createdAt: deepAnalysis.created_at }
+      : null,
+    deepAnalysisHistory: deepHistory.results ?? [],
     keywords: kws.results ?? [],
     questions: qs.results ?? [],
     fragments: frags.results ?? [],

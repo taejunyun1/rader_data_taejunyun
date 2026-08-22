@@ -52,7 +52,7 @@ Research Radar는 사진작가 윤태준의 개인 연구 편집 도구다. 챗�
 | 영역 | 현재 상태 | 기준 |
 |---|---|---|
 | Ingestion/Reservoir | 텍스트·URL·MD·PDF·홈페이지 import, dedup, R2 원본 보존 | V0 필수 |
-| Analysis | Workers AI 분류·요약·키워드·질문·fragment·topic, indexed 처리 | V0 + 확장 |
+| Analysis | 기본 Workers AI 분류·요약·키워드·질문·fragment·topic + 사용자 요청 심층 정리(source_analysis deep) | V0 + 확장 |
 | Search | D1 키워드/메타 검색 + Vectorize semantic search | Semantic은 V1 확장 |
 | Distill | context selection, Distill/Critic/Counter, Re-distill, 비용 원장 | V0 필수 |
 | Reading Queue | OpenAlex 존재 검증과 verified 표시 | V0 필수 |
@@ -72,7 +72,7 @@ Discovery 후보는 제목과 초록·RSS 요약에 연구 기준어가 실제�
 - 발견과 저장소는 목록·읽기·판단을 한 작업공간에 배치한다. 후보의 실제 링크와 접근 상태를 함께 표시한다.
 - 저장소에서 `보관하기` 또는 `발전시키기`를 누른 자료는 다음 착즙 실행 전까지 `다음 리서치` 마크로 유지한다. 다음 착즙 컨텍스트에서 우선 포함하고, 이후에는 자동으로 다음 사이클 마크에서 빠진다. `관찰하기`·`제외하기`를 나중에 누르면 해당 마크를 해제한다.
 - 저장소 판단은 목록 배지와 상세 바텀시트의 현재 상태로 즉시 확인한다. `제외하기` 자료는 기본 목록에서 숨기되 삭제하지 않고 `제외됨` 필터에서 복구·판단 변경할 수 있으며, `관찰 중` 자료는 기본 목록에 남긴다.
-- 착즙은 문서 목차와 읽기 큐를 제공하며, OpenAlex 검증 전 큐 항목의 저장소 승격을 막는다.
+- 착즙은 문서 목차와 읽기 큐를 제공하며, OpenAlex 검증 전 큐 항목의 저장소 승격을 막는다. `반대 관점 포함`은 기본 켜짐이고 실행 전에 끌 수 있으며, 켜진 Counter는 정면 반대 명제와 정합성 검증 상태를 함께 표시한다.
 - 받은편지함은 메모·URL·파일을 원본 보존 우선으로 접수하고 처리 실패를 재시도 가능하게 표시한다.
 - 받은 자료는 `수신 경로(MANUAL/OBSIDIAN/DISCOVERY/HOMEPAGE)`와 `입력 형식(플레인 텍스트/마크다운/Obsidian/PDF/URL 등)`을 별도로 기록한다. 원본(R2), 추출문, 정규화문을 분리하고 품질 상태(`검수 전/분석 가능/검토 필요/읽을 텍스트 없음/처리 실패`)를 표시한다.
 - Inbox에서 자료를 선택하면 원본 열기, 정규화 품질 리포트, 버전 이력, 다시 추출·다시 정규화·다시 분석·버전 승격을 한 흐름으로 확인한다. 기존 자료는 백필 API를 최대 20건씩 실행해 정규화한다.
@@ -91,7 +91,7 @@ Discovery 후보는 제목과 초록·RSS 요약에 연구 기준어가 실제�
 
 - `sources`는 자료의 정체성·상태·출처를 가진다.
 - `source_versions`는 R2 object와 추출 텍스트의 버전 기록이다.
-- `source_analysis`는 `INTERPRETATION`, Distill/Radar 결과는 `SYNTHESIS` 성격으로 취급한다.
+- `source_analysis`는 `INTERPRETATION` 성격이며 기본 분석(`basic`)과 심층 정리(`deep`)를 분리한다. Distill/Radar 결과는 `SYNTHESIS` 성격으로 취급한다.
 - 자동 Discovery 후보는 사용자가 Keep하기 전 Reservoir 핵심 자료로 승격하지 않는다.
 - OpenAlex에서 검증되지 않은 Reading Queue 항목을 실존 자료처럼 표시하거나 Reservoir로 가져오지 않는다.
 - 중복이면 새 source를 만들지 않고 기존 source에 재수입 provenance를 기록한다.

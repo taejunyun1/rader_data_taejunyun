@@ -6,7 +6,7 @@ export interface OpenAiMessage {
 export interface OpenAiCallOptions {
   purpose: string;
   messages: OpenAiMessage[];
-  model?: "high" | "low";
+  model?: "high" | "low" | "deep";
   jsonMode?: boolean;
   maxOutputTokens?: number;
 }
@@ -30,7 +30,7 @@ const PRICE_PER_M_LOW = { input: 0.1, output: 0.4 };
 
 export async function callOpenAi(env: Env, opts: OpenAiCallOptions): Promise<OpenAiCallResult> {
   const tier = opts.model ?? "high";
-  const model = tier === "high" ? env.MODEL_HIGH : env.MODEL_LOW;
+  const model = tier === "high" ? env.MODEL_HIGH : tier === "deep" ? (env.MODEL_DEEP || env.MODEL_HIGH) : env.MODEL_LOW;
   const url = `${env.OPENAI_BASE_URL}/chat/completions`;
 
   const body: Record<string, unknown> = {
@@ -59,7 +59,7 @@ export async function callOpenAi(env: Env, opts: OpenAiCallOptions): Promise<Ope
 
   const data = (await res.json()) as ChatCompletionResponse;
   const text = data.choices?.[0]?.message?.content ?? "";
-  const price = tier === "high" ? PRICE_PER_M_HIGH : PRICE_PER_M_LOW;
+  const price = tier === "high" || tier === "deep" ? PRICE_PER_M_HIGH : PRICE_PER_M_LOW;
   const inputTokens = data.usage?.prompt_tokens ?? 0;
   const outputTokens = data.usage?.completion_tokens ?? 0;
   const costUsd = (inputTokens / 1e6) * price.input + (outputTokens / 1e6) * price.output;

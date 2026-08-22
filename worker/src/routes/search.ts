@@ -74,7 +74,7 @@ search.get("/", async (c) => {
   await addRows(
     `SELECT a.source_id, s.title, s.kind, s.reliability FROM source_analysis a
      JOIN sources s ON s.id = a.source_id
-     WHERE a.payload_json LIKE ? LIMIT 10`,
+     WHERE a.analysis_type = 'basic' AND a.payload_json LIKE ? LIMIT 10`,
     [like],
     "summary",
     25,

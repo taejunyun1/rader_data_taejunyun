@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import ReservoirView from "./ReservoirView";
 
-const sourceDetail = { source: { id: "source-1", title: "자료 A", authors: "저자", kind: "PAPER_ACADEMIC", reliability: "PRIMARY", origin: "upload", year: 2025, canonicalUrl: "https://example.com/paper", provenanceClass: "SOURCE", createdAt: "2026-08-21", markedForNextResearch: 1 }, analysis: { summary: "시스템이 정리한 내용", keywords: ["사진"], questions: ["어떻게 읽을까"], important_fragments: ["원문 문장"] }, keywords: [], questions: [], fragments: [], versions: [], signals: [] };
+const sourceDetail = { source: { id: "source-1", title: "자료 A", authors: "저자", kind: "PAPER_ACADEMIC", reliability: "PRIMARY", origin: "upload", year: 2025, canonicalUrl: "https://example.com/paper", provenanceClass: "SOURCE", createdAt: "2026-08-21", markedForNextResearch: 1 }, analysis: { summary: "시스템이 정리한 내용", keywords: ["사진"], questions: ["어떻게 읽을까"], important_fragments: ["원문 문장"] }, deepAnalysis: null, deepAnalysisHistory: [], keywords: [], questions: [], fragments: [], versions: [], signals: [] };
 
 beforeEach(() => {
   let requestedWatching = false;
@@ -30,6 +30,8 @@ describe("ReservoirView", () => {
     expect(screen.getByText("시스템 해석")).toBeInTheDocument();
     expect(screen.getByText("원문에서 추출한 문장")).toBeInTheDocument();
     expect(screen.getAllByText(/다음 리서치/).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "심층 정리하기" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "심층 정리 품질" })).toHaveValue("precision");
   });
 
   it("records a develop signal", async () => {
@@ -37,6 +39,14 @@ describe("ReservoirView", () => {
     await userEvent.click(await screen.findByRole("option", { name: /자료 A/ }));
     await userEvent.click(screen.getByRole("button", { name: "발전시키기" }));
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/signals", expect.objectContaining({ method: "POST", body: JSON.stringify({ sourceId: "source-1", action: "develop" }) })));
+  });
+
+  it("runs deep analysis with the selected quality profile", async () => {
+    render(<ReservoirView />);
+    await userEvent.click(await screen.findByRole("option", { name: /자료 A/ }));
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "심층 정리 품질" }), "maximum");
+    await userEvent.click(screen.getByRole("button", { name: "심층 정리하기" }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/reservoir/source-1/deep-analysis", expect.objectContaining({ method: "POST", body: JSON.stringify({ profile: "maximum" }) })));
   });
 
   it("replaces decision buttons with the current status badge", async () => {

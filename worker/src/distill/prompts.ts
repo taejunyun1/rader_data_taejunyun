@@ -21,11 +21,20 @@ export interface CriticOutput {
 }
 
 export interface CounterOutput {
+  dominant_claim?: string;
+  opposing_thesis?: string;
+  incompatibility?: string;
+  conditions?: string[];
   axes: { from: string; to: string; rationale: string }[];
   suggestions: {
     direction: string;
     grounding: { name: string; kind: string; note: string }[];
   }[];
+  validation?: {
+    status: "verified" | "corrected" | "unverified";
+    issues: string[];
+    scores?: { directOpposition: number; internalConsistency: number; sourceTraceability: number; groundingIntegrity: number; nonStrawman: number };
+  };
 }
 
 function paramLine(p: DistillContext["params"]): string {
@@ -126,21 +135,31 @@ Return strict JSON:
 Keep warnings to what a careful reader would actually flag. No praise. Write warnings and overall in Korean (proper nouns stay in original language).`;
 }
 
-export function counterPrompt(distillJson: string, counterStrength: number): string {
+export function counterPrompt(distillJson: string, counterStrength: number, sourceEvidence = "(source evidence unavailable)", repairFeedback = ""): string {
   return `You are Counter, the anti-confirmation-bias layer of Research Radar for a photographer-researcher. You dynamically construct the OPPOSITE pole of the current Distill edition's keywords and aesthetic orientation.
 
-Counter strength parameter = ${counterStrength.toFixed(2)} (0=mild counterpoint, 1=strong counter-aesthetic). Let this set how forcefully you invert.
+Counter strength parameter = ${counterStrength.toFixed(2)}. This controls how radical and unfamiliar the practical reversal is; it must not weaken the requirement for a genuine opposite thesis.
 
 METHOD (dynamic, not a fixed lookup):
-1. Read the edition's actual keywords and aesthetic tendencies.
-2. For each dominant axis, construct its genuine opposite IN CONTEXT (e.g. automation→manual action, network→specific place, synthetic→indexical, real-time→long duration, virtual→physical, data→object/print, non-human→human encounter — these are EXAMPLES of the method, not a menu to recite; find what fits THIS edition).
-3. Ground each counter-direction in real photographic/artistic practice: actual photographers, artists, working methods, media, or texts you are confident exist. NO invented names or works.
+1. State the edition's strongest claim or aesthetic tendency as 'dominant_claim'.
+2. Construct one 'opposing_thesis' that cannot be true at the same time as that claim. A weaker version, supplement, compromise, or topic change is not an opposition.
+3. Explain the exact incompatibility and the conditions under which the opposing thesis becomes more persuasive.
+4. Ground each counter-direction in real photographic/artistic practice: actual photographers, artists, working methods, media, or texts you are confident exist. NO invented names or works.
 
 THE DISTILL EDITION:
 ${distillJson}
 
+SOURCE EVIDENCE AVAILABLE TO THIS EDITION:
+${sourceEvidence}
+
+${repairFeedback ? `A previous draft failed verification. Repair it using these issues while keeping the opposition explicit:\n${repairFeedback}` : ""}
+
 Return strict JSON:
 {
+  "dominant_claim": "the strongest claim or aesthetic tendency in the edition",
+  "opposing_thesis": "a direct thesis that cannot coexist with the dominant claim",
+  "incompatibility": "why the two positions cannot both be the governing principle",
+  "conditions": ["conditions that make the opposing thesis more persuasive"],
   "axes": [{"from": "dominant tendency in the edition", "to": "its opposite pole", "rationale": "one sentence why this counters confirmation bias now"}],
   "suggestions": [
     {
@@ -151,6 +170,28 @@ Return strict JSON:
 }
 
 Rules: 2-4 axes. 1-2 suggestions only (the strongest). Every grounding item must be real. Write in Korean; keep artist/work/method names in original language.`;
+}
+
+export function counterValidationPrompt(distillJson: string, counterJson: string, sourceEvidence: string): string {
+  return `You are the verification layer for a research Counter proposal. Decide whether the Counter is a genuine, coherent opposite of the Distill edition, not a mild supplement or a strawman.
+
+DISTILL:
+${distillJson}
+
+COUNTER:
+${counterJson}
+
+SOURCE EVIDENCE:
+${sourceEvidence}
+
+Return strict JSON:
+{
+  "status": "verified" | "unverified",
+  "issues": ["specific issue, empty when sound"],
+  "scores": {"directOpposition": 0, "internalConsistency": 0, "sourceTraceability": 0, "groundingIntegrity": 0, "nonStrawman": 0}
+}
+
+Score each item 0-1. 'status' is verified only when every score is at least 0.75 and the opposing thesis truly cannot govern at the same time as the dominant claim. Do not reward a generic alternative or a more extreme version of the same idea. Keep the response in Korean.`;
 }
 
 export function extractJsonLoose(text: string): unknown {

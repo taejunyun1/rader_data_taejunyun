@@ -38,7 +38,7 @@ inbox.get("/", async (c) => {
             (SELECT COUNT(*) FROM source_versions v3 WHERE v3.source_id = s.id AND v3.review_status = 'PENDING_REVIEW') AS pendingVersionCount,
             (SELECT COALESCE(v4.normalized_text, v4.extracted_text) FROM source_versions v4 WHERE v4.id = s.active_version_id) AS activeText,
             (SELECT char_count FROM source_versions v5 WHERE v5.id = s.active_version_id) AS charCount,
-            CASE WHEN EXISTS (SELECT 1 FROM source_analysis aa WHERE aa.source_id = s.id AND aa.version_id = s.active_version_id) THEN 1 ELSE 0 END AS analysisFresh
+            CASE WHEN EXISTS (SELECT 1 FROM source_analysis aa WHERE aa.source_id = s.id AND aa.version_id = s.active_version_id AND aa.analysis_type = 'basic') THEN 1 ELSE 0 END AS analysisFresh
      FROM sources s LEFT JOIN processing_jobs j ON j.source_id = s.id
      WHERE ${clauses.join(" AND ")}
      ORDER BY s.created_at DESC LIMIT ?`
@@ -98,7 +98,7 @@ inbox.get("/:sourceId", async (c) => {
     versionCount: versions.results?.length ?? 0,
     pendingVersionCount: (versions.results ?? []).filter((v) => v.reviewStatus === "PENDING_REVIEW").length,
     analysisFresh: Boolean(
-      await c.env.DB.prepare("SELECT 1 FROM source_analysis WHERE source_id = ? AND version_id = ? LIMIT 1")
+      await c.env.DB.prepare("SELECT 1 FROM source_analysis WHERE source_id = ? AND version_id = ? AND analysis_type = 'basic' LIMIT 1")
         .bind(sourceId, source.activeVersionId ?? "")
         .first()
     ),

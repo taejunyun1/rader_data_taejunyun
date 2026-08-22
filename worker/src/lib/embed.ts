@@ -25,7 +25,7 @@ export async function ensureEmbedding(env: Env, sourceId: string): Promise<boole
   const rows = await env.DB
     .prepare(
       `SELECT COALESCE(v.normalized_text, v.extracted_text) AS extracted_text, s.title,
-              (SELECT payload_json FROM source_analysis a WHERE a.source_id = s.id ORDER BY a.created_at DESC LIMIT 1) AS analysis
+              (SELECT payload_json FROM source_analysis a WHERE a.source_id = s.id AND a.analysis_type = 'basic' ORDER BY a.created_at DESC LIMIT 1) AS analysis
        FROM sources s JOIN source_versions v ON v.id = s.active_version_id
        WHERE s.id = ?`
     )

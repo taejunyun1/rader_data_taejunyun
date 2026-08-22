@@ -16,10 +16,11 @@ distill.get("/budget", async (c) => {
 });
 
 distill.post("/run", async (c) => {
-  const body = (await c.req.json<{ redistillOf?: string; keepElements?: string[]; promptVariant?: string }>().catch(() => ({}))) as {
+  const body = (await c.req.json<{ redistillOf?: string; keepElements?: string[]; promptVariant?: string; includeCounter?: boolean }>().catch(() => ({}))) as {
     redistillOf?: string;
     keepElements?: string[];
     promptVariant?: string;
+    includeCounter?: boolean;
   };
   const variant: PromptVariant | undefined = PROMPT_VARIANTS.includes(body.promptVariant as PromptVariant)
     ? (body.promptVariant as PromptVariant)
@@ -30,6 +31,7 @@ distill.post("/run", async (c) => {
       redistillOf: body.redistillOf,
       keepElements: body.keepElements,
       promptVariant: variant,
+      includeCounter: body.includeCounter !== false,
     });
     if (!result.ok) return c.json(result, 429);
     c.executionCtx.waitUntil(
@@ -72,7 +74,7 @@ distill.post("/verify-queue/:id", async (c) => {
 
 distill.get("/sessions", async (c) => {
   const rows = await c.env.DB.prepare(
-    `SELECT id, redistill_of AS redistillOf, cost_usd AS costUsd, model_version AS modelVersion,
+    `SELECT id, redistill_of AS redistillOf, counter_enabled AS counterEnabled, cost_usd AS costUsd, model_version AS modelVersion,
             prompt_version AS promptVersion, created_at AS createdAt
      FROM distill_sessions ORDER BY created_at DESC LIMIT 30`
   ).all<Record<string, unknown>>();
@@ -84,7 +86,7 @@ distill.get("/sessions/:id", async (c) => {
   const row = await c.env.DB
     .prepare(
       `SELECT id, input_context_json, sources_used_json, output_json, critic_output_json, counter_output_json,
-              user_selection_json, redistill_of AS redistillOf, model_version AS modelVersion,
+              counter_enabled AS counterEnabled, user_selection_json, redistill_of AS redistillOf, model_version AS modelVersion,
               prompt_version AS promptVersion, cost_usd AS costUsd, created_at AS createdAt
        FROM distill_sessions WHERE id = ?`
     )
@@ -120,6 +122,7 @@ distill.get("/sessions/:id", async (c) => {
     session: {
       id: row.id,
       redistillOf: row.redistillOf,
+      counterEnabled: row.counterEnabled === 1 || row.counterEnabled === "1" || row.counterEnabled === true,
       modelVersion: row.modelVersion,
       promptVersion: row.promptVersion,
       costUsd: row.costUsd,
@@ -163,7 +166,7 @@ distill.post("/sessions/:id/select", async (c) => {
 distill.get("/sessions/:id/markdown", async (c) => {
   const id = c.req.param("id");
   const row = await c.env.DB
-    .prepare("SELECT output_json, critic_output_json, counter_output_json, created_at FROM distill_sessions WHERE id = ?")
+    .prepare("SELECT output_json, critic_output_json, counter_output_json, counter_enabled, created_at FROM distill_sessions WHERE id = ?")
     .bind(id)
     .first<Record<string, string | null>>();
   if (!row) return c.json({ error: "not_found" }, 404);
@@ -188,7 +191,7 @@ distill.get("/sessions/:id/markdown", async (c) => {
     small_experiment?: string;
   }>(row.output_json);
   const critic = parse<{ warnings?: { category: string; note: string }[]; overall?: string }>(row.critic_output_json);
-  const counter = parse<{ axes?: { from: string; to: string }[]; suggestions?: { direction: string; grounding?: { name: string; kind: string; note: string }[] }[] }>(row.counter_output_json);
+  const counter = parse<{ dominant_claim?: string; opposing_thesis?: string; axes?: { from: string; to: string }[]; suggestions?: { direction: string; grounding?: { name: string; kind: string; note: string }[] }[] }>(row.counter_output_json);
 
   const date = String(row.created_at ?? "").slice(0, 10);
   const lines: string[] = [`---`, `source: research-radar`, `session: ${id}`, `date: ${date}`, `---`, ``, `# Research Radar Distill — ${date}`, ``];
@@ -232,6 +235,8 @@ distill.get("/sessions/:id/markdown", async (c) => {
   }
   if (counter) {
     lines.push(`## Counter`, ``);
+    if (counter.dominant_claim) lines.push(`**현재 중심 주장**: ${counter.dominant_claim}`, ``);
+    if (counter.opposing_thesis) lines.push(`**정반대 명제**: ${counter.opposing_thesis}`, ``);
     for (const a of counter.axes ?? []) lines.push(`- ${a.from} → ${a.to}`);
     lines.push(``);
     for (const s of counter.suggestions ?? []) {

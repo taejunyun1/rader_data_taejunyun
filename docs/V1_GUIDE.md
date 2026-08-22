@@ -58,7 +58,7 @@ Discovery 탐색 ─────┘                              └─ Radar (�
 |------|--------|------|
 | 자료 추가 | INBOX — 노트/URL/MD/PDF | 즉시 저장+분석 |
 | 자료 평가 | RESERVOIR 상세 — KEEP/WATCH/DEVELOP/IGNORE | 관심 신호 기록(Develop>Keep>Select>View) |
-| 착즙 | DISTILL — Run Distill (~30-60초, 약 $0.015) | 키워드/생각/질문/읽을거리/갭/방향 + Critic/Counter 자동 |
+| 착즙 | DISTILL — Run Distill (~30-60초, 비용은 사용 모델·Counter 토글에 따라 변동) | 키워드/생각/질문/읽을거리/갭/방향 + Critic + 기본 켜짐 Counter |
 | 재착즙 | DISTILL — 요소 체크 후 Re-distill | 선택 요소 유지, 나머지 신선하게 |
 | 읽을거리 검증 | DISTILL — Verify via OpenAlex | 논문 실존 확인(책은 미검증 정상) |
 | 레이더 | RADAR — Run Radar synthesis | 주/월/년 리포트 + Bias watch |
@@ -138,9 +138,9 @@ INPUT → 식별 → dedup(DOI→canonical URL→title+author→SHA-256) → R2 
 
 ### Distill 파이프라인
 1. **Context Selection** (`distill/context.ts`): 최근 60일 모멘텀 키워드 + 미해결 질문 + 90일 내 Keep/Develop/Select 소스 + 키워드 매칭 소스. 최대 12소스/26k chars — **Reservoir 전체를 넣지 않음**(스펙 원칙)
-2. **Distill** (gpt-5-mini, JSON 모드): keywords 5-7 / thoughts 3-5 / questions ~3 / read_next 3-5 / gaps 1-3 / research+artwork directions ~2 / 소실험. 프로세스 파라미터(familiarity/divergence 등)가 프롬프트에 반영
+2. **Distill** (환경변수 모델, JSON 모드): keywords 5-7 / thoughts 3-5 / questions ~3 / read_next 3-5 / gaps 1-3 / research+artwork directions ~2 / 소실험. 프로세스 파라미터(familiarity/divergence 등)가 프롬프트에 반영
 3. **Critic** 자동: 8개 경고 카테고리 + 학술적 근거부족 ↔ 예술적 실행가능성 구분
-4. **Counter** 자동: 키워드/미학의 반대축 동적 생성(고정 lookup 아님), 실존 작가·기법으로만 근거, 강한 방향 1-2개만. counterStrength 파라미터가 강도 결정
+4. **Counter** 기본 켜짐: 토글이 켜진 착즙에서 키워드/미학의 정면 반대 명제를 동적 생성하고, 실존 작가·기법으로 근거를 보강한 뒤 정합성 검증. counterStrength는 반대 여부가 아니라 실행 방향의 급진성과 낯섦을 조절
 5. **세션 저장**: input_context/sources_used/output/critic/counter/모델+프롬프트 버전/비용 전부 기록
 6. **Reading Queue 검증** (waitUntil 백그라운드): OpenAlex 제목 유사도 매칭 → verified/openalex_id/링크
 - 잘린 JSON 복구 파서 내장(truncation 대응)
