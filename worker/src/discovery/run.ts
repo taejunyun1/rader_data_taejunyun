@@ -8,10 +8,16 @@ import {
   classifyDiscoveryAccess,
   isUsableDiscoveryQuery,
   normalizeDiscoveryTitle,
-  selectDiscoveryCandidates,
+  selectDiscoveryCandidatesByLane,
+  strengthFetchLimit,
+  strengthQueryLimit,
   type DiscoveryAccessStatus,
+  type DiscoveryLane,
+  type DiscoveryProfile,
+  type DiscoveryQuerySource,
   type SelectableDiscoveryCandidate,
 } from "@radar/shared/discovery";
+import { loadDiscoveryProfile } from "./profile";
 
 const MAX_CANDIDATES_PER_RUN = 8;
 const MAX_OPENALEX_CANDIDATES = 10;
@@ -23,6 +29,8 @@ interface PendingCandidate extends SelectableDiscoveryCandidate {
   year: number | null;
   abstract: string | null;
   query: string;
+  lane: DiscoveryLane;
+  querySource: DiscoveryQuerySource;
   url: string | null;
   accessStatus: DiscoveryAccessStatus;
 }
@@ -108,11 +116,21 @@ export async function setCustomQueries(db: D1Database, queries: string[]): Promi
   await saveListKV(db, DISCOVERY_QUERIES_KEY, queries, 4);
 }
 
-export async function runDiscovery(env: Env, divergence: number): Promise<DiscoveryRunResult> {
-  const keywords = await momentumKeywords(env.DB);
-  const extra = (await customQueries(env.DB)).filter(isUsableDiscoveryQuery);
+export async function runDiscovery(env: Env, input: number | { divergence: number; profile?: DiscoveryProfile }): Promise<DiscoveryRunResult> {
+  const divergence = typeof input === "number" ? input : input.divergence;
+  const profile = typeof input === "number" ? await loadDiscoveryProfile(env.DB) : input.profile ?? await loadDiscoveryProfile(env.DB);
+  const momentum = await momentumKeywords(env.DB, 4);
+  const legacy = (await customQueries(env.DB)).filter(isUsableDiscoveryQuery);
   const feeds = await customFeeds(env.DB);
-  const queries = [...new Set([...extra, ...keywords])].slice(0, 6);
+  const originalKeywords = [...profile.original.keywords, ...legacy, ...momentum].filter(isUsableDiscoveryQuery);
+  const originalQueries = [...new Set(originalKeywords)].slice(0, strengthQueryLimit(profile.original.strength));
+  const counterQueries = [...new Set(profile.counter.keywords)].filter(isUsableDiscoveryQuery).slice(0, strengthQueryLimit(profile.counter.strength));
+  if (originalQueries.length === 0 && counterQueries.length === 0) throw new Error("discovery_profile_empty");
+  const queryDescriptors = [
+    ...originalQueries.map((query, index) => ({ query, lane: "ORIGINAL" as const, querySource: index < profile.original.keywords.length ? "SAVED" as const : "MOMENTUM" as const })),
+    ...counterQueries.map((query, index) => ({ query, lane: "COUNTER" as const, querySource: index < profile.counter.keywords.length ? "SAVED" as const : "RECOMMENDED" as const })),
+  ];
+  const queries = queryDescriptors.map((item) => item.query);
 
   const existing = await env.DB
     .prepare(
@@ -176,9 +194,9 @@ export async function runDiscovery(env: Env, divergence: number): Promise<Discov
     pending.push(candidate);
   };
 
-  const openalexQueries = queries.length ? queries : ["photography"];
-  for (const q of openalexQueries) {
-    const works: OpenAlexWork[] = await searchWorks(q, 4);
+  for (const descriptor of queryDescriptors) {
+    const fetchLimit = strengthFetchLimit(descriptor.lane === "ORIGINAL" ? profile.original.strength : profile.counter.strength);
+    const works: OpenAlexWork[] = await searchWorks(descriptor.query, Math.min(fetchLimit || 1, 6));
     for (const w of works) {
       if (!w.id || !w.openAccessUrl) continue;
       const accessStatus: DiscoveryAccessStatus = "FREE_FULLTEXT";
@@ -193,7 +211,9 @@ export async function runDiscovery(env: Env, divergence: number): Promise<Discov
         abstract: w.abstract,
         score: assessment.score,
         keywordOverlap: Math.min(1, assessment.matchedTerms.length / 3),
-        query: q,
+        query: descriptor.query,
+        lane: descriptor.lane,
+        querySource: descriptor.querySource,
         url: w.openAccessUrl,
         accessStatus,
       });
@@ -201,11 +221,10 @@ export async function runDiscovery(env: Env, divergence: number): Promise<Discov
     if (pending.filter((candidate) => candidate.provider === "openalex").length >= MAX_OPENALEX_CANDIDATES) break;
   }
 
-  const arxivQueries = [...openalexQueries, ...keywords]
-    .filter((q) => /photograph|visual|image|사진|이미지/i.test(q))
-    .slice(0, 2);
-  for (const q of arxivQueries.length ? arxivQueries : ["photography"]) {
-    const works = await searchArxiv(q, 4);
+  const arxivQueries = queryDescriptors.filter((item) => /photograph|visual|image|사진|이미지/i.test(item.query));
+  for (const descriptor of arxivQueries) {
+    const fetchLimit = strengthFetchLimit(descriptor.lane === "ORIGINAL" ? profile.original.strength : profile.counter.strength);
+    const works = await searchArxiv(descriptor.query, Math.min(fetchLimit || 1, 6));
     for (const w of works) {
       const assessment = assessDiscoveryCandidate({ provider: "arxiv", title: w.title, summary: w.abstract, year: w.year, categories: w.categories, accessStatus: "PDF" });
       if (!assessment.accepted) continue;
@@ -218,7 +237,9 @@ export async function runDiscovery(env: Env, divergence: number): Promise<Discov
         abstract: w.abstract,
         score: assessment.score,
         keywordOverlap: Math.min(1, assessment.matchedTerms.length / 3),
-        query: `arxiv:${q}`,
+        query: `arxiv:${descriptor.query}`,
+        lane: descriptor.lane,
+        querySource: descriptor.querySource,
         url: w.url,
         accessStatus: "PDF",
       });
@@ -242,13 +263,15 @@ export async function runDiscovery(env: Env, divergence: number): Promise<Discov
         score: assessment.score,
         keywordOverlap: Math.min(1, assessment.matchedTerms.length / 3),
         query: feedUrl.slice(0, 80),
+        lane: "ORIGINAL",
+        querySource: "FEED",
         url: item.url,
         accessStatus,
       });
     }
   }
 
-  const selected = selectDiscoveryCandidates(pending, divergence);
+  const selected = selectDiscoveryCandidatesByLane(pending, profile.original.strength, profile.counter.strength, divergence, MAX_CANDIDATES_PER_RUN);
   const selectedTitles = new Set(activeTitles);
   let collected = 0;
   for (const candidate of selected) {
@@ -259,8 +282,8 @@ export async function runDiscovery(env: Env, divergence: number): Promise<Discov
     stmts.push(
       env.DB
         .prepare(
-          `INSERT INTO discovery_candidates (id, openalex_id, title, authors, year, abstract, relevance_score, status, query_used, created_at, provider, external_url, access_status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'CANDIDATE', ?, ?, ?, ?, ?)`,
+          `INSERT INTO discovery_candidates (id, openalex_id, title, authors, year, abstract, relevance_score, status, query_used, created_at, provider, external_url, access_status, discovery_lane, query_source)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'CANDIDATE', ?, ?, ?, ?, ?, ?, ?)`,
         )
         .bind(
           uuid(),
@@ -275,6 +298,8 @@ export async function runDiscovery(env: Env, divergence: number): Promise<Discov
           candidate.provider,
           candidate.url,
           candidate.accessStatus,
+          candidate.lane,
+          candidate.querySource,
         ),
     );
     collected++;

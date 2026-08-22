@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import type { RadarPeriod, View } from "@radar/shared";
-import { runTask, useTasks } from "../lib/tasks";
 import { RADAR_SECTION_LABELS } from "../lib/labels";
 import { type RadarStats, visibleSynthesisSections } from "../lib/radarPresentation";
 import PageHeader from "../components/layout/PageHeader";
@@ -47,20 +46,35 @@ function normalizeSynthesis(value: unknown, period: RadarPeriod): Synthesis | nu
   };
 }
 
-export default function RadarView({ onNavigate }: { onNavigate: (view: View) => void }) {
+export default function RadarView({ onNavigate, focusPeriod, onFocusConsumed }: { onNavigate: (view: View) => void; focusPeriod?: RadarPeriod; onFocusConsumed?: () => void }) {
   const [period, setPeriod] = useState<RadarPeriod>("WEEKLY");
   const [stats, setStats] = useState<RadarStats | null>(null);
   const [synthesis, setSynthesis] = useState<Synthesis | null>(null);
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [topics, setTopics] = useState<{ topic: string; count: number }[]>([]);
   const [msg, setMsg] = useState("");
-  const tasks = useTasks();
-  const busy = tasks.some((task) => task.label === "레이더 생성" && task.status === "running");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!focusPeriod) return;
+    setPeriod(focusPeriod);
+    onFocusConsumed?.();
+  }, [focusPeriod, onFocusConsumed]);
 
   useEffect(() => { fetch(`/api/radar/stats?period=${period}`).then((response) => response.json() as Promise<{ stats?: RadarStats }>).then((data) => setStats(data.stats ?? null)).catch(() => setStats(null)); }, [period]);
   useEffect(() => { fetch("/api/reservoir/topics").then((response) => response.json() as Promise<{ topics?: { topic: string; count: number }[] }>).then((data) => setTopics(data.topics ?? [])).catch(() => undefined); fetch("/api/radar/snapshots").then((response) => response.json() as Promise<{ snapshots?: { period: RadarPeriod; synthesis: unknown }[] }>).then((data) => setSynthesis(normalizeSynthesis(data.snapshots?.find((snapshot) => snapshot.period === period && snapshot.synthesis)?.synthesis, period))).catch(() => setSynthesis(null)); fetch("/api/distill/sessions").then((response) => response.json() as Promise<{ sessions?: DistillSession[] }>).then(async (data) => { const latest = data.sessions?.[0]; if (!latest) return; const detail = await fetch(`/api/distill/sessions/${latest.id}`); if (!detail.ok) return; const result = await detail.json() as { readingQueue?: QueueItem[] }; setQueue((result.readingQueue ?? []).filter((item) => item.verified && item.sourceUrl).slice(0, 3)); }).catch(() => undefined); }, [period]);
 
-  async function runSynthesis() { await runTask("레이더 생성", async (setTaskMsg, setProgress) => { setTaskMsg("기간 서사를 정리하는 중"); setProgress(30); const response = await fetch("/api/radar/synthesize", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ period }) }); const data = await response.json() as unknown; if (!response.ok) { const error = data && typeof data === "object" && "error" in data ? String((data as { error?: unknown }).error) : "레이더 생성에 실패했습니다."; throw new Error(error); } setProgress(85); setSynthesis(normalizeSynthesis(data, period)); setMsg("새 레이더를 만들었습니다."); }); }
+  async function runSynthesis() {
+    setBusy(true);
+    try {
+      const response = await fetch("/api/radar/synthesize", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ period }) });
+      const data = await response.json() as { job?: unknown; reused?: boolean; error?: string };
+      if (!response.ok) throw new Error(data.error ?? "레이더 생성을 시작하지 못했습니다.");
+      setMsg(data.reused ? "이미 진행 중인 레이더 작업을 계속합니다." : "레이더 생성을 시작했습니다. 완료되면 상단 작업센터에서 결과를 확인할 수 있습니다.");
+    } catch (error) {
+      setMsg(error instanceof Error ? error.message : "레이더 생성을 시작하지 못했습니다.");
+    } finally { setBusy(false); }
+  }
 
   return <div className="view-stack"><PageHeader title="레이더" description="읽고 판단한 흔적에서 지금의 연구 방향을 확인합니다." primaryAction={<button className="ui-button" disabled={busy} onClick={() => void runSynthesis()}>{busy ? "정리 중…" : "레이더 새로 만들기"}</button>} />
     <div className="radar-periods">{PERIODS.map((item) => <button key={item.value} className={`filter-button${period === item.value ? " is-active" : ""}`} onClick={() => setPeriod(item.value)}>{item.label}</button>)}</div>{msg && <p className="reservoir-message" role="status">{msg}</p>}

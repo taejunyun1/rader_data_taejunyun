@@ -11,6 +11,7 @@ import settings from "./routes/settings";
 import signals from "./routes/signals";
 import syncRoute from "./routes/sync";
 import usageRoute from "./routes/usage";
+import jobsRoute from "./routes/jobs";
 import { syncHomepageReading } from "./homepage/reading";
 import { verifyAccessAssertion, extractAssertion, type AccessIdentity } from "./lib/access";
 
@@ -75,6 +76,7 @@ app.route("/api/settings", settings);
 app.route("/api/signals", signals);
 app.route("/api/sync", syncRoute);
 app.route("/api/usage", usageRoute);
+app.route("/api/jobs", jobsRoute);
 
 app.get("/api/debug/ai-check", async (c) => {
   const { callOpenAi } = await import("./lib/openai");
@@ -143,3 +145,5 @@ export default {
     }
   },
 };
+
+export { ResearchJobWorkflow } from "./workflows/researchJob";

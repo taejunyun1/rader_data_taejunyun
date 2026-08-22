@@ -1,7 +1,7 @@
 import { Hono } from "hono";
-import { loadParams } from "../lib/params";
-import { budgetPct, runDistill, verifyQueueItems } from "../distill/run";
+import { budgetPct, verifyQueueItems } from "../distill/run";
 import { PROMPT_VARIANTS, type DistillOutput, type PromptVariant } from "../distill/prompts";
+import { enqueueResearchJob } from "../jobs/enqueue";
 
 const distill = new Hono<{ Bindings: Env }>();
 
@@ -25,21 +25,15 @@ distill.post("/run", async (c) => {
   const variant: PromptVariant | undefined = PROMPT_VARIANTS.includes(body.promptVariant as PromptVariant)
     ? (body.promptVariant as PromptVariant)
     : undefined;
-  const params = await loadParams(c.env.DB);
   try {
-    const result = await runDistill(c.env, params, {
+    const requestedBy = c.req.header("CF-Access-Authenticated-User-Email") ?? "local";
+    const result = await enqueueResearchJob(c.env, { kind: "DISTILL_RUN", input: {
       redistillOf: body.redistillOf,
       keepElements: body.keepElements,
       promptVariant: variant,
       includeCounter: body.includeCounter !== false,
-    });
-    if (!result.ok) return c.json(result, 429);
-    c.executionCtx.waitUntil(
-      verifyQueueItems(c.env, result.distillOutput, result.queueItemIds).catch((e) =>
-        console.warn(JSON.stringify({ level: "warn", scope: "queue-verify", message: (e as Error).message }))
-      )
-    );
-    return c.json(result);
+    } }, requestedBy);
+    return c.json(result, 202);
   } catch (err) {
     const message = (err as Error).message.slice(0, 300);
     console.error(JSON.stringify({ level: "error", scope: "distill:run", message }));

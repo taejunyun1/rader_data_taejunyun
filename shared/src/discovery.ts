@@ -1,5 +1,72 @@
 export type DiscoveryProvider = "openalex" | "arxiv" | "rss" | "riss" | "unknown";
 
+export type DiscoveryLane = "ORIGINAL" | "COUNTER";
+export type DiscoveryQuerySource = "SAVED" | "RECOMMENDED" | "MOMENTUM" | "FEED";
+
+export interface DiscoveryLaneProfile {
+  keywords: string[];
+  strength: number;
+}
+
+export interface DiscoveryProfile {
+  original: DiscoveryLaneProfile;
+  counter: DiscoveryLaneProfile;
+  updatedAt: string;
+}
+
+export type DiscoveryRecommendationSource =
+  | "SAVED"
+  | "MOMENTUM"
+  | "DISTILL"
+  | "RESEARCH_GAP"
+  | "COUNTER"
+  | "UNDERREPRESENTED";
+
+export interface DiscoveryKeywordRecommendation {
+  keyword: string;
+  lane: DiscoveryLane;
+  source: DiscoveryRecommendationSource;
+  reason: string;
+  score: number;
+  selected: boolean;
+}
+
+export type ResearchJobKind =
+  | "DISCOVERY_RUN"
+  | "DISTILL_RUN"
+  | "RADAR_SYNTHESIS"
+  | "DEEP_ANALYSIS";
+
+export type ResearchJobStatus = "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "BLOCKED";
+
+export type ResearchJobResultRef =
+  | { view: "DISCOVER" }
+  | { view: "DISTILL"; sessionId: string }
+  | { view: "RADAR"; period: "WEEKLY" | "MONTHLY" | "YEARLY"; snapshotId?: string }
+  | { view: "RESERVOIR"; sourceId: string; analysisId: string };
+
+export interface ResearchJob {
+  id: string;
+  workflowInstanceId: string | null;
+  kind: ResearchJobKind;
+  status: ResearchJobStatus;
+  progress: number;
+  message: string | null;
+  input: unknown;
+  result: unknown;
+  resultRef: ResearchJobResultRef | null;
+  errorCode: string | null;
+  error: string | null;
+  retryOf: string | null;
+  requestedBy: string | null;
+  dedupeKey: string;
+  dismissedAt: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  updatedAt: string;
+}
+
 export type DiscoveryAccessStatus = "FREE_FULLTEXT" | "PDF" | "INSTITUTION" | "PAYWALLED" | "UNKNOWN";
 
 export interface DiscoveryAssessmentInput {
@@ -178,6 +245,62 @@ export function isUsableDiscoveryQuery(query: string): boolean {
   return Boolean(normalized) && !GENERIC_QUERY_SEEDS.has(normalized);
 }
 
+export function normalizeDiscoveryKeywords(value: unknown, max = 4): string[] {
+  if (!Array.isArray(value)) return [];
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const keyword = item.trim().replace(/\s+/g, " ");
+    const key = normalizeDiscoveryTitle(keyword);
+    if (!keyword || !isUsableDiscoveryQuery(keyword) || seen.has(key)) continue;
+    seen.add(key);
+    result.push(keyword.slice(0, 120));
+    if (result.length >= max) break;
+  }
+  return result;
+}
+
+export function normalizeDiscoveryProfile(value: unknown, updatedAt = new Date().toISOString()): DiscoveryProfile {
+  const raw = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const lane = (key: "original" | "counter", defaultStrength: number): DiscoveryLaneProfile => {
+    const rawLane = raw[key] && typeof raw[key] === "object" ? raw[key] as Record<string, unknown> : {};
+    const parsedStrength = typeof rawLane.strength === "number" ? rawLane.strength : Number(rawLane.strength);
+    return {
+      keywords: normalizeDiscoveryKeywords(rawLane.keywords),
+      strength: Number.isFinite(parsedStrength) ? Math.max(0, Math.min(100, Math.round(parsedStrength))) : defaultStrength,
+    };
+  };
+  return { original: lane("original", 70), counter: lane("counter", 30), updatedAt };
+}
+
+export function strengthQueryLimit(strength: number): number {
+  if (strength <= 0) return 0;
+  if (strength < 40) return 1;
+  if (strength < 70) return 2;
+  return 4;
+}
+
+export function strengthFetchLimit(strength: number): number {
+  if (strength <= 0) return 0;
+  if (strength < 40) return 2;
+  if (strength < 70) return 4;
+  return 6;
+}
+
+export function allocateDiscoveryLaneQuotas(originalStrength: number, counterStrength: number, total = 8): Record<DiscoveryLane, number> {
+  const original = Math.max(0, Math.min(100, originalStrength));
+  const counter = Math.max(0, Math.min(100, counterStrength));
+  const sum = original + counter;
+  if (total <= 0 || sum <= 0) return { ORIGINAL: 0, COUNTER: 0 };
+  if (original <= 0) return { ORIGINAL: 0, COUNTER: total };
+  if (counter <= 0) return { ORIGINAL: total, COUNTER: 0 };
+
+  let originalQuota = Math.round(total * original / sum);
+  originalQuota = Math.max(1, Math.min(total - 1, originalQuota));
+  return { ORIGINAL: originalQuota, COUNTER: total - originalQuota };
+}
+
 function matches(text: string, terms: string[]): string[] {
   return terms.filter((term) => {
     if (term === "ai") return /\bai\b/i.test(text);
@@ -258,6 +381,11 @@ export interface SelectableDiscoveryCandidate {
   keywordOverlap?: number;
 }
 
+export interface LaneSelectableDiscoveryCandidate extends SelectableDiscoveryCandidate {
+  lane: DiscoveryLane;
+  querySource: DiscoveryQuerySource;
+}
+
 const DISCOVERY_PROVIDER_QUOTAS: Record<string, number> = {
   openalex: 4,
   arxiv: 2,
@@ -286,5 +414,53 @@ export function selectDiscoveryCandidates<T extends SelectableDiscoveryCandidate
     selected.push(candidate);
   }
 
+  return selected;
+}
+
+export function selectDiscoveryCandidatesByLane<T extends LaneSelectableDiscoveryCandidate>(
+  candidates: T[],
+  originalStrength: number,
+  counterStrength: number,
+  divergence = 0,
+  total = 8,
+): T[] {
+  const quotas = allocateDiscoveryLaneQuotas(originalStrength, counterStrength, total);
+  const ranked = [...candidates].sort((a, b) => {
+    const scoreA = a.score + divergence * 0.05 * (1 - Math.min(1, Math.max(0, a.keywordOverlap ?? 0)));
+    const scoreB = b.score + divergence * 0.05 * (1 - Math.min(1, Math.max(0, b.keywordOverlap ?? 0)));
+    return scoreB - scoreA;
+  });
+  const selected: T[] = [];
+  const selectedIds = new Set<string>();
+  const seenTitles = new Set<string>();
+  const providerCounts = new Map<string, number>();
+
+  const take = (lane: DiscoveryLane, limit: number) => {
+    for (const candidate of ranked) {
+      if (selected.length >= total || selected.filter((item) => item.lane === lane).length >= limit) break;
+      if (candidate.lane !== lane || selectedIds.has(candidate.externalId)) continue;
+      const title = normalizeDiscoveryTitle(candidate.title);
+      if (!title || seenTitles.has(title)) continue;
+      const count = providerCounts.get(candidate.provider) ?? 0;
+      if (count >= (DISCOVERY_PROVIDER_QUOTAS[candidate.provider] ?? 8)) continue;
+      selectedIds.add(candidate.externalId);
+      seenTitles.add(title);
+      providerCounts.set(candidate.provider, count + 1);
+      selected.push(candidate);
+    }
+  };
+
+  take("ORIGINAL", quotas.ORIGINAL);
+  take("COUNTER", quotas.COUNTER);
+  for (const candidate of ranked) {
+    if (selected.length >= total) break;
+    const title = normalizeDiscoveryTitle(candidate.title);
+    const count = providerCounts.get(candidate.provider) ?? 0;
+    if (selectedIds.has(candidate.externalId) || !title || seenTitles.has(title) || count >= (DISCOVERY_PROVIDER_QUOTAS[candidate.provider] ?? 8)) continue;
+    selectedIds.add(candidate.externalId);
+    seenTitles.add(title);
+    providerCounts.set(candidate.provider, count + 1);
+    selected.push(candidate);
+  }
   return selected;
 }

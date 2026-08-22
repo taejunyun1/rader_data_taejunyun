@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from "react";
-import { runTask, useTasks } from "../lib/tasks";
 import PageHeader from "../components/layout/PageHeader";
 import StatusMessage from "../components/ui/StatusMessage";
 import DocumentOutline from "../components/distill/DocumentOutline";
@@ -17,7 +16,7 @@ interface Budget { usedPct: number; budgetUsd: number; blocked: boolean; warn: b
 const SECTIONS = [{ id: "keywords", label: "키워드" }, { id: "thoughts", label: "생각의 조각" }, { id: "questions", label: "질문" }, { id: "reading-queue", label: "다음 읽기" }, { id: "research-gaps", label: "연구 공백" }, { id: "directions", label: "연구 방향" }, { id: "artwork", label: "작업 방향" }, { id: "experiment", label: "작은 실험" }];
 const KEEP_OPTIONS = [{ id: "keywords", label: "키워드" }, { id: "thoughts_fragments", label: "생각의 조각" }, { id: "questions", label: "질문" }, { id: "read_next", label: "다음 읽기" }, { id: "research_gaps", label: "연구 공백" }, { id: "research_directions", label: "연구 방향" }, { id: "artwork_directions", label: "작업 방향" }, { id: "small_experiment", label: "작은 실험" }];
 
-export default function DistillView() {
+export default function DistillView({ focusSessionId, onFocusConsumed }: { focusSessionId?: string; onFocusConsumed?: () => void }) {
   const [data, setData] = useState<SessionData | null>(null);
   const [sessions, setSessions] = useState<SessionListItem[]>([]);
   const [budget, setBudget] = useState<Budget | null>(null);
@@ -25,18 +24,24 @@ export default function DistillView() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [includeCounter, setIncludeCounter] = useState(true);
-  const tasks = useTasks();
-  const distillBusy = busy || tasks.some((task) => (task.label === "착즙" || task.label === "다시 착즙") && task.status === "running");
-  const runningTaskMsg = tasks.find((task) => (task.label === "착즙" || task.label === "다시 착즙") && task.status === "running")?.message;
+  const distillBusy = busy;
 
   async function openSession(id: string) { const response = await fetch(`/api/distill/sessions/${id}`); if (response.ok) { const next = await response.json() as SessionData; setData(next); setIncludeCounter(next.session.counterEnabled ?? true); } }
-  const loadSessions = useCallback(async () => { const response = await fetch("/api/distill/sessions"); if (!response.ok) return; const result = await response.json() as { sessions?: SessionListItem[] }; const next = result.sessions ?? []; setSessions(next); if (next[0]) await openSession(next[0].id); }, []);
+  const loadSessions = useCallback(async () => { const response = await fetch("/api/distill/sessions"); if (!response.ok) return; const result = await response.json() as { sessions?: SessionListItem[] }; const next = result.sessions ?? []; setSessions(next); const focus = focusSessionId && next.some((session) => session.id === focusSessionId) ? focusSessionId : next[0]?.id; if (focus) { await openSession(focus); if (focusSessionId === focus) onFocusConsumed?.(); } }, [focusSessionId, onFocusConsumed]);
   useEffect(() => { void loadSessions(); fetch("/api/distill/budget").then((response) => response.json() as Promise<Budget>).then(setBudget).catch(() => setBudget(null)); }, [loadSessions]);
 
   async function runDistill(redistillOf?: string) {
     if (budget?.blocked) { setMsg("이번 달 AI 사용량 한도에 도달해 착즙을 실행할 수 없습니다."); return; }
     setBusy(true);
-    try { await runTask(redistillOf ? "다시 착즙" : "착즙", async (setTaskMsg, setProgress) => { setTaskMsg("읽기 맥락을 정리하는 중"); setProgress(20); const body = redistillOf ? { redistillOf, keepElements: kept, includeCounter } : { includeCounter }; const response = await fetch("/api/distill/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); const result = await response.json() as { sessionId?: string; error?: string }; if (!response.ok || !result.sessionId) throw new Error(result.error ?? "착즙 실행에 실패했습니다."); setProgress(75); setKept([]); await openSession(result.sessionId); await loadSessions(); setTaskMsg("착즙 완료"); setMsg("새 착즙 결과를 준비했습니다."); fetch("/api/distill/budget").then((item) => item.json() as Promise<Budget>).then(setBudget).catch(() => undefined); }); } catch (error) { setMsg(error instanceof Error ? error.message : "착즙에 실패했습니다."); } finally { setBusy(false); }
+    try {
+      const body = redistillOf ? { redistillOf, keepElements: kept, includeCounter } : { includeCounter };
+      const response = await fetch("/api/distill/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const result = await response.json() as { job?: unknown; reused?: boolean; error?: string };
+      if (!response.ok) throw new Error(result.error ?? "착즙 실행을 시작하지 못했습니다.");
+      setKept([]);
+      setMsg(result.reused ? "이미 진행 중인 착즙 작업을 계속합니다." : "착즙을 시작했습니다. 완료되면 상단 작업센터에서 결과를 확인할 수 있습니다.");
+      fetch("/api/distill/budget").then((item) => item.json() as Promise<Budget>).then(setBudget).catch(() => undefined);
+    } catch (error) { setMsg(error instanceof Error ? error.message : "착즙을 시작하지 못했습니다."); } finally { setBusy(false); }
   }
 
   async function verifyQueue() { if (!data) return; setMsg("다음 읽기 후보를 확인하는 중입니다."); const response = await fetch(`/api/distill/verify-queue/${data.session.id}`, { method: "POST" }); const result = await response.json() as { verified?: number; total?: number }; setMsg(`${result.verified ?? 0}/${result.total ?? 0}개 후보를 확인했습니다.`); await openSession(data.session.id); }
@@ -49,7 +54,7 @@ export default function DistillView() {
   return <div className="view-stack">
     <PageHeader title="착즙" description="보존한 자료에서 다음 읽기와 연구 방향을 편집합니다." primaryAction={<div className="distill-primary-actions"><label className="toggle-control"><input type="checkbox" role="switch" checked={includeCounter} onChange={(event) => setIncludeCounter(event.target.checked)} disabled={distillBusy} /><span>반대 관점 포함</span></label><button className="ui-button" disabled={distillBusy} onClick={() => void runDistill()}>{distillBusy ? "착즙 중…" : data ? "새로 착즙하기" : "첫 착즙 시작"}</button></div>} />
     {budget && <p className={`budget-note${budget.warn ? " is-warning" : ""}`}>AI 사용량 {budget.usedPct.toFixed(0)}% · 월 한도 ${budget.budgetUsd}{budget.blocked ? " · 한도 도달" : ""}</p>}
-    {runningTaskMsg && <p className="reservoir-message" role="status">{runningTaskMsg}</p>}{msg && <p className="reservoir-message" role="status">{msg}</p>}
+    {msg && <p className="reservoir-message" role="status">{msg}</p>}
     {sessions.length > 1 && <div className="session-strip" aria-label="착즙 기록">{sessions.slice(0, 6).map((session) => <button key={session.id} className="filter-button" onClick={() => void openSession(session.id)}>{new Date(session.createdAt).toLocaleDateString("ko-KR")} {session.redistillOf ? "↻" : ""}</button>)}</div>}
     {!data || !output ? <StatusMessage kind="empty" title="아직 착즙 결과가 없습니다" description="저장소의 자료를 바탕으로 첫 착즙을 시작하세요." /> : <div className="distill-document-layout"><DocumentOutline sections={[...outline, { id: "counter", label: "정면 반대 관점" }]} /><main className="distill-document"><p className="document-meta">생성 {new Date(data.session.createdAt).toLocaleString("ko-KR")} · 사용 모델 {data.session.modelVersion} · 비용 ${data.session.costUsd.toFixed(4)} · 자료 {data.session.sourcesUsed?.length ?? 0}개 · {data.session.counterEnabled === false ? "반대 관점 제외" : "반대 관점 포함"}</p>
       {output.keywords.length > 0 && <section id="keywords" className="distill-section"><p className="reading-section__label">키워드</p><div className="reading-keywords">{output.keywords.map((keyword) => <span key={keyword}>{keyword}</span>)}</div></section>}

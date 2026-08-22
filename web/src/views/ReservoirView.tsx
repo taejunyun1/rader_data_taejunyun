@@ -104,7 +104,7 @@ function toReadingDocument(detail: SourceDetail): ReadingDocument {
   };
 }
 
-export default function ReservoirView() {
+export default function ReservoirView({ focusSourceId, onFocusConsumed }: { focusSourceId?: string; onFocusConsumed?: () => void }) {
   const [items, setItems] = useState<ReservoirItem[]>([]);
   const [kindFilter, setKindFilter] = useState("");
   const [topicFilter, setTopicFilter] = useState("");
@@ -141,6 +141,11 @@ export default function ReservoirView() {
   }, [decisionFilter, kindFilter, topicFilter]);
 
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    if (!focusSourceId) return;
+    void openDetail(focusSourceId);
+    onFocusConsumed?.();
+  }, [focusSourceId, onFocusConsumed]);
   useEffect(() => {
     fetch("/api/reservoir/topics").then((r) => r.json() as Promise<{ topics?: { topic: string; count: number }[] }>).then((data) => setTopics(data.topics ?? [])).catch(() => setTopics([]));
   }, [items]);
@@ -210,15 +215,14 @@ export default function ReservoirView() {
   async function runDeepAnalysis() {
     if (!detail) return;
     setDeepPending(true);
-    setMsg("본문을 더 길게 읽고 다시 정리하는 중입니다.");
+    setMsg("심층 정리를 시작했습니다. 완료되면 상단 작업센터에서 결과를 확인할 수 있습니다.");
     try {
       const response = await fetch(`/api/reservoir/${String(detail.source.id)}/deep-analysis`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ profile: deepProfile }) });
-      const data = await response.json() as { error?: string };
-      if (!response.ok) throw new Error(data.error ?? "deep_analysis_failed");
-      setMsg("심층 정리를 완료했습니다.");
-      await openDetail(String(detail.source.id), false);
+      const data = await response.json() as { error?: string; reused?: boolean };
+      if (!response.ok) throw new Error(data.error ?? "심층 정리를 시작하지 못했습니다.");
+      setMsg(data.reused ? "이미 진행 중인 심층 정리를 계속합니다." : "심층 정리를 시작했습니다. 완료되면 상단 작업센터에서 결과를 확인할 수 있습니다.");
     } catch (error) {
-      setMsg(error instanceof Error && error.message === "monthly_budget_exhausted" ? "이번 달 AI 사용량 한도에 도달했습니다." : "심층 정리를 완료하지 못했습니다.");
+      setMsg(error instanceof Error && error.message === "monthly_budget_exhausted" ? "이번 달 AI 사용량 한도에 도달했습니다." : error instanceof Error ? error.message : "심층 정리를 시작하지 못했습니다.");
     } finally { setDeepPending(false); }
   }
 

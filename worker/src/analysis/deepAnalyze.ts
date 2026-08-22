@@ -3,7 +3,7 @@ import { callOpenAi } from "../lib/openai";
 import { chunkText, extractJson, deepChunkPrompt, deepSynthesisPrompt, keepVerbatimQuotes, type DeepAnalysisPayload, type DeepChunkResult, validateDeepPayload } from "./deepPrompt";
 import { modelTierForDeepStage, profileFor } from "./deepProfiles";
 
-export async function analyzeDeepSource(env: Env, sourceId: string, requestedProfile: unknown): Promise<{ payload: DeepAnalysisPayload; model: string; costUsd: number }> {
+export async function analyzeDeepSource(env: Env, sourceId: string, requestedProfile: unknown): Promise<{ analysisId: string; payload: DeepAnalysisPayload; model: string; costUsd: number }> {
   const profile = profileFor(requestedProfile);
   const row = await env.DB.prepare(
     `SELECT s.title, v.normalized_text, v.extracted_text
@@ -45,11 +45,12 @@ export async function analyzeDeepSource(env: Env, sourceId: string, requestedPro
   if (!raw) throw new Error("deep_analysis_invalid_output");
   const payload = keepVerbatimQuotes(raw, sourceText);
   const ts = new Date().toISOString();
+  const analysisId = uuid();
   await env.DB.prepare(
     `INSERT INTO source_analysis (id, source_id, version_id, analysis_type, provenance, model, prompt_version, payload_json, cost_usd, created_at)
      SELECT ?, ?, active_version_id, 'deep', 'INTERPRETATION', ?, 'deep-v1', ?, ?, ? FROM sources WHERE id = ?`
-  ).bind(uuid(), sourceId, synthesis.model, JSON.stringify(payload), chunkResults.reduce((sum, item) => sum + item.costUsd, 0) + synthesis.costUsd, ts, sourceId).run();
-  return { payload, model: synthesis.model, costUsd: chunkResults.reduce((sum, item) => sum + item.costUsd, 0) + synthesis.costUsd };
+  ).bind(analysisId, sourceId, synthesis.model, JSON.stringify(payload), chunkResults.reduce((sum, item) => sum + item.costUsd, 0) + synthesis.costUsd, ts, sourceId).run();
+  return { analysisId, payload, model: synthesis.model, costUsd: chunkResults.reduce((sum, item) => sum + item.costUsd, 0) + synthesis.costUsd };
 }
 
 function parseChunk(raw: unknown): DeepChunkResult | null {

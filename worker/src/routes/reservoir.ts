@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { analyzeDeepSource } from "../analysis/deepAnalyze";
 import { parseDeepProfile, DEEP_PROFILES } from "../analysis/deepProfiles";
 import { monthSpendUsd } from "../lib/openai";
+import { enqueueResearchJob } from "../jobs/enqueue";
 
 const reservoir = new Hono<{ Bindings: Env }>();
 
@@ -135,8 +136,9 @@ reservoir.post("/:sourceId/deep-analysis", async (c) => {
   const budget = parseFloat(c.env.MONTHLY_BUDGET_USD) || 10;
   if ((await monthSpendUsd(c.env)) >= budget) return c.json({ error: "monthly_budget_exhausted" }, 429);
   try {
-    const result = await analyzeDeepSource(c.env, sourceId, profile);
-    return c.json({ status: "completed", profile, profileLabel: DEEP_PROFILES[profile].label, ...result });
+    const requestedBy = c.req.header("CF-Access-Authenticated-User-Email") ?? "local";
+    const result = await enqueueResearchJob(c.env, { kind: "DEEP_ANALYSIS", input: { sourceId, profile } }, requestedBy);
+    return c.json(result, 202);
   } catch (err) {
     const message = (err as Error).message.slice(0, 200);
     const status = message === "source_not_found" ? 404 : message === "deep_analysis_text_missing" ? 422 : 500;

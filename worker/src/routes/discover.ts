@@ -5,6 +5,9 @@ import { createSource } from "../ingestion/store";
 import { searchWorks } from "../lib/openalex";
 import { DISCOVERY_SOURCE_PRESETS } from "@radar/shared";
 import { DISCOVERY_MIN_SCORE } from "@radar/shared/discovery";
+import { loadDiscoveryProfile, saveDiscoveryProfile } from "../discovery/profile";
+import { buildDiscoveryRecommendations } from "../discovery/recommendations";
+import { enqueueResearchJob } from "../jobs/enqueue";
 
 const discover = new Hono<{ Bindings: Env }>();
 
@@ -12,25 +15,45 @@ discover.get("/sources", (c) => c.json({ items: DISCOVERY_SOURCE_PRESETS }));
 
 discover.get("/candidates", async (c) => {
   const status = c.req.query("status") ?? "CANDIDATE";
+  const lane = c.req.query("lane");
+  const laneClause = lane === "ORIGINAL" || lane === "COUNTER" ? " AND discovery_lane = ?" : "";
   const query = status === "CANDIDATE"
     ? `SELECT id, openalex_id AS openalexId, title, authors, year, relevance_score AS relevanceScore,
-              status, query_used AS queryUsed, created_at AS createdAt, provider, external_url AS externalUrl, access_status AS accessStatus
+              status, query_used AS queryUsed, created_at AS createdAt, provider, external_url AS externalUrl, access_status AS accessStatus,
+              discovery_lane AS discoveryLane, query_source AS querySource
        FROM discovery_candidates
        WHERE status = ? AND relevance_score >= ${DISCOVERY_MIN_SCORE}
-         AND access_status IN ('PDF', 'FREE_FULLTEXT')
+         AND access_status IN ('PDF', 'FREE_FULLTEXT')${laneClause}
        ORDER BY relevance_score DESC, created_at DESC LIMIT 8`
     : `SELECT id, openalex_id AS openalexId, title, authors, year, relevance_score AS relevanceScore,
-              status, query_used AS queryUsed, created_at AS createdAt, provider, external_url AS externalUrl, access_status AS accessStatus
-       FROM discovery_candidates WHERE status = ? ORDER BY relevance_score DESC, created_at DESC LIMIT 50`;
-  const rows = await c.env.DB.prepare(query).bind(status).all<Record<string, unknown>>();
+              status, query_used AS queryUsed, created_at AS createdAt, provider, external_url AS externalUrl, access_status AS accessStatus,
+              discovery_lane AS discoveryLane, query_source AS querySource
+       FROM discovery_candidates WHERE status = ?${laneClause} ORDER BY relevance_score DESC, created_at DESC LIMIT 50`;
+  const rows = await c.env.DB.prepare(query).bind(...(laneClause ? [status, lane] : [status])).all<Record<string, unknown>>();
   return c.json({ items: rows.results ?? [] });
+});
+
+discover.get("/profile", async (c) => c.json({ profile: await loadDiscoveryProfile(c.env.DB) }));
+
+discover.put("/profile", async (c) => {
+  const body = await c.req.json<{ profile?: unknown }>().catch(() => null);
+  const value = body && typeof body === "object" && "profile" in body ? body.profile : body;
+  if (!value) return c.json({ error: "profile_required" }, 400);
+  return c.json({ profile: await saveDiscoveryProfile(c.env.DB, value) });
+});
+
+discover.get("/recommendations", async (c) => {
+  const profile = await loadDiscoveryProfile(c.env.DB);
+  return c.json({ recommendations: await buildDiscoveryRecommendations(c.env.DB, profile) });
 });
 
 discover.post("/run", async (c) => {
   const params = await loadParams(c.env.DB);
+  const profile = await loadDiscoveryProfile(c.env.DB);
+  const requestedBy = c.req.header("CF-Access-Authenticated-User-Email") ?? "local";
   try {
-    const result = await runDiscovery(c.env, params.divergence);
-    return c.json(result);
+    const result = await enqueueResearchJob(c.env, { kind: "DISCOVERY_RUN", input: { divergence: params.divergence, profile } }, requestedBy);
+    return c.json(result, 202);
   } catch (err) {
     const message = (err as Error).message.slice(0, 300);
     console.error(JSON.stringify({ level: "error", scope: "discover:run", message }));
