@@ -17,6 +17,8 @@ describe("InboxView", () => {
     expect(screen.getByRole("button", { name: "메모 보존하기" })).toBeDisabled();
     await userEvent.type(screen.getByPlaceholderText("읽은 문장이나 메모를 붙여 넣으세요"), "읽을 문장");
     expect(screen.getByRole("button", { name: "메모 보존하기" })).toBeEnabled();
+    await userEvent.click(screen.getByRole("button", { name: "메모 보존하기" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("메모를 보존했습니다");
   });
 
   it("separates capture formats so the file guidance is visible before upload", async () => {

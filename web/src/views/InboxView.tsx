@@ -25,6 +25,7 @@ export default function InboxView() {
   const [channelFilter, setChannelFilter] = useState("");
   const [qualityFilter, setQualityFilter] = useState("");
   const [msg, setMsg] = useState("");
+  const [toast, setToast] = useState("");
   const [busy, setBusy] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
@@ -76,6 +77,16 @@ export default function InboxView() {
   }
 
   useEffect(() => { void load(); }, [channelFilter, qualityFilter]);
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(""), 3200);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  function notify(message: string) {
+    setMsg(message);
+    setToast(message);
+  }
 
   async function post(path: string, body: unknown) {
     setBusy(true);
@@ -109,7 +120,7 @@ export default function InboxView() {
     if (!text.trim()) return;
     const data = await post("/text", { text, title: title || undefined });
     if (data) {
-      setMsg(data.duplicateOf ? "이미 저장된 자료와 연결했습니다." : `메모를 보존했습니다: ${String(data.title)}`);
+      notify(data.duplicateOf ? "이미 저장된 자료와 연결했습니다." : `메모를 보존했습니다: ${String(data.title)}`);
       setTitle("");
       setText("");
       await refresh(String(data.sourceId ?? ""));
@@ -120,7 +131,7 @@ export default function InboxView() {
     if (!url.trim()) return;
     const data = await post("/url", { url });
     if (data) {
-      setMsg(data.error ? `원문을 가져오지 못했지만 재시도할 수 있게 남겼습니다: ${String(data.error)}` : data.duplicateOf ? "이미 저장된 자료와 연결했습니다." : `원문을 보존했습니다: ${String(data.title)}`);
+      notify(data.error ? `원문을 가져오지 못했지만 재시도할 수 있게 남겼습니다: ${String(data.error)}` : data.duplicateOf ? "이미 저장된 자료와 연결했습니다." : `원문을 보존했습니다: ${String(data.title)}`);
       setUrl("");
       await refresh(String(data.sourceId ?? ""));
     }
@@ -133,7 +144,7 @@ export default function InboxView() {
       try {
         if (/\.(md|markdown|txt)$/i.test(file.name)) {
           const data = await post("/file", { filename: file.name, text: await file.text() });
-          if (data) setMsg(data.duplicateOf ? "이미 저장된 자료와 연결했습니다." : `${file.name}을 보존했습니다.`);
+          if (data) notify(data.duplicateOf ? "이미 저장된 자료와 연결했습니다." : `${file.name}을 보존했습니다.`);
         } else if (/\.pdf$/i.test(file.name)) {
           setMsg(`${file.name}에서 텍스트를 추출하는 중입니다.`);
           const extracted = await extractPdfText(file);
@@ -141,7 +152,7 @@ export default function InboxView() {
           if (file.size > 29_000_000) throw new Error("PDF는 29MB 이하만 받을 수 있습니다.");
           const [originalBase64, previewBase64] = await Promise.all([fileToBase64(file), renderPdfPreview(file)]);
           const data = await post("/file", { filename: file.name, text: hasText ? extracted.text : undefined, originalBase64, previewBase64, contentType: "application/pdf" });
-          if (data) setMsg(data.duplicateOf ? "이미 저장된 자료와 연결했습니다." : hasText ? `${file.name}의 텍스트와 작은 미리보기를 보존했습니다. (${extracted.pageCount}쪽)` : `${file.name}은 텍스트가 없는 PDF입니다. 작은 미리보기만 보존했습니다.`);
+          if (data) notify(data.duplicateOf ? "이미 저장된 자료와 연결했습니다." : hasText ? `${file.name}의 텍스트와 작은 미리보기를 보존했습니다. (${extracted.pageCount}쪽)` : `${file.name}은 텍스트가 없는 PDF입니다. 작은 미리보기만 보존했습니다.`);
         } else {
           setMsg(`${file.name}: 지원하지 않는 파일 형식입니다.`);
         }
@@ -157,12 +168,13 @@ export default function InboxView() {
     if (!selectedId) return;
     const data = await post(path, {});
     if (data) {
-      setMsg(success);
+      notify(success);
       await refresh(selectedId);
     }
   }
 
   return <div className="view-stack">
+    {toast && <div className="inbox-toast" role="alert">{toast}</div>}
     <PageHeader title="받은 자료" description="메모, 링크, 파일을 형식별로 받고 원본·추출문·정규화문을 따로 검수합니다." />
     <div className="inbox-toolbar">
       <div><p className="reading-section__label">수신 자료 검수</p><strong>읽기 전에 자료의 상태를 확인하세요</strong></div>
