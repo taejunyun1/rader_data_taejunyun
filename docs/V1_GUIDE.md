@@ -166,7 +166,7 @@ INPUT → 식별 → dedup(DOI→canonical URL→title+author→SHA-256) → R2 
 - **원장**: ai_usage 테이블에 호출별 토큰·비용 기록(게이트웨이 경유 전 호출)
 - **월 $10 guardrail**: 80% 경고/100% Distill 차단(DISTILL 탭 배지)
 - **2계층 모델**: Workers AI(무료할당)=분석/임베딩, OpenAI 기본 모델=초안·청크, OpenAI 상위 모델=통합·검증. 실측 비용은 선택 모델과 출력량에 따라 달라진다.
-- 모델명은 wrangler vars(MODEL_HIGH/MODEL_LOW)로 관리 — 하드코딩 없음
+- 모델명은 wrangler vars(MODEL_HIGH/MODEL_LOW/MODEL_DEEP/MODEL_CURATED_IDS_JSON)로 관리 — 하드코딩 없음. 설정 화면에는 `MODEL_CURATED_IDS_JSON`에 등록한 검증된 대표 모델만 표시한다.
 
 ### 모니터링
 - `wrangler tail` 실시간 로그(JSON 구조화), Workers Observability 활성

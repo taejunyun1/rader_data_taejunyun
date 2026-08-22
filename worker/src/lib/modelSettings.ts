@@ -1,4 +1,7 @@
 import type { AiModelRoles } from "@radar/shared";
+import { curatedModelIds, isCuratedModelId, isSelectableModelId, type CuratedModelConfig } from "./modelSelection";
+
+export { curatedModelIds, isCuratedModelId, isSelectableModelId } from "./modelSelection";
 
 export const MODEL_ROLES_KEY = "ai_model_roles_v1";
 
@@ -18,19 +21,11 @@ interface ModelPricing {
   output: number;
 }
 
-const EXCLUDED_MODEL_TERMS = ["audio", "embedding", "image", "moderation", "realtime", "search", "sora", "transcrib", "tts", "whisper"];
-
-export function isSelectableModelId(id: string): boolean {
-  const normalized = id.trim().toLowerCase();
-  if (!normalized || normalized.startsWith("ft:") || (!normalized.startsWith("gpt-") && !/^o\d/.test(normalized))) return false;
-  return !EXCLUDED_MODEL_TERMS.some((term) => normalized.includes(term));
-}
-
-export function parseSavedModelRoles(value: unknown, fallback: AiModelRoles): AiModelRoles {
+export function parseSavedModelRoles(value: unknown, fallback: AiModelRoles, env: CuratedModelConfig): AiModelRoles {
   if (!value || typeof value !== "object") return fallback;
   const candidate = value as Partial<AiModelRoles>;
   if (typeof candidate.baseModel !== "string" || typeof candidate.reviewModel !== "string") return fallback;
-  if (!isSelectableModelId(candidate.baseModel) || !isSelectableModelId(candidate.reviewModel)) return fallback;
+  if (!isCuratedModelId(env, candidate.baseModel) || !isCuratedModelId(env, candidate.reviewModel)) return fallback;
   return { baseModel: candidate.baseModel, reviewModel: candidate.reviewModel };
 }
 
@@ -43,7 +38,7 @@ export async function loadModelRoles(db: D1Database, env: Env): Promise<AiModelR
   const row = await db.prepare("SELECT value FROM kv WHERE key = ?").bind(MODEL_ROLES_KEY).first<{ value: string }>();
   if (!row) return fallback;
   try {
-    return parseSavedModelRoles(JSON.parse(row.value), fallback);
+    return parseSavedModelRoles(JSON.parse(row.value), fallback, env);
   } catch {
     return fallback;
   }
@@ -66,7 +61,7 @@ export async function listAvailableModels(env: Env): Promise<AvailableModel[]> {
       const id = typeof item.id === "string" ? item.id : "";
       const created = typeof item.created === "number" ? item.created : 0;
       const shutdownDate = typeof item.shutdown_date === "string" ? item.shutdown_date : null;
-      if (!isSelectableModelId(id) || (shutdownDate && new Date(shutdownDate).getTime() <= now)) return [];
+      if (!isCuratedModelId(env, id) || (shutdownDate && new Date(shutdownDate).getTime() <= now)) return [];
       return [{ id, created, shutdownDate, pricingKnown: Boolean(modelPricing(env)[id]) }];
     })
     .sort((a, b) => b.created - a.created || a.id.localeCompare(b.id));

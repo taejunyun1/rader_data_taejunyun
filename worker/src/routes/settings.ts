@@ -5,7 +5,7 @@ import { analyzeSource } from "../analysis/analyze";
 import { createSource } from "../ingestion/store";
 import { PARAMS_KEY, loadParams } from "../lib/params";
 import { callOpenAi } from "../lib/openai";
-import { isSelectableModelId, listAvailableModels, loadModelRoles, saveModelRoles, type AvailableModel } from "../lib/modelSettings";
+import { isCuratedModelId, listAvailableModels, loadModelRoles, saveModelRoles, type AvailableModel } from "../lib/modelSettings";
 
 const settings = new Hono<{ Bindings: Env }>();
 
@@ -25,7 +25,7 @@ settings.get("/models", async (c) => {
 settings.post("/models/test", async (c) => {
   const body = await c.req.json<{ modelId?: string }>().catch(() => null);
   const modelId = typeof body?.modelId === "string" ? body.modelId.trim() : "";
-  if (!isSelectableModelId(modelId)) return c.json({ error: "invalid_model" }, 400);
+  if (!isCuratedModelId(c.env, modelId)) return c.json({ error: "invalid_model" }, 400);
 
   let models: AvailableModel[];
   try {
@@ -56,7 +56,7 @@ settings.put("/models", async (c) => {
   const body = await c.req.json<{ baseModel?: string; reviewModel?: string }>().catch(() => null);
   const baseModel = typeof body?.baseModel === "string" ? body.baseModel.trim() : "";
   const reviewModel = typeof body?.reviewModel === "string" ? body.reviewModel.trim() : "";
-  if (!isSelectableModelId(baseModel) || !isSelectableModelId(reviewModel)) return c.json({ error: "invalid_model" }, 400);
+  if (!isCuratedModelId(c.env, baseModel) || !isCuratedModelId(c.env, reviewModel)) return c.json({ error: "invalid_model" }, 400);
 
   let models: AvailableModel[];
   try {
