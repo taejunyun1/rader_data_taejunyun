@@ -27,11 +27,11 @@ export default function InboxView() {
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState("");
   const [title, setTitle] = useState("");
   const [text, setText] = useState("");
   const [url, setUrl] = useState("");
   const fileRef = useRef<HTMLInputElement | null>(null);
-  const reviewRef = useRef<HTMLDivElement | null>(null);
   const detailRequestRef = useRef(0);
 
   async function load() {
@@ -58,6 +58,7 @@ export default function InboxView() {
     setSelectedId(sourceId);
     setDetail(null);
     setDetailLoading(true);
+    setDetailError("");
     setMsg("자료를 여는 중입니다.");
     try {
       const response = await fetch(`/api/inbox/${sourceId}`);
@@ -65,15 +66,9 @@ export default function InboxView() {
       const nextDetail = await response.json() as InboxDetail;
       if (requestId !== detailRequestRef.current) return;
       setDetail(nextDetail);
-      requestAnimationFrame(() => {
-        if (requestId !== detailRequestRef.current) return;
-        const review = reviewRef.current;
-        if (review && typeof review.scrollIntoView === "function") {
-          review.scrollIntoView({ behavior: "smooth", block: "start" });
-        }
-      });
     } catch {
       if (requestId !== detailRequestRef.current) return;
+      setDetailError("검수 정보를 불러오지 못했습니다. 목록에서 다시 선택해 주세요.");
       setMsg("자료의 검수 정보를 불러오지 못했습니다.");
     } finally {
       if (requestId === detailRequestRef.current) setDetailLoading(false);
@@ -198,6 +193,7 @@ export default function InboxView() {
           <div className="inbox-format-guide"><strong>지원 형식</strong><span>마크다운·플레인 텍스트</span><span>텍스트 PDF·스캔 PDF</span><small>PDF 원본은 R2에 보존합니다. 스캔 PDF는 OCR 없이 검토 상태로 남깁니다.</small></div>
         </>}
       </section>
+      <div className="inbox-workspace">
       <section className="inbox-list" aria-label="최근 들어온 자료">
         <div className="inbox-list__heading"><div><p className="reading-section__label">처리 목록</p><h2>최근 들어온 자료</h2></div><span className="table-note">{items.length}개</span></div>
         {msg && <p className="reservoir-message" role="status">{msg}</p>}
@@ -205,7 +201,10 @@ export default function InboxView() {
           <div className="inbox-item__body"><span className={`status-dot status-dot--${item.status}`} /> <strong>{item.title}</strong><p>{STATUS_LABEL[item.status] ?? item.status} · {labelOf(INGEST_CHANNEL_LABELS, item.ingestChannel)} · {labelOf(INPUT_FORMAT_LABELS, item.inputFormat)} · {labelOf(QUALITY_STATUS_LABELS, item.qualityStatus)} · {item.createdAt?.slice(0, 10)}</p>{Boolean(item.pendingVersionCount) && <span className="inbox-item__review">검토 대기 {item.pendingVersionCount}개</span>}{item.error && <span className="inbox-item__error">{item.error.slice(0, 120)}</span>}</div><span className="inbox-item__chevron" aria-hidden="true">→</span>
         </button>)}</div>}
       </section>
+      <aside className="inbox-review-panel" aria-label="자료 검수" aria-busy={detailLoading}>
+        {detail ? <IngestionReviewPane detail={detail} busy={busy || detailLoading} onReextract={() => void runAction(`/${detail.item.sourceId}/reextract`, "원문을 다시 가져왔습니다.")} onRenormalize={() => void runAction(`/${detail.item.sourceId}/renormalize`, "정규화를 다시 실행했습니다.")} onAnalyze={() => void runAction(`/${detail.item.sourceId}/analyze`, "현재 버전을 다시 분석했습니다.")} onActivate={(versionId) => void runAction(`/${detail.item.sourceId}/versions/${versionId}/activate`, "선택한 버전을 현재 버전으로 바꿨습니다.")} onReject={(versionId) => void runAction(`/${detail.item.sourceId}/versions/${versionId}/reject`, "검토 대기 버전을 보류했습니다.")} /> : <div className="inbox-review-panel__state" aria-live="polite"><p className="reading-section__label">선택한 자료</p><strong>{detailLoading ? "자료를 여는 중입니다." : detailError ? "자료를 열지 못했습니다." : "자료를 선택하세요"}</strong><p>{detailLoading ? "원문·정규화문·버전 정보를 준비하고 있습니다." : detailError || "가운데 목록에서 자료를 고르면 이곳에서 바로 검수할 수 있습니다."}</p></div>}
+      </aside>
+      </div>
     </div>
-    {detail && <div ref={reviewRef}><IngestionReviewPane detail={detail} busy={busy || detailLoading} onReextract={() => void runAction(`/${detail.item.sourceId}/reextract`, "원문을 다시 가져왔습니다.")} onRenormalize={() => void runAction(`/${detail.item.sourceId}/renormalize`, "정규화를 다시 실행했습니다.")} onAnalyze={() => void runAction(`/${detail.item.sourceId}/analyze`, "현재 버전을 다시 분석했습니다.")} onActivate={(versionId) => void runAction(`/${detail.item.sourceId}/versions/${versionId}/activate`, "선택한 버전을 현재 버전으로 바꿨습니다.")} onReject={(versionId) => void runAction(`/${detail.item.sourceId}/versions/${versionId}/reject`, "검토 대기 버전을 보류했습니다.")} /></div>}
   </div>;
 }

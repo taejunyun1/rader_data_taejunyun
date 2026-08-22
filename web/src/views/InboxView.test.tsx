@@ -50,6 +50,7 @@ describe("InboxView", () => {
     await user.click(await screen.findByRole("button", { name: /검수할 메모/ }));
 
     expect(screen.getByRole("status")).toHaveTextContent("자료를 여는 중입니다.");
+    expect(screen.getByLabelText("자료 검수")).toHaveTextContent("자료를 여는 중입니다.");
 
     resolveDetail?.(new Response(JSON.stringify({
       item: {
