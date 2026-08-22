@@ -25,9 +25,9 @@ interface ChatCompletionResponse {
   error?: { message: string };
 }
 
-const PRICE_PER_M_HIGH = { input: 0.4, output: 1.6 };
+const PRICE_PER_M_HIGH = { input: 0.25, output: 2 };
 const PRICE_PER_M_LOW = { input: 0.1, output: 0.4 };
-const PRICE_PER_M_DEEP = { input: 5, output: 30 };
+const PRICE_PER_M_DEEP = { input: 0.75, output: 4.5 };
 
 export async function callOpenAi(env: Env, opts: OpenAiCallOptions): Promise<OpenAiCallResult> {
   const tier = opts.model ?? "high";

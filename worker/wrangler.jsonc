@@ -54,7 +54,7 @@
     "OPENAI_BASE_URL": "https://gateway.ai.cloudflare.com/v1/a58fbe3a0082c49f571d69d08c1227ab/research-radar/openai",
     "MODEL_HIGH": "gpt-5-mini",
     "MODEL_LOW": "gpt-5-nano",
-    "MODEL_DEEP": "gpt-5.6",
+    "MODEL_DEEP": "gpt-5.4-mini",
     "MONTHLY_BUDGET_USD": "10",
     "ACCESS_TEAM_DOMAIN": "taejunyun.cloudflareaccess.com",
     "ACCESS_AUD": "5a1f9d13af1d6650e347281d6448a8a36e58210a7c43a24f791a207901ac9e51"
