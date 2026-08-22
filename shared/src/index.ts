@@ -32,6 +32,8 @@ export type UserAction =
   | "develop"
   | "ignore";
 
+export * from "./ingestion";
+
 /** Actions that keep a source in the next research context until the next distill run. */
 export const NEXT_RESEARCH_MARK_ACTIONS = ["keep", "develop"] as const;
 
