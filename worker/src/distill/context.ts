@@ -10,6 +10,7 @@ export interface ContextSourceRef {
   fragments: string[];
   signals: string[];
   resurfaced?: boolean;
+  markedForNextResearch?: boolean;
 }
 
 export interface DistillContext {
@@ -24,6 +25,10 @@ const MAX_CONTEXT_CHARS = 26_000;
 
 export async function buildDistillContext(env: Env, params: RadarParams): Promise<DistillContext> {
   const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 3600 * 1000).toISOString();
+  const latestResearch = await env.DB
+    .prepare("SELECT created_at FROM distill_sessions ORDER BY created_at DESC LIMIT 1")
+    .first<{ created_at: string }>();
+  const markSince = latestResearch?.created_at ?? new Date(Date.now() - 90 * 24 * 3600 * 1000).toISOString();
 
   const kwRows = await env.DB.prepare(
     `SELECT keyword, COUNT(*) AS n FROM keywords
@@ -42,16 +47,21 @@ export async function buildDistillContext(env: Env, params: RadarParams): Promis
     .all<{ question: string }>();
 
   const signalSources = await env.DB.prepare(
-    `SELECT us.source_id AS id, GROUP_CONCAT(DISTINCT us.action) AS actions
+    `SELECT us.source_id AS id, us.action
      FROM user_signals us
-     WHERE us.action IN ('keep','develop','select') AND us.created_at >= ?
-     GROUP BY us.source_id
-     ORDER BY MAX(us.created_at) DESC LIMIT 8`
+     WHERE us.action IN ('keep','develop','select') AND us.created_at > ?
+       AND NOT EXISTS (
+         SELECT 1 FROM user_signals newer
+         WHERE newer.source_id = us.source_id
+           AND newer.action IN ('keep','develop','select','watch','ignore')
+           AND newer.created_at > ?
+       )
+     ORDER BY us.created_at DESC LIMIT 8`
   )
-    .bind(new Date(Date.now() - 90 * 24 * 3600 * 1000).toISOString())
-    .all<{ id: string; actions: string }>();
+    .bind(markSince, markSince)
+    .all<{ id: string; action: string }>();
 
-  const signalMap = new Map((signalSources.results ?? []).map((r) => [r.id, r.actions.split(",")]));
+  const signalMap = new Map((signalSources.results ?? []).map((r) => [r.id, [r.action]]));
 
   const keywordPattern = (kwRows.results ?? []).slice(0, 8).map((k) => `%${k.keyword}%`);
   let keywordMatches: { id: string }[] = [];
@@ -122,6 +132,7 @@ export async function buildDistillContext(env: Env, params: RadarParams): Promis
       summary: summary?.slice(0, 500) ?? null,
       fragments: frags.map((f) => f.slice(0, 200)),
       signals: signalMap.get(id) ?? [],
+      markedForNextResearch: signalMap.has(id) || undefined,
       resurfaced: isResurfaced || undefined,
     };
     const size = JSON.stringify(entry).length;

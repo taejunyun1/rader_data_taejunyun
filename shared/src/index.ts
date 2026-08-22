@@ -32,6 +32,13 @@ export type UserAction =
   | "develop"
   | "ignore";
 
+/** Actions that keep a source in the next research context until the next distill run. */
+export const NEXT_RESEARCH_MARK_ACTIONS = ["keep", "develop"] as const;
+
+export function isNextResearchMarkAction(action: string | null | undefined): boolean {
+  return action === "keep" || action === "develop";
+}
+
 export type ProcessingStatus =
   | "received"
   | "stored"

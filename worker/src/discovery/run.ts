@@ -3,10 +3,29 @@ import { searchArxiv } from "../lib/arxiv";
 import { fetchFeed } from "../lib/rss";
 import { uuid } from "../ingestion/ids";
 import { DEFAULT_DISCOVERY_FEEDS } from "@radar/shared";
+import {
+  assessDiscoveryCandidate,
+  classifyDiscoveryAccess,
+  isUsableDiscoveryQuery,
+  normalizeDiscoveryTitle,
+  selectDiscoveryCandidates,
+  type DiscoveryAccessStatus,
+  type SelectableDiscoveryCandidate,
+} from "@radar/shared/discovery";
 
-const MAX_CANDIDATES_PER_RUN = 20;
+const MAX_CANDIDATES_PER_RUN = 8;
+const MAX_OPENALEX_CANDIDATES = 10;
 const DISCOVERY_QUERIES_KEY = "discovery_queries_v1";
 const DISCOVERY_FEEDS_KEY = "discovery_feeds_v1";
+
+interface PendingCandidate extends SelectableDiscoveryCandidate {
+  authors: string | null;
+  year: number | null;
+  abstract: string | null;
+  query: string;
+  url: string | null;
+  accessStatus: DiscoveryAccessStatus;
+}
 
 export interface DiscoveryRunResult {
   collected: number;
@@ -35,7 +54,7 @@ export async function momentumKeywords(db: D1Database, limit = 4): Promise<strin
       if (kws.length >= limit) break;
     }
   }
-  return [...new Set(kws)].slice(0, limit);
+  return [...new Set(kws)].filter(isUsableDiscoveryQuery).slice(0, limit);
 }
 
 async function homepageKeywords(db: D1Database, limit: number): Promise<string[]> {
@@ -52,7 +71,7 @@ async function homepageKeywords(db: D1Database, limit: number): Promise<string[]
     )
     .bind(limit)
     .all<{ keyword: string }>();
-  return (rows.results ?? []).map((r) => r.keyword).filter(Boolean);
+  return (rows.results ?? []).map((r) => r.keyword).filter(Boolean).filter(isUsableDiscoveryQuery);
 }
 
 export async function customQueries(db: D1Database): Promise<string[]> {
@@ -91,69 +110,181 @@ export async function setCustomQueries(db: D1Database, queries: string[]): Promi
 
 export async function runDiscovery(env: Env, divergence: number): Promise<DiscoveryRunResult> {
   const keywords = await momentumKeywords(env.DB);
-  const extra = await customQueries(env.DB);
+  const extra = (await customQueries(env.DB)).filter(isUsableDiscoveryQuery);
   const feeds = await customFeeds(env.DB);
-  const queries = [...extra, ...keywords].slice(0, 6);
+  const queries = [...new Set([...extra, ...keywords])].slice(0, 6);
 
-  const existing = await env.DB.prepare("SELECT openalex_id FROM discovery_candidates WHERE openalex_id IS NOT NULL").all<{ openalex_id: string }>();
-  const seen = new Set(existing.results?.map((r) => r.openalex_id) ?? []);
+  const existing = await env.DB
+    .prepare(
+      `SELECT id, openalex_id, title, abstract, year, provider, external_url, access_status, status, relevance_score, created_at
+       FROM discovery_candidates
+       ORDER BY relevance_score DESC, created_at ASC`
+    )
+    .all<{
+      id: string;
+      openalex_id: string | null;
+      title: string;
+      abstract: string | null;
+      year: number | null;
+      provider: string;
+      external_url: string | null;
+      access_status: DiscoveryAccessStatus | null;
+      status: string;
+      relevance_score: number;
+      created_at: string;
+    }>();
+
+  const existingRows = existing.results ?? [];
+  const seenExternalIds = new Set(existingRows.map((row) => row.openalex_id ?? row.external_url ?? row.id));
+  const activeTitles = new Set(
+    existingRows
+      .filter((row) => row.status === "KEPT" || row.status === "WATCHED")
+      .map((row) => normalizeDiscoveryTitle(row.title))
+      .filter(Boolean),
+  );
 
   const ts = new Date().toISOString();
   const stmts: D1PreparedStatement[] = [];
-  let collected = 0;
+  const maintenance: D1PreparedStatement[] = [];
 
-  const push = (externalId: string, provider: string, title: string, authors: string | null, year: number | null, relevance: number, query: string, url: string | null) => {
-    if (collected >= MAX_CANDIDATES_PER_RUN || seen.has(externalId)) return;
-    seen.add(externalId);
-    stmts.push(
+  for (const candidate of existingRows) {
+    if (candidate.status !== "CANDIDATE") continue;
+    const accessStatus = classifyDiscoveryAccess(candidate.provider, candidate.external_url);
+    const assessment = assessDiscoveryCandidate({
+      provider: candidate.provider,
+      title: candidate.title,
+      summary: candidate.abstract,
+      year: candidate.year,
+      accessStatus,
+    });
+    const titleKey = normalizeDiscoveryTitle(candidate.title);
+    const duplicate = Boolean(titleKey && activeTitles.has(titleKey));
+    const nextStatus = assessment.accepted && !duplicate ? "CANDIDATE" : "IGNORED";
+    if (nextStatus === "CANDIDATE" && titleKey) activeTitles.add(titleKey);
+    maintenance.push(
       env.DB
-        .prepare(
-          `INSERT INTO discovery_candidates (id, openalex_id, title, authors, year, abstract, relevance_score, status, query_used, created_at, provider, external_url)
-           VALUES (?, ?, ?, ?, ?, NULL, ?, 'CANDIDATE', ?, ?, ?, ?)`
-        )
-        .bind(uuid(), externalId, title.slice(0, 300), authors, year, relevance, query, ts, provider, url)
+        .prepare("UPDATE discovery_candidates SET status = ?, relevance_score = ?, access_status = ? WHERE id = ?")
+        .bind(nextStatus, assessment.score, accessStatus, candidate.id),
     );
-    collected++;
-  };
-
-  const openalexBudget = Math.max(8, MAX_CANDIDATES_PER_RUN - (feeds.length ? 6 : 0) - 4);
-  const perQuery = Math.max(2, Math.round(openalexBudget / Math.max(queries.length, 1)));
-  for (const q of queries) {
-    const works: OpenAlexWork[] = await searchWorks(q, perQuery + 2);
-    for (const w of works) {
-      if (!w.id) continue;
-      push(w.id, "openalex", w.title, w.authors ?? null, w.year, scoreRelevance(w, keywords), q, w.openAccessUrl ?? w.doi ?? null);
-    }
-    if (collected >= openalexBudget) break;
   }
 
-  for (const q of keywords.slice(0, 2)) {
-    const works = await searchArxiv(q, 3);
+  const pending: PendingCandidate[] = [];
+  const pendingIds = new Set<string>();
+  const addPending = (candidate: PendingCandidate) => {
+    if (!candidate.externalId || seenExternalIds.has(candidate.externalId) || pendingIds.has(candidate.externalId)) return;
+    pendingIds.add(candidate.externalId);
+    pending.push(candidate);
+  };
+
+  const openalexQueries = queries.length ? queries : ["photography"];
+  for (const q of openalexQueries) {
+    const works: OpenAlexWork[] = await searchWorks(q, 4);
     for (const w of works) {
-      push(w.id, "arxiv", w.title, w.authors || null, w.year, 0.45, `arxiv:${q}`, w.url);
+      if (!w.id || !w.openAccessUrl) continue;
+      const accessStatus: DiscoveryAccessStatus = "FREE_FULLTEXT";
+      const assessment = assessDiscoveryCandidate({ provider: "openalex", title: w.title, summary: w.abstract, year: w.year, accessStatus });
+      if (!assessment.accepted) continue;
+      addPending({
+        externalId: w.id,
+        provider: "openalex",
+        title: w.title,
+        authors: w.authors ?? null,
+        year: w.year,
+        abstract: w.abstract,
+        score: assessment.score,
+        keywordOverlap: Math.min(1, assessment.matchedTerms.length / 3),
+        query: q,
+        url: w.openAccessUrl,
+        accessStatus,
+      });
+    }
+    if (pending.filter((candidate) => candidate.provider === "openalex").length >= MAX_OPENALEX_CANDIDATES) break;
+  }
+
+  const arxivQueries = [...openalexQueries, ...keywords]
+    .filter((q) => /photograph|visual|image|사진|이미지/i.test(q))
+    .slice(0, 2);
+  for (const q of arxivQueries.length ? arxivQueries : ["photography"]) {
+    const works = await searchArxiv(q, 4);
+    for (const w of works) {
+      const assessment = assessDiscoveryCandidate({ provider: "arxiv", title: w.title, summary: w.abstract, year: w.year, categories: w.categories, accessStatus: "PDF" });
+      if (!assessment.accepted) continue;
+      addPending({
+        externalId: w.id,
+        provider: "arxiv",
+        title: w.title,
+        authors: w.authors || null,
+        year: w.year,
+        abstract: w.abstract,
+        score: assessment.score,
+        keywordOverlap: Math.min(1, assessment.matchedTerms.length / 3),
+        query: `arxiv:${q}`,
+        url: w.url,
+        accessStatus: "PDF",
+      });
     }
   }
 
   for (const feedUrl of feeds) {
-    const items = await fetchFeed(feedUrl, 3);
+    const items = await fetchFeed(feedUrl, 8);
     for (const item of items) {
       if (!item.url) continue;
-      push(item.url, "rss", item.title, null, item.year, 0.35, feedUrl.slice(0, 80), item.url);
+      const accessStatus = classifyDiscoveryAccess("rss", item.url);
+      const assessment = assessDiscoveryCandidate({ provider: "rss", title: item.title, summary: item.summary, year: item.year, accessStatus });
+      if (!assessment.accepted) continue;
+      addPending({
+        externalId: item.url,
+        provider: "rss",
+        title: item.title,
+        authors: null,
+        year: item.year,
+        abstract: item.summary,
+        score: assessment.score,
+        keywordOverlap: Math.min(1, assessment.matchedTerms.length / 3),
+        query: feedUrl.slice(0, 80),
+        url: item.url,
+        accessStatus,
+      });
     }
   }
 
-  if (stmts.length) await env.DB.batch(stmts);
-  return { collected, keptExisting: seen.size, queries };
-}
-
-function scoreRelevance(w: OpenAlexWork, momentumKeywords: string[]): number {
-  let score = 0.15;
-  const title = w.title.toLowerCase();
-  for (const kw of momentumKeywords) {
-    if (kw.length >= 2 && title.includes(kw.toLowerCase())) score += 0.3;
+  const selected = selectDiscoveryCandidates(pending, divergence);
+  const selectedTitles = new Set(activeTitles);
+  let collected = 0;
+  for (const candidate of selected) {
+    const titleKey = normalizeDiscoveryTitle(candidate.title);
+    if (!titleKey || selectedTitles.has(titleKey)) continue;
+    selectedTitles.add(titleKey);
+    seenExternalIds.add(candidate.externalId);
+    stmts.push(
+      env.DB
+        .prepare(
+          `INSERT INTO discovery_candidates (id, openalex_id, title, authors, year, abstract, relevance_score, status, query_used, created_at, provider, external_url, access_status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'CANDIDATE', ?, ?, ?, ?, ?)`,
+        )
+        .bind(
+          uuid(),
+          candidate.externalId,
+          candidate.title.slice(0, 300),
+          candidate.authors,
+          candidate.year,
+          candidate.abstract?.slice(0, 4000) ?? null,
+          candidate.score,
+          candidate.query,
+          ts,
+          candidate.provider,
+          candidate.url,
+          candidate.accessStatus,
+        ),
+    );
+    collected++;
+    if (collected >= MAX_CANDIDATES_PER_RUN) break;
   }
-  if (w.citedByCount > 50) score += 0.1;
-  if (w.year && w.year >= new Date().getFullYear() - 5) score += 0.15;
-  if (w.openAccessUrl) score += 0.1;
-  return Math.min(score, 1);
+
+  if (maintenance.length || stmts.length) await env.DB.batch([...maintenance, ...stmts]);
+  return {
+    collected,
+    keptExisting: existingRows.filter((row) => row.status === "KEPT" || row.status === "WATCHED" || row.status === "CANDIDATE").length,
+    queries,
+  };
 }

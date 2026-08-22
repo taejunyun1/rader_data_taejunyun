@@ -25,6 +25,7 @@ interface Candidate {
   queryUsed: string | null;
   provider?: string;
   externalUrl?: string | null;
+  accessStatus?: "FREE_FULLTEXT" | "PDF" | "INSTITUTION" | "PAYWALLED" | "UNKNOWN" | null;
 }
 
 interface HomepageProject { slug: string; title: string; year: number | null; projectUrl: string; imageCount: number; videoCount: number; }
@@ -38,13 +39,13 @@ const STATUS_FILTERS = [
 
 const DISCOVERY_ACTIONS: DecisionAction[] = [
   { id: "develop", label: "발전시키기", description: "저장소에 보관하고 연구 방향에 반영" },
-  { id: "keep", label: "보관하기", description: "저장소에 남겨 다시 읽기" },
+  { id: "keep", label: "보관하기", description: "다음 리서치까지 표시해 두기" },
   { id: "watch", label: "관찰하기", description: "관련 흐름이 생길 때 다시 보기" },
   { id: "ignore", label: "제외하기", description: "추천 우선순위만 낮추기" },
 ];
 
 function candidateAccess(candidate: Candidate) {
-  return deriveSourceAccess({ provider: candidate.provider, href: candidate.externalUrl ?? candidate.openalexId });
+  return deriveSourceAccess({ provider: candidate.provider, href: candidate.externalUrl ?? candidate.openalexId, accessStatus: candidate.accessStatus ?? undefined });
 }
 
 function toIndexItem(candidate: Candidate): SourceIndexItem {
@@ -177,7 +178,7 @@ export default function DiscoverView({ onNavigate }: { onNavigate: (view: View) 
         <div className="filter-strip" aria-label="후보 상태 필터">
           {STATUS_FILTERS.map((filter) => <button key={filter.value} className={`filter-button${statusFilter === filter.value ? " is-active" : ""}`} onClick={() => setStatusFilter(filter.value)}>{filter.label}</button>)}
         </div>
-        <span className="table-note">{savedQueries.length ? `저장된 검색어 ${savedQueries.length}개` : "기본 검색어로 수집 중"} · 최대 20개/회</span>
+        <span className="table-note">{savedQueries.length ? `저장된 검색어 ${savedQueries.length}개` : "기본 검색어로 수집 중"} · 관련도 0.65 이상 · 무료 원문/PDF · 최대 8개/회</span>
       </div>
       {msg && <p className="reservoir-message" role="status">{msg}</p>}
       {listError ? <StatusMessage kind="error" title={listError} action={<button className="ui-button-secondary" onClick={() => void load()}>다시 시도</button>} /> : <SplitWorkspace

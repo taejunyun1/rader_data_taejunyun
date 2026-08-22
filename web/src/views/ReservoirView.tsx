@@ -26,6 +26,8 @@ interface ReservoirItem {
   topics: string | null;
   keywordCount: number;
   signalCount: number;
+  markedForNextResearch?: number | boolean;
+  decisionStatus?: "develop" | "keep" | "watch" | "ignore" | null;
 }
 
 interface SourceDetail {
@@ -40,14 +42,35 @@ interface SourceDetail {
 
 const KINDS = ["", "PERSONAL_WORK", "PERSONAL_TEXT", "PAPER_ACADEMIC", "BOOK_ARTICLE", "ARTIST_ARTWORK", "TECHNICAL", "WEB", "NOTE", "DISCOVERY"];
 const KIND_LABELS: Record<string, string> = { "": "전체 유형", ...SOURCE_KIND_LABELS };
+const DECISION_FILTERS = [
+  { value: "active", label: "활성 자료" },
+  { value: "marked", label: "다음 리서치" },
+  { value: "watching", label: "관찰 중" },
+  { value: "ignored", label: "제외됨" },
+  { value: "all", label: "전체 판단" },
+] as const;
 
 function safeTopics(value: string | null): string[] {
   if (!value) return [];
   try { return JSON.parse(value) as string[]; } catch { return []; }
 }
 
+function isMarkedForNextResearch(value: unknown): boolean {
+  return value === true || value === 1 || value === "1";
+}
+
+function decisionLabel(status: ReservoirItem["decisionStatus"]): string | null {
+  if (status === "develop") return "발전 반영";
+  if (status === "keep") return "보관됨";
+  if (status === "watch") return "관찰 중";
+  if (status === "ignore") return "제외됨";
+  return null;
+}
+
 function toIndexItem(item: ReservoirItem): SourceIndexItem {
-  return { id: item.id, title: item.titleKo?.trim() || item.title, meta: [KIND_LABELS[item.kind] ?? item.kind, labelOf(RELIABILITY_LABELS, item.reliability), item.year].filter(Boolean).join(" · "), tags: safeTopics(item.topics), access: deriveSourceAccess({ href: item.canonicalUrl }) };
+  const status = decisionLabel(item.decisionStatus);
+  const nextResearchTag = isMarkedForNextResearch(item.markedForNextResearch) ? "다음 리서치" : null;
+  return { id: item.id, title: item.titleKo?.trim() || item.title, meta: [KIND_LABELS[item.kind] ?? item.kind, labelOf(RELIABILITY_LABELS, item.reliability), item.year].filter(Boolean).join(" · "), tags: [status, nextResearchTag, ...safeTopics(item.topics)].filter((tag): tag is string => Boolean(tag)), access: deriveSourceAccess({ href: item.canonicalUrl }) };
 }
 
 function toReadingDocument(detail: SourceDetail): ReadingDocument {
@@ -60,12 +83,16 @@ function toReadingDocument(detail: SourceDetail): ReadingDocument {
   const translatedTitle = typeof source.titleKo === "string" ? source.titleKo.trim() : "";
   const title = translatedTitle || rawTitle;
   const originalTitle = typeof source.originalTitle === "string" ? source.originalTitle : translatedTitle && translatedTitle !== rawTitle ? rawTitle : undefined;
+  const provenance = [labelOf(PROVENANCE_LABELS, source.provenanceClass, "원자료"), labelOf(RELIABILITY_LABELS, source.reliability)];
+  const currentDecision = decisionLabel(source.decisionStatus as ReservoirItem["decisionStatus"]);
+  if (currentDecision) provenance.push(currentDecision);
+  if (isMarkedForNextResearch(source.markedForNextResearch)) provenance.push("다음 리서치에 포함");
   return {
     id: String(source.id),
     title,
     originalTitle,
     byline: [source.authors, source.year, labelOf(ORIGIN_LABELS, source.origin, "출처 정보 없음")].filter(Boolean).map(String).join(" · "),
-    provenance: `${labelOf(PROVENANCE_LABELS, source.provenanceClass, "원자료")} · ${labelOf(RELIABILITY_LABELS, source.reliability)}`,
+    provenance: provenance.join(" · "),
     access: deriveSourceAccess({ href: source.canonicalUrl ? String(source.canonicalUrl) : null }),
     summary,
     fragments,
@@ -78,7 +105,9 @@ export default function ReservoirView() {
   const [items, setItems] = useState<ReservoirItem[]>([]);
   const [kindFilter, setKindFilter] = useState("");
   const [topicFilter, setTopicFilter] = useState("");
+  const [decisionFilter, setDecisionFilter] = useState<(typeof DECISION_FILTERS)[number]["value"]>("active");
   const [topics, setTopics] = useState<{ topic: string; count: number }[]>([]);
+  const [nextResearch, setNextResearch] = useState<{ markedCount: number; lastResearchAt: string | null } | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [decisionOpen, setDecisionOpen] = useState(false);
   const [decisionError, setDecisionError] = useState("");
@@ -96,13 +125,15 @@ export default function ReservoirView() {
     const params = new URLSearchParams();
     if (kindFilter) params.set("kind", kindFilter);
     if (topicFilter) params.set("topic", topicFilter);
+    params.set("decision", decisionFilter);
     try {
       const response = await fetch(`/api/reservoir${params.toString() ? `?${params}` : ""}`);
       if (!response.ok) throw new Error("list_failed");
-      const data = await response.json() as { items?: ReservoirItem[] };
+      const data = await response.json() as { items?: ReservoirItem[]; nextResearch?: { markedCount: number; lastResearchAt: string | null } };
       setItems(data.items ?? []);
+      setNextResearch(data.nextResearch ?? null);
     } catch { setListError("저장소 자료를 불러오지 못했습니다."); }
-  }, [kindFilter, topicFilter]);
+  }, [decisionFilter, kindFilter, topicFilter]);
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
@@ -133,9 +164,15 @@ export default function ReservoirView() {
     try {
       const response = await fetch("/api/signals", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceId, action }) });
       if (!response.ok) throw new Error("signal_failed");
-      setMsg(`${action === "develop" ? "발전시키기" : action === "keep" ? "보관하기" : action === "watch" ? "관찰하기" : "제외하기"}로 기록했습니다.`);
+      setMsg(`${action === "develop" ? "발전시키기" : action === "keep" ? "다음 리서치까지 보관" : action === "watch" ? "관찰하기" : "제외하기"}로 기록했습니다.`);
       setDecisionOpen(false);
-      await openDetail(sourceId, false);
+      if (action === "ignore") {
+        setDetail(null);
+        setSelectedId(null);
+      } else {
+        await openDetail(sourceId, false);
+      }
+      await load();
     } catch { setDecisionError("분류를 저장하지 못했습니다. 다시 시도해 주세요."); }
     finally { setActionPending(false); setPendingAction(null); }
   }
@@ -172,10 +209,15 @@ export default function ReservoirView() {
   return (
     <div className="view-stack">
       <PageHeader title="저장소" description="보존된 자료를 읽고 다음 연구 행동을 기록합니다." primaryAction={<button className="ui-button" onClick={() => { setDetail(null); setSearchHits(null); }}>목록으로 돌아가기</button>} />
+      <section className="reservoir-cycle-status" aria-label="다음 리서치 상태">
+        <div><p className="reading-section__label">다음 리서치</p><strong>{nextResearch?.markedCount ?? 0}개 표시됨</strong></div>
+        <p>{nextResearch?.lastResearchAt ? `마지막 착즙 ${formatDateKo(nextResearch.lastResearchAt)}` : "아직 착즙을 실행하지 않았습니다."} · 다음 착즙 실행 시 마크 갱신</p>
+      </section>
       <div className="reservoir-toolbar">
         <input className="reservoir-search" value={query} placeholder="제목, 저자, 질문으로 검색" onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void runSearch(); }} />
         <button className="ui-button-secondary" onClick={() => void runSearch()}>검색</button>
         <div className="filter-strip">{KINDS.map((kind) => <button key={kind || "all"} className={`filter-button${kindFilter === kind ? " is-active" : ""}`} onClick={() => setKindFilter(kind)}>{KIND_LABELS[kind]}</button>)}</div>
+        <div className="filter-strip" aria-label="판단 상태 필터">{DECISION_FILTERS.map((filter) => <button key={filter.value} className={`filter-button${decisionFilter === filter.value ? " is-active" : ""}`} onClick={() => setDecisionFilter(filter.value)}>{filter.label}</button>)}</div>
       </div>
       {topics.length > 0 && <div className="topic-strip" aria-label="주제 필터">{topics.slice(0, 14).map((topic) => <button key={topic.topic} className={`topic-chip${topicFilter === topic.topic ? " is-active" : ""}`} onClick={() => setTopicFilter(topicFilter === topic.topic ? "" : topic.topic)}>{topic.topic} · {topic.count}</button>)}</div>}
       {msg && <p className="reservoir-message" role="status">{msg}</p>}
@@ -183,7 +225,7 @@ export default function ReservoirView() {
         index={<SourceIndex title="저장소 자료" items={indexItems} selectedId={selectedId} onSelect={(id) => void openDetail(id)} />}
         reading={detailError ? <StatusMessage kind="error" title={detailError} action={<button className="ui-button-secondary" onClick={() => selectedId && void openDetail(selectedId)}>다시 시도</button>} /> : document ? <ReadingPane document={document} /> : <StatusMessage kind="empty" title="읽을 자료를 선택하세요" description="왼쪽 목록에서 자료를 고르면 원문과 분석 내용을 함께 읽을 수 있습니다." />}
       />}
-      {document && <DecisionBottomSheet document={document} open={decisionOpen} pending={actionPending} pendingAction={pendingAction} error={decisionError} onClose={() => setDecisionOpen(false)} onAction={(action) => void signal(action)} secondaryAction={{ label: "다시 분석하기", onClick: reanalyze }}><div className="source-detail-extra"><h3>자료 기록</h3><p>{detail?.versions.length ?? 0}개 버전 · {detail?.signals.length ?? 0}개 판단 기록</p></div></DecisionBottomSheet>}
+      {document && <DecisionBottomSheet document={document} decisionStatus={detail?.source.decisionStatus as DecisionAction["id"] | null} open={decisionOpen} pending={actionPending} pendingAction={pendingAction} error={decisionError} onClose={() => setDecisionOpen(false)} onAction={(action) => void signal(action)} secondaryAction={{ label: "다시 분석하기", onClick: reanalyze }}><div className="source-detail-extra"><h3>자료 기록</h3><p>{detail?.versions.length ?? 0}개 버전 · {detail?.signals.length ?? 0}개 판단 기록</p></div></DecisionBottomSheet>}
       {searchHits && <p className="table-note">검색 결과 {searchHits.length}개 · 검색 결과를 선택하면 같은 읽기 화면에서 확인합니다.</p>}
       {detail && <p className="table-note">마지막 확인: {formatDateKo(String(detail.source.createdAt ?? ""))}</p>}
     </div>

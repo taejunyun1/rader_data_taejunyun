@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { DEFAULT_DECISION_ACTIONS } from "./DecisionRail";
 import type { DecisionAction, ReadingDocument } from "./types";
@@ -12,9 +12,17 @@ interface DecisionBottomSheetProps {
   error?: string;
   onAction: (id: DecisionAction["id"]) => void | Promise<void>;
   onClose: () => void;
+  decisionStatus?: DecisionAction["id"] | null;
   secondaryAction?: { label: string; onClick: () => void | Promise<void> };
   children?: React.ReactNode;
 }
+
+const DECISION_STATUS_LABELS: Record<DecisionAction["id"], string> = {
+  develop: "발전 반영됨",
+  keep: "다음 리서치까지 보관됨",
+  watch: "관찰 중",
+  ignore: "제외됨",
+};
 
 function focusableElements(container: HTMLElement): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>(
@@ -31,12 +39,18 @@ export default function DecisionBottomSheet({
   error = "",
   onAction,
   onClose,
+  decisionStatus = null,
   secondaryAction,
   children,
 }: DecisionBottomSheetProps) {
   const dialogRef = useRef<HTMLElement | null>(null);
   const firstActionRef = useRef<HTMLButtonElement | null>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
+  const [editingDecision, setEditingDecision] = useState(false);
+
+  useEffect(() => {
+    setEditingDecision(false);
+  }, [readingDocument.id, decisionStatus, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -103,7 +117,11 @@ export default function DecisionBottomSheet({
           <h2 id="decision-sheet-title">읽은 뒤 판단</h2>
           <p id="decision-sheet-description">분류는 언제든 바꿀 수 있으며 원자료는 삭제되지 않습니다.</p>
         </div>
-        <div className="decision-sheet__actions">
+        {decisionStatus && !editingDecision ? <div className={`decision-sheet__status decision-sheet__status--${decisionStatus}`}>
+          <span>현재 판단</span>
+          <strong>{DECISION_STATUS_LABELS[decisionStatus]}</strong>
+          <button type="button" disabled={pending} onClick={() => setEditingDecision(true)}>판단 변경</button>
+        </div> : <div className="decision-sheet__actions">
           {actions.map((action, index) => (
             <button
               key={action.id}
@@ -118,7 +136,7 @@ export default function DecisionBottomSheet({
               <span>{action.description}</span>
             </button>
           ))}
-        </div>
+        </div>}
         {error && <p className="decision-sheet__error" role="alert">{error}</p>}
         {secondaryAction && <button className="decision-sheet__secondary" type="button" disabled={pending} onClick={() => void secondaryAction.onClick()}>{secondaryAction.label}</button>}
         {children}

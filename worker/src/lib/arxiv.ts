@@ -5,11 +5,12 @@ export interface ArxivWork {
   year: number | null;
   url: string;
   abstract: string | null;
+  categories: string[];
 }
 
 export async function searchArxiv(query: string, limit = 3): Promise<ArxivWork[]> {
   const params = new URLSearchParams({
-    search_query: `all:${query}`,
+    search_query: `all:${query} AND (cat:cs.CV OR cat:cs.HC OR cat:cs.MM OR cat:eess.IV OR cat:physics.optics)`,
     start: "0",
     max_results: String(limit),
     sortBy: "relevance",
@@ -46,13 +47,16 @@ function parseEntry(xml: string): ArxivWork | null {
     .join(", ");
   const yearMatch = xml.match(/<published>(\d{4})/);
   const url = idMatch[1].replace("http://", "https://");
+  const summaryMatch = xml.match(/<summary>([\s\S]*?)<\/summary>/);
+  const categories = [...xml.matchAll(/<category[^>]*term="([^"]+)"/g)].map((m) => m[1]!).filter(Boolean);
   return {
     id: url,
     title,
     authors,
     year: yearMatch ? parseInt(yearMatch[1]!, 10) : null,
     url,
-    abstract: null,
+    abstract: summaryMatch ? decodeXml(summaryMatch[1]!).replace(/\s+/g, " ").trim() : null,
+    categories,
   };
 }
 

@@ -2,11 +2,27 @@ import { Hono } from "hono";
 
 const reservoir = new Hono<{ Bindings: Env }>();
 
+interface ResearchCycleMeta {
+  lastResearchAt: string | null;
+  markSince: string;
+}
+
+async function researchCycleMeta(db: D1Database): Promise<ResearchCycleMeta> {
+  const latest = await db.prepare("SELECT created_at FROM distill_sessions ORDER BY created_at DESC LIMIT 1").first<{ created_at: string }>();
+  return {
+    lastResearchAt: latest?.created_at ?? null,
+    markSince: latest?.created_at ?? new Date(Date.now() - 90 * 24 * 3600 * 1000).toISOString(),
+  };
+}
+
 reservoir.get("/", async (c) => {
   const kind = c.req.query("kind");
   const status = c.req.query("status");
   const topic = c.req.query("topic");
-  const params: (string | number)[] = [];
+  const decision = c.req.query("decision") ?? "active";
+  const cycle = await researchCycleMeta(c.env.DB);
+  const params: (string | number)[] = [cycle.markSince];
+  const latestDecision = "(SELECT us.action FROM user_signals us WHERE us.source_id = s.id AND us.action IN ('keep','develop','watch','ignore') ORDER BY us.created_at DESC LIMIT 1)";
   let where = "1=1";
   if (kind) {
     params.push(kind);
@@ -20,11 +36,21 @@ reservoir.get("/", async (c) => {
     params.push(`%"${topic}"%`);
     where += " AND s.topics LIKE ?";
   }
+  if (decision === "ignored") where += ` AND ${latestDecision} = 'ignore'`;
+  else if (decision === "watching") where += ` AND ${latestDecision} = 'watch'`;
+  else if (decision === "marked") {
+    params.push(cycle.markSince);
+    where += " AND (SELECT us.action FROM user_signals us WHERE us.source_id = s.id AND us.action IN ('keep','develop','watch','ignore') AND us.created_at > ? ORDER BY us.created_at DESC LIMIT 1) IN ('keep','develop')";
+  } else if (decision !== "all") where += ` AND (${latestDecision} IS NULL OR ${latestDecision} <> 'ignore')`;
   const limit = Math.min(parseInt(c.req.query("limit") ?? "50", 10) || 50, 200);
 
   const rows = await c.env.DB.prepare(
     `SELECT s.id, s.title, s.kind, s.reliability, s.status, s.origin, s.year, s.topics AS topics,
             s.canonical_url AS canonicalUrl, s.created_at AS createdAt,
+            CASE WHEN (SELECT us.action FROM user_signals us
+                       WHERE us.source_id = s.id AND us.action IN ('keep','develop','watch','ignore') AND us.created_at > ?
+                       ORDER BY us.created_at DESC LIMIT 1) IN ('keep','develop') THEN 1 ELSE 0 END AS markedForNextResearch,
+            ${latestDecision} AS decisionStatus,
             (SELECT COUNT(*) FROM keywords k WHERE k.source_id = s.id) AS keywordCount,
             (SELECT COUNT(*) FROM user_signals us WHERE us.source_id = s.id AND us.action IN ('keep','develop','watch','ignore')) AS signalCount
      FROM sources s WHERE ${where}
@@ -33,7 +59,24 @@ reservoir.get("/", async (c) => {
     .bind(...params, limit)
     .all<Record<string, unknown>>();
 
-  return c.json({ items: rows.results ?? [] });
+  const items = rows.results ?? [];
+  const markedCountRow = await c.env.DB
+    .prepare(
+      `SELECT COUNT(*) AS n FROM sources s
+       WHERE (SELECT us.action FROM user_signals us
+              WHERE us.source_id = s.id AND us.action IN ('keep','develop','watch','ignore') AND us.created_at > ?
+              ORDER BY us.created_at DESC LIMIT 1) IN ('keep','develop')`
+    )
+    .bind(cycle.markSince)
+    .first<{ n: number }>();
+  return c.json({
+    items,
+    nextResearch: {
+      markedCount: markedCountRow?.n ?? 0,
+      lastResearchAt: cycle.lastResearchAt,
+      resetsOn: "next_distill",
+    },
+  });
 });
 
 reservoir.get("/topics", async (c) => {
@@ -83,14 +126,21 @@ reservoir.post("/retag-all", async (c) => {
 
 reservoir.get("/:sourceId", async (c) => {
   const id = c.req.param("sourceId");
+  const cycle = await researchCycleMeta(c.env.DB);
   const src = await c.env.DB
     .prepare(
       `SELECT id, kind, title, authors, year, canonical_url AS canonicalUrl, doi, reliability,
               provenance_class AS provenanceClass, status, origin, origins_json AS origins, r2_key AS r2Key,
-              topics, metadata_json AS metadata, created_at AS createdAt, updated_at AS updatedAt
+              topics, metadata_json AS metadata, created_at AS createdAt, updated_at AS updatedAt,
+              CASE WHEN (SELECT us.action FROM user_signals us
+                         WHERE us.source_id = sources.id AND us.action IN ('keep','develop','watch','ignore') AND us.created_at > ?
+                         ORDER BY us.created_at DESC LIMIT 1) IN ('keep','develop') THEN 1 ELSE 0 END AS markedForNextResearch
+              ,(SELECT us.action FROM user_signals us
+                WHERE us.source_id = sources.id AND us.action IN ('keep','develop','watch','ignore')
+                ORDER BY us.created_at DESC LIMIT 1) AS decisionStatus
        FROM sources WHERE id = ?`
     )
-    .bind(id)
+    .bind(cycle.markSince, id)
     .first<Record<string, unknown>>();
   if (!src) return c.json({ error: "not_found" }, 404);
 

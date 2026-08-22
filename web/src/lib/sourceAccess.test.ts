@@ -17,4 +17,12 @@ describe("deriveSourceAccess", () => {
   it("treats an OpenAlex work page as access metadata, not full text", () => {
     expect(deriveSourceAccess({ provider: "openalex", href: "https://openalex.org/W123", verified: true }).kind).toBe("ABSTRACT");
   });
+
+  it("marks known publisher pages as potentially paywalled", () => {
+    expect(deriveSourceAccess({ provider: "rss", href: "https://www.artnews.com/art-news/example/" })).toMatchObject({
+      kind: "PAYWALLED",
+      label: "구독·유료 접근 가능성",
+      actionLabel: "접근 상태 확인",
+    });
+  });
 });

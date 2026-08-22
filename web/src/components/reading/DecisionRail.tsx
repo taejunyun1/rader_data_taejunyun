@@ -3,7 +3,7 @@ import type { DecisionAction } from "./types";
 
 export const DEFAULT_DECISION_ACTIONS: DecisionAction[] = [
   { id: "develop", label: "발전시키기", description: "작업·연구 방향에 적극 반영" },
-  { id: "keep", label: "보관하기", description: "저장소에 남겨 다시 읽기" },
+  { id: "keep", label: "보관하기", description: "다음 리서치까지 표시해 두기" },
   { id: "watch", label: "관찰하기", description: "관련 흐름이 생길 때 다시 보기" },
   { id: "ignore", label: "제외하기", description: "추천 우선순위만 낮추기" },
 ];

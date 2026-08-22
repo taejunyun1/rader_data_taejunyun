@@ -5,6 +5,7 @@ export interface OpenAlexWork {
   title: string;
   authors: string;
   year: number | null;
+  abstract: string | null;
   doi: string | null;
   openAccessUrl: string | null;
   citedByCount: number;
@@ -14,7 +15,7 @@ export async function searchWorks(query: string, limit = 5): Promise<OpenAlexWor
   const params = new URLSearchParams({
     search: query,
     per_page: String(limit),
-    select: "id,display_name,publication_year,doi,open_access,cited_by_count,authorships",
+    select: "id,display_name,publication_year,doi,open_access,cited_by_count,authorships,abstract_inverted_index",
     mailto: "taejun.foto@gmail.com",
   });
   const ac = new AbortController();
@@ -31,6 +32,7 @@ export async function searchWorks(query: string, limit = 5): Promise<OpenAlexWor
         open_access?: { oa_url?: string | null };
         cited_by_count: number;
         authorships?: { author?: { display_name?: string } }[];
+        abstract_inverted_index?: Record<string, number[]> | null;
       }[];
     };
     return (data.results ?? []).map((r) => ({
@@ -42,6 +44,7 @@ export async function searchWorks(query: string, limit = 5): Promise<OpenAlexWor
         .filter(Boolean)
         .join(", "),
       year: r.publication_year,
+      abstract: invertedIndexToText(r.abstract_inverted_index),
       doi: r.doi,
       openAccessUrl: r.open_access?.oa_url ?? null,
       citedByCount: r.cited_by_count,
@@ -51,6 +54,16 @@ export async function searchWorks(query: string, limit = 5): Promise<OpenAlexWor
   } finally {
     clearTimeout(timer);
   }
+}
+
+function invertedIndexToText(index?: Record<string, number[]> | null): string | null {
+  if (!index) return null;
+  const words: string[] = [];
+  for (const [word, positions] of Object.entries(index)) {
+    for (const position of positions) words[position] = word;
+  }
+  const text = words.filter(Boolean).join(" ").trim();
+  return text || null;
 }
 
 function normalizeTitle(t: string): string {

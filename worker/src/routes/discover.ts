@@ -4,6 +4,7 @@ import { loadParams } from "../lib/params";
 import { createSource } from "../ingestion/store";
 import { searchWorks } from "../lib/openalex";
 import { DISCOVERY_SOURCE_PRESETS } from "@radar/shared";
+import { DISCOVERY_MIN_SCORE } from "@radar/shared/discovery";
 
 const discover = new Hono<{ Bindings: Env }>();
 
@@ -11,14 +12,17 @@ discover.get("/sources", (c) => c.json({ items: DISCOVERY_SOURCE_PRESETS }));
 
 discover.get("/candidates", async (c) => {
   const status = c.req.query("status") ?? "CANDIDATE";
-  const rows = await c.env.DB
-    .prepare(
-      `SELECT id, openalex_id AS openalexId, title, authors, year, relevance_score AS relevanceScore,
-              status, query_used AS queryUsed, created_at AS createdAt, provider, external_url AS externalUrl
-       FROM discovery_candidates WHERE status = ? ORDER BY relevance_score DESC, created_at DESC LIMIT 50`
-    )
-    .bind(status)
-    .all<Record<string, unknown>>();
+  const query = status === "CANDIDATE"
+    ? `SELECT id, openalex_id AS openalexId, title, authors, year, relevance_score AS relevanceScore,
+              status, query_used AS queryUsed, created_at AS createdAt, provider, external_url AS externalUrl, access_status AS accessStatus
+       FROM discovery_candidates
+       WHERE status = ? AND relevance_score >= ${DISCOVERY_MIN_SCORE}
+         AND access_status IN ('PDF', 'FREE_FULLTEXT')
+       ORDER BY relevance_score DESC, created_at DESC LIMIT 8`
+    : `SELECT id, openalex_id AS openalexId, title, authors, year, relevance_score AS relevanceScore,
+              status, query_used AS queryUsed, created_at AS createdAt, provider, external_url AS externalUrl, access_status AS accessStatus
+       FROM discovery_candidates WHERE status = ? ORDER BY relevance_score DESC, created_at DESC LIMIT 50`;
+  const rows = await c.env.DB.prepare(query).bind(status).all<Record<string, unknown>>();
   return c.json({ items: rows.results ?? [] });
 });
 
@@ -40,9 +44,9 @@ discover.post("/candidates/:id/:action", async (c) => {
   if (!["keep", "watch", "ignore"].includes(action)) return c.json({ error: "invalid_action" }, 400);
 
   const cand = await c.env.DB
-    .prepare("SELECT id, openalex_id, title, authors, year, status, provider, external_url FROM discovery_candidates WHERE id = ?")
+    .prepare("SELECT id, openalex_id, title, authors, year, status, provider, external_url, access_status FROM discovery_candidates WHERE id = ?")
     .bind(id)
-    .first<{ id: string; openalex_id: string | null; title: string; authors: string | null; year: number | null; status: string; provider: string; external_url: string | null }>();
+    .first<{ id: string; openalex_id: string | null; title: string; authors: string | null; year: number | null; status: string; provider: string; external_url: string | null; access_status: string | null }>();
   if (!cand) return c.json({ error: "not_found" }, 404);
 
   const newStatus = action === "keep" ? "KEPT" : action === "watch" ? "WATCHED" : "IGNORED";
@@ -69,7 +73,7 @@ discover.post("/candidates/:id/:action", async (c) => {
       origin: `discovery:${cand.provider}`,
       original: cand.title,
       extractedText: undefined,
-      metadata: { provider: cand.provider, externalId: cand.openalex_id, oaUrl },
+      metadata: { provider: cand.provider, externalId: cand.openalex_id, oaUrl, accessStatus: cand.access_status },
     });
     sourceId = r.sourceId;
   }

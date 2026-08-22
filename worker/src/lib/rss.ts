@@ -1,3 +1,5 @@
+import { cleanDiscoverySourceText } from "@radar/shared/discovery";
+
 export interface FeedItem {
   title: string;
   url: string | null;
@@ -32,7 +34,7 @@ function parseFeedXml(xml: string): FeedItem[] {
   const items: FeedItem[] = [];
   const blocks = [...xml.split(/<item[\s>]/).slice(1), ...xml.split(/<entry[\s>]/).slice(1)];
   for (const b of blocks) {
-    const title = decodeXml(tag(b, "title") ?? "").trim();
+    const title = cleanDiscoverySourceText(decodeXml(tag(b, "title") ?? ""));
     if (!title) continue;
     const link =
       tag(b, "link") ??
@@ -41,9 +43,7 @@ function parseFeedXml(xml: string): FeedItem[] {
       null;
     const dateMatch = b.match(/<(?:pubDate|published|updated)>([^<]+)</);
     const year = dateMatch ? new Date(dateMatch[1]!).getFullYear() : null;
-    const summary = decodeXml(tag(b, "description") ?? tag(b, "summary") ?? "")
-      .replace(/<[^>]+>/g, "")
-      .trim();
+    const summary = cleanDiscoverySourceText(decodeXml(tag(b, "description") ?? tag(b, "summary") ?? ""));
     items.push({ title, url: link ? decodeXml(link) : null, year: Number.isFinite(year) ? year : null, summary: summary.slice(0, 400) || null });
   }
   return items;

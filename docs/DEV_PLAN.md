@@ -119,14 +119,14 @@ exact title/author → keywords → questions → summary → fragments 순 후�
 - Reservoir 브라우즈(필터: kind/reliability/status) + 상세(원본 링크, 분석, 버전)
 - Keep/Ignore/Watch/Develop 버튼 → user_signals 기록(Develop>Keep>Select>View 가중치는 집계 시 적용)
 - Settings: 5 파라미터(Familiarity/Research Depth/Divergence/Counter Strength/Technical↔Photographic) + presets(Balanced/Deep Research/Artwork Exploration/Counter-heavy/Technical)
-**AC**: 시그널 DB 기록, 파라미터 저장·프리셋 로드. **Scope: L → UI 2개로 분리 가능(2.4a 목록/상세, 2.4b Settings)**
+**AC**: 시그널 DB 기록, 최근 판단을 목록·상세 배지로 즉시 표시, `제외됨` 자료는 기본 목록에서 숨기고 필터로 다시 접근, 파라미터 저장·프리셋 로드. **Scope: L → UI 2개로 분리 가능(2.4a 목록/상세, 2.4b Settings)**
 
 **Checkpoint P2**: 자료 업로드 → 자동 분석 → 검색으로 재발견 → 시그널 기록 흐름 완주.
 
 ## Phase 3 — Distill / Critic / Counter
 
 ### Task 3.1: Context Selection
-입력: 현재 Radar 스냅샷(없으면 최근 신호 집계) + 최근 Keep/Develop + 관련 thread + 관련 sources(검색 기반) + 과거 Resurface 후보. Reservoir 전체 미포함. 토큰 상한 내 구성.
+입력: 현재 Radar 스냅샷(없으면 최근 신호 집계) + 다음 착즙 전까지 보관 표시된 Keep/Develop 자료 + 관련 thread + 관련 sources(검색 기반) + 과거 Resurface 후보. 저장소에서 `보관하기`/`발전시키기`로 표시한 자료는 다음 착즙 컨텍스트에 우선 포함하고, 착즙 완료 시 다음 사이클 표시에서 해제한다. `관찰하기`/`제외하기`가 뒤에 오면 표시를 취소한다. Reservoir 전체 미포함. 토큰 상한 내 구성.
 **AC**: 컨텍스트 구성 결과(사용 source 목록) 로그 출력, 상한 준수. **Scope: M**
 
 ### Task 3.2: Distill 실행 + 세션 저장
@@ -166,8 +166,8 @@ Read Next 후보 전건 OpenAlex 존재 검증(openalex_id 발급된 것만 제�
 ## Phase 5 — Discovery (OpenAlex + curated editorial feeds)
 
 ### Task 5.1: 후보 수집 파이프라인
-홈페이지 프로젝트·읽을거리에서 분석된 키워드(최대 2개)를 우선 시드로 사용하고, 최근 모멘텀 키워드를 결합 → OpenAlex 쿼리 생성 → arXiv 보완 검색 → 큐레이션 RSS/Atom(Artforum, Hyperallergic, ARTnews) 수집 → discovery_candidates. 주간 cron, 자동 수집 상한 주 20건. 읽을거리 원본 후보는 homepage_artist Action이 R2 스냅샷으로 전달하고, Radar 일일 cron이 Reservoir에 업서트한다.
-**AC**: cron 1회 실행 후 candidates 상한 이하 유입, relevance_score 기록. **Scope: M**
+홈페이지 프로젝트·읽을거리에서 분석된 키워드(최대 2개)를 우선 시드로 사용하고, 최근 모멘텀 키워드를 결합 → OpenAlex 쿼리 생성 → 사진·이미지·시각문화 관련 arXiv 카테고리 보완 검색 → 큐레이션 RSS/Atom 수집 → 제목·초록·요약 관련성·접근성 필터 → discovery_candidates. 일반어 단독 검색(`data`, `theory`, `AI`)은 제외하고, 관련도 0.65 미만·공학 중심·구독 가능성·기관 인증만 필요한 자료는 메인 후보로 등록하지 않는다. OpenAlex는 OA URL이 있는 자료만, RSS는 무료 원문으로 판별되는 자료만, arXiv는 PDF 링크만 받는다. 실행 상한은 8건이며 OpenAlex 4·arXiv 2·RSS 2 쿼터와 정규화 제목 중복 제거를 적용한다. 읽을거리 원본 후보는 homepage_artist Action이 R2 스냅샷으로 전달하고, Radar 일일 cron이 Reservoir에 업서트한다.
+**AC**: cron 1회 실행 후 candidates 상한 이하 유입, 모든 CANDIDATE가 relevance_score 0.65 이상이며 `PDF` 또는 `FREE_FULLTEXT` 접근 상태를 가진다. 기존 미검토 후보는 다음 실행 때 재평가하고 탈락 자료는 삭제하지 않고 IGNORED로 보존한다. **Scope: M**
 
 ### Task 5.2: Discover UI
 후보 풀 목록 + Keep/Watch/Ignore. Keep는 Reservoir로 승격(DISCOVERY reliability), 자동 수집은 핵심 Reservoir로 직행 금지(스펙 원칙).
@@ -195,7 +195,7 @@ JSON(전체 덤프) / Markdown(자료별) / CSV(목록) + R2 원본 zip. Setting
 | 리스크 | 영향 | 완화 |
 |--------|------|------|
 | D1 LIKE 검색 품질 부족 | 중 | 개인 규모에선 충분할 가능성 높음. 병목 실증 시 Vectorize semantic layer 제안(스펙에 명시된 확장 경로) |
-| OpenAlex 후보 관련성 낮음 | 중 | 모멘텀 키워드 품질 선행 확보, 상한 20건/주, Workers AI 필터 |
+| Discovery 후보 관련성 낮음 | 중 | 검색어 단독 일반어 차단, 제목·초록·요약 hard gate(0.65), arXiv 카테고리 제한, RSS 접근성·출처별 상한 |
 | 스킨 PDF 등 추출 실패 | 하 | failed 상태 + 원본은 보존 + 수동 note 입력 대체 경로 |
 | $10 예산 초과 | 하 | ai_usage 원장 + 하드스탑(Task 3.5), Workers AI로 저비용 계층 분리 |
 | Access/JWT 검증 구성 오류 | 중 | Phase 0에서 가장 먼저 검증(fail fast) |
