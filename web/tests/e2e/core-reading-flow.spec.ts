@@ -4,7 +4,7 @@ test.beforeEach(async ({ page }) => {
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname === "/api/usage/summary") return route.fulfill({ json: { usedUsd: 1, budgetUsd: 10, usedPct: 10, blocked: false } });
-    if (url.pathname === "/api/radar/stats") return route.fulfill({ json: { stats: { newSources: 2, newKeywords: [{ keyword: "사진", count: 2 }], newQuestions: ["무엇을 읽을까"], signalCounts: { develop: 1 }, topKeptSources: [], distillRuns: 1, gapsRaised: 1, readingQueueSize: 1, kindBreakdown: { NOTE: 2 } } } });
+    if (url.pathname === "/api/radar/stats") return route.fulfill({ json: { stats: { newSources: 2, newKeywords: [{ keyword: "photography", count: 2 }], newQuestions: ["무엇을 읽을까"], signalCounts: { develop: 2, keep: 1, import: 8, view: 4 }, topKeptSources: [], distillRuns: 1, gapsRaised: 1, readingQueueSize: 1, kindBreakdown: { NOTE: 2, PAPER_ACADEMIC: 1 } } } });
     if (url.pathname === "/api/reservoir/topics") return route.fulfill({ json: { topics: [] } });
     if (url.pathname === "/api/radar/snapshots") return route.fulfill({ json: { snapshots: [] } });
     if (url.pathname === "/api/distill/sessions") return route.fulfill({ json: { sessions: [] } });
@@ -19,7 +19,12 @@ test.beforeEach(async ({ page }) => {
 test("dashboard to discover preserves the reading-first flow", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "레이더", exact: true })).toBeVisible();
-  await expect(page.getByText("상승 신호")).toBeVisible();
+  const overview = page.getByRole("region", { name: "이번 주 정량 요약" });
+  await expect(overview).toBeVisible();
+  await expect(overview.getByRole("heading", { name: "관심 신호" })).toBeVisible();
+  await expect(overview.getByRole("heading", { name: "판단 분포" })).toBeVisible();
+  await expect(overview.getByRole("heading", { name: "저장소 구성" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "상승 신호" })).toHaveCount(0);
   await page.getByRole("button", { name: "발견", exact: true }).click();
   await expect(page.getByRole("heading", { name: "발견", exact: true })).toBeVisible();
   await expect(page.getByRole("option", { name: /발견 후보/ })).toBeVisible();
