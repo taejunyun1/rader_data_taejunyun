@@ -1,6 +1,7 @@
 import {
   isUsableDiscoveryQuery,
   normalizeDiscoveryTitle,
+  normalizeDiscoveryKeywords,
   type DiscoveryKeywordRecommendation,
   type DiscoveryLane,
   type DiscoveryProfile,
@@ -11,7 +12,7 @@ type CandidateRecommendation = Omit<DiscoveryKeywordRecommendation, "selected">;
 
 function cleanKeyword(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  const keyword = value.replace(/\s+/g, " ").trim().slice(0, 80);
+  const keyword = normalizeDiscoveryKeywords([value], 1)[0];
   return keyword && isUsableDiscoveryQuery(keyword) ? keyword : null;
 }
 

@@ -253,12 +253,32 @@ export function normalizeDiscoveryKeywords(value: unknown, max = 4): string[] {
     if (typeof item !== "string") continue;
     const keyword = item.trim().replace(/\s+/g, " ");
     const key = normalizeDiscoveryTitle(keyword);
-    if (!keyword || !isUsableDiscoveryQuery(keyword) || seen.has(key)) continue;
+    const looksLikeSentence = keyword.length > 18 && /[.!?]|(했다|않았다|있다|없다|않음|필요함|드러낸다)["'」”]?$/u.test(keyword);
+    if (!keyword || keyword.length > 80 || looksLikeSentence || !isUsableDiscoveryQuery(keyword) || seen.has(key)) continue;
     seen.add(key);
     result.push(keyword.slice(0, 120));
     if (result.length >= max) break;
   }
   return result;
+}
+
+/**
+ * Turns a user's Korean/mixed research phrase into a provider-friendly query
+ * while keeping the original phrase intact in provenance and the UI.
+ */
+export function discoveryProviderQuery(value: string): string {
+  const query = decodeEntityText(value).replace(/\s+/g, " ").trim();
+  const lower = query.toLowerCase();
+  const concepts: string[] = [];
+  if (/\bai\b|인공지능|알고리즘|머신비전|machine vision|computer vision/i.test(lower)) concepts.push("AI algorithm visual culture");
+  if (/네트워크|network|플랫폼|platform/i.test(lower)) concepts.push("network culture image theory");
+  if (/데이터|\bdata\b/i.test(lower)) concepts.push("data epistemology photography");
+  if (/사진|photograph|이미지|image|시각|visual/i.test(lower)) concepts.push("photography visual culture");
+  if (/물질|material|촉각|tactil/i.test(lower)) concepts.push("materiality tactility photography");
+  if (/재현|representation|저자|authorship|저작권|copyright/i.test(lower)) concepts.push("photography representation authorship");
+  if (concepts.length > 0) return [...new Set(concepts.join(" ").split(" "))].join(" ");
+  if (query.length > 80 || /[.!?]|(했다|않았다|있다|없다|않음|필요함)["'」”]?$/u.test(query)) return "photography visual culture";
+  return query.replace(/[\/·•]+/g, " ").replace(/[–—]+/g, "-").replace(/\s+/g, " ").trim();
 }
 
 export function normalizeDiscoveryProfile(value: unknown, updatedAt = new Date().toISOString()): DiscoveryProfile {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { DiscoveryKeywordRecommendation, DiscoveryProfile, DiscoverySourcePreset, View } from "@radar/shared";
+import type { DiscoveryKeywordRecommendation, DiscoveryProfile, DiscoverySourcePreset, ResearchJob, View } from "@radar/shared";
 import { DISCOVERY_SOURCE_PRESETS } from "@radar/shared";
 import { deriveSourceAccess } from "../lib/sourceAccess";
 import { labelOf, PROVIDER_LABELS } from "../lib/labels";
@@ -81,7 +81,7 @@ function toReadingDocument(candidate: Candidate): ReadingDocument {
   };
 }
 
-export default function DiscoverView({ onNavigate }: { onNavigate: (view: View) => void }) {
+export default function DiscoverView({ onNavigate, jobs = [] }: { onNavigate: (view: View) => void; jobs?: ResearchJob[] }) {
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [statusFilter, setStatusFilter] = useState("CANDIDATE");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -114,6 +114,18 @@ export default function DiscoverView({ onNavigate }: { onNavigate: (view: View) 
   }, [laneFilter, statusFilter]);
 
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    const latest = jobs.find((job) => job.kind === "DISCOVERY_RUN");
+    if (!latest) return;
+    if (latest.status === "SUCCEEDED") {
+      const result = latest.result && typeof latest.result === "object" ? latest.result as { collected?: unknown } : {};
+      setMsg(`발견 수집 완료 · 새 후보 ${Number(result.collected ?? 0)}개`);
+      void load();
+    } else if (latest.status === "FAILED" || latest.status === "BLOCKED") {
+      setMsg(latest.error ?? "발견 수집에 실패했습니다.");
+    }
+  }, [jobs, load]);
 
   useEffect(() => {
     fetch("/api/discover/profile").then((r) => r.json() as Promise<{ profile?: DiscoveryProfile }>).then((data) => { if (data.profile) { setProfile(data.profile); setProfileDraft(data.profile); } }).catch(() => undefined);

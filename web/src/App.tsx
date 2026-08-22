@@ -41,7 +41,7 @@ export default function App() {
       {view === "INBOX" && <InboxView />}
       {view === "DISTILL" && <DistillView focusSessionId={focus.distillSessionId} onFocusConsumed={() => consumeFocus("distillSessionId")} />}
       {view === "RESERVOIR" && <ReservoirView focusSourceId={focus.reservoirSourceId} onFocusConsumed={() => consumeFocus("reservoirSourceId")} />}
-      {view === "DISCOVER" && <DiscoverView onNavigate={setView} />}
+      {view === "DISCOVER" && <DiscoverView onNavigate={setView} jobs={jobs} />}
       {view === "USAGE" && <UsageView />}
       {view === "SETTINGS" && <SettingsView />}
     </AppShell>

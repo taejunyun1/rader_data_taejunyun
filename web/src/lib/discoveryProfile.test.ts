@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   allocateDiscoveryLaneQuotas,
   normalizeDiscoveryProfile,
+  discoveryProviderQuery,
   strengthFetchLimit,
   strengthQueryLimit,
 } from "@radar/shared/discovery";
@@ -30,6 +31,15 @@ describe("discovery profile", () => {
 
   it("allocates 70:30 into six and two final slots", () => {
     expect(allocateDiscoveryLaneQuotas(70, 30, 8)).toEqual({ ORIGINAL: 6, COUNTER: 2 });
+  });
+
+  it("filters sentence-shaped counter notes and creates provider queries", () => {
+    expect(normalizeDiscoveryProfile({
+      original: { keywords: ["사진의 재현"], strength: 70 },
+      counter: { keywords: ["이 문장은 사례와 범위를 명확히 하지 않았다.", "물질성"], strength: 70 },
+    }).counter.keywords).toEqual(["물질성"]);
+    expect(discoveryProviderQuery("AI/알고리즘과 네트워크-이미지")).toContain("visual");
+    expect(discoveryProviderQuery("사진의 재현")).toBe("photography visual culture representation authorship");
   });
 
   it("guarantees one slot to each active lane", () => {
