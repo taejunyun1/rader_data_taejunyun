@@ -46,7 +46,7 @@ function normalizeSynthesis(value: unknown, period: RadarPeriod): Synthesis | nu
   };
 }
 
-export default function RadarView({ onNavigate, focusPeriod, onFocusConsumed }: { onNavigate: (view: View) => void; focusPeriod?: RadarPeriod; onFocusConsumed?: () => void }) {
+export default function RadarView({ onNavigate, onJobCreated, focusPeriod, onFocusConsumed }: { onNavigate: (view: View) => void; onJobCreated?: () => Promise<void>; focusPeriod?: RadarPeriod; onFocusConsumed?: () => void }) {
   const [period, setPeriod] = useState<RadarPeriod>("WEEKLY");
   const [stats, setStats] = useState<RadarStats | null>(null);
   const [synthesis, setSynthesis] = useState<Synthesis | null>(null);
@@ -70,6 +70,7 @@ export default function RadarView({ onNavigate, focusPeriod, onFocusConsumed }: 
       const response = await fetch("/api/radar/synthesize", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ period }) });
       const data = await response.json() as { job?: unknown; reused?: boolean; error?: string };
       if (!response.ok) throw new Error(data.error ?? "레이더 생성을 시작하지 못했습니다.");
+      await onJobCreated?.();
       setMsg(data.reused ? "이미 진행 중인 레이더 작업을 계속합니다." : "레이더 생성을 시작했습니다. 완료되면 상단 작업센터에서 결과를 확인할 수 있습니다.");
     } catch (error) {
       setMsg(error instanceof Error ? error.message : "레이더 생성을 시작하지 못했습니다.");

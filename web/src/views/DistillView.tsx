@@ -16,7 +16,7 @@ interface Budget { usedPct: number; budgetUsd: number; blocked: boolean; warn: b
 const SECTIONS = [{ id: "keywords", label: "키워드" }, { id: "thoughts", label: "생각의 조각" }, { id: "questions", label: "질문" }, { id: "reading-queue", label: "다음 읽기" }, { id: "research-gaps", label: "연구 공백" }, { id: "directions", label: "연구 방향" }, { id: "artwork", label: "작업 방향" }, { id: "experiment", label: "작은 실험" }];
 const KEEP_OPTIONS = [{ id: "keywords", label: "키워드" }, { id: "thoughts_fragments", label: "생각의 조각" }, { id: "questions", label: "질문" }, { id: "read_next", label: "다음 읽기" }, { id: "research_gaps", label: "연구 공백" }, { id: "research_directions", label: "연구 방향" }, { id: "artwork_directions", label: "작업 방향" }, { id: "small_experiment", label: "작은 실험" }];
 
-export default function DistillView({ focusSessionId, onFocusConsumed }: { focusSessionId?: string; onFocusConsumed?: () => void }) {
+export default function DistillView({ onJobCreated, focusSessionId, onFocusConsumed }: { onJobCreated?: () => Promise<void>; focusSessionId?: string; onFocusConsumed?: () => void }) {
   const [data, setData] = useState<SessionData | null>(null);
   const [sessions, setSessions] = useState<SessionListItem[]>([]);
   const [budget, setBudget] = useState<Budget | null>(null);
@@ -38,6 +38,7 @@ export default function DistillView({ focusSessionId, onFocusConsumed }: { focus
       const response = await fetch("/api/distill/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const result = await response.json() as { job?: unknown; reused?: boolean; error?: string };
       if (!response.ok) throw new Error(result.error ?? "착즙 실행을 시작하지 못했습니다.");
+      await onJobCreated?.();
       setKept([]);
       setMsg(result.reused ? "이미 진행 중인 착즙 작업을 계속합니다." : "착즙을 시작했습니다. 완료되면 상단 작업센터에서 결과를 확인할 수 있습니다.");
       fetch("/api/distill/budget").then((item) => item.json() as Promise<Budget>).then(setBudget).catch(() => undefined);

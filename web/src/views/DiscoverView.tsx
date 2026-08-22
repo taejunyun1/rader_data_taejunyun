@@ -81,7 +81,7 @@ function toReadingDocument(candidate: Candidate): ReadingDocument {
   };
 }
 
-export default function DiscoverView({ onNavigate, jobs = [] }: { onNavigate: (view: View) => void; jobs?: ResearchJob[] }) {
+export default function DiscoverView({ onNavigate, jobs = [], onJobCreated }: { onNavigate: (view: View) => void; jobs?: ResearchJob[]; onJobCreated?: () => Promise<void> }) {
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [statusFilter, setStatusFilter] = useState("CANDIDATE");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -140,6 +140,7 @@ export default function DiscoverView({ onNavigate, jobs = [] }: { onNavigate: (v
       const response = await fetch("/api/discover/run", { method: "POST" });
       const data = await response.json() as { job?: unknown; reused?: boolean; error?: string };
       if (!response.ok) throw new Error(data.error ?? "발견 실행을 시작하지 못했습니다.");
+      await onJobCreated?.();
       setMsg(data.reused ? "이미 진행 중인 발견 수집을 계속합니다." : "발견 수집을 시작했습니다. 완료되면 상단 작업센터에서 후보를 확인할 수 있습니다.");
       setStatusFilter("CANDIDATE");
     } catch (error) { setMsg(error instanceof Error ? error.message : "발견 실행을 시작하지 못했습니다."); }

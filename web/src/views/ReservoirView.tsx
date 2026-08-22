@@ -104,7 +104,7 @@ function toReadingDocument(detail: SourceDetail): ReadingDocument {
   };
 }
 
-export default function ReservoirView({ focusSourceId, onFocusConsumed }: { focusSourceId?: string; onFocusConsumed?: () => void }) {
+export default function ReservoirView({ onJobCreated, focusSourceId, onFocusConsumed }: { onJobCreated?: () => Promise<void>; focusSourceId?: string; onFocusConsumed?: () => void }) {
   const [items, setItems] = useState<ReservoirItem[]>([]);
   const [kindFilter, setKindFilter] = useState("");
   const [topicFilter, setTopicFilter] = useState("");
@@ -220,6 +220,7 @@ export default function ReservoirView({ focusSourceId, onFocusConsumed }: { focu
       const response = await fetch(`/api/reservoir/${String(detail.source.id)}/deep-analysis`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ profile: deepProfile }) });
       const data = await response.json() as { error?: string; reused?: boolean };
       if (!response.ok) throw new Error(data.error ?? "심층 정리를 시작하지 못했습니다.");
+      await onJobCreated?.();
       setMsg(data.reused ? "이미 진행 중인 심층 정리를 계속합니다." : "심층 정리를 시작했습니다. 완료되면 상단 작업센터에서 결과를 확인할 수 있습니다.");
     } catch (error) {
       setMsg(error instanceof Error && error.message === "monthly_budget_exhausted" ? "이번 달 AI 사용량 한도에 도달했습니다." : error instanceof Error ? error.message : "심층 정리를 시작하지 못했습니다.");

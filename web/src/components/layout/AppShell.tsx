@@ -23,5 +23,5 @@ export interface AppShellProps {
 }
 
 export default function AppShell({ view, onNavigate, usage, jobs, onDismissJob, onRetryJob, onResult, children }: AppShellProps) {
-  return <div className="app-shell"><SidebarNav view={view} onNavigate={onNavigate} usage={usage} /><div className="app-shell__content"><JobCenter jobs={jobs} onDismiss={onDismissJob} onRetry={onRetryJob} onResult={onResult} /><main className="app-shell__main">{children}</main></div></div>;
+  return <div className="app-shell"><SidebarNav view={view} onNavigate={onNavigate} usage={usage} jobs={jobs} /><div className="app-shell__content"><JobCenter jobs={jobs} onDismiss={onDismissJob} onRetry={onRetryJob} onResult={onResult} /><main className="app-shell__main">{children}</main></div></div>;
 }

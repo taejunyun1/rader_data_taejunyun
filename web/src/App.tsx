@@ -14,7 +14,7 @@ import type { ResearchJobResultRef } from "@radar/shared/discovery";
 export default function App() {
   const [view, setView] = useState<View>("RADAR");
   const [usage, setUsage] = useState<UsageBadge | null>(null);
-  const { jobs, dismiss, retry } = useResearchJobs();
+  const { jobs, refresh, dismiss, retry } = useResearchJobs();
   const [focus, setFocus] = useState<{ distillSessionId?: string; radarPeriod?: RadarPeriod; reservoirSourceId?: string }>({});
 
   function openJobResult(result: ResearchJobResultRef) {
@@ -37,11 +37,11 @@ export default function App() {
 
   return (
     <AppShell view={view} onNavigate={setView} usage={usage} jobs={jobs} onDismissJob={dismiss} onRetryJob={retry} onResult={openJobResult}>
-      {view === "RADAR" && <RadarView onNavigate={setView} focusPeriod={focus.radarPeriod} onFocusConsumed={() => consumeFocus("radarPeriod")} />}
+      {view === "RADAR" && <RadarView onNavigate={setView} onJobCreated={refresh} focusPeriod={focus.radarPeriod} onFocusConsumed={() => consumeFocus("radarPeriod")} />}
       {view === "INBOX" && <InboxView />}
-      {view === "DISTILL" && <DistillView focusSessionId={focus.distillSessionId} onFocusConsumed={() => consumeFocus("distillSessionId")} />}
-      {view === "RESERVOIR" && <ReservoirView focusSourceId={focus.reservoirSourceId} onFocusConsumed={() => consumeFocus("reservoirSourceId")} />}
-      {view === "DISCOVER" && <DiscoverView onNavigate={setView} jobs={jobs} />}
+      {view === "DISTILL" && <DistillView onJobCreated={refresh} focusSessionId={focus.distillSessionId} onFocusConsumed={() => consumeFocus("distillSessionId")} />}
+      {view === "RESERVOIR" && <ReservoirView onJobCreated={refresh} focusSourceId={focus.reservoirSourceId} onFocusConsumed={() => consumeFocus("reservoirSourceId")} />}
+      {view === "DISCOVER" && <DiscoverView onNavigate={setView} jobs={jobs} onJobCreated={refresh} />}
       {view === "USAGE" && <UsageView />}
       {view === "SETTINGS" && <SettingsView />}
     </AppShell>
