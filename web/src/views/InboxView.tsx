@@ -26,10 +26,13 @@ export default function InboxView() {
   const [qualityFilter, setQualityFilter] = useState("");
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [title, setTitle] = useState("");
   const [text, setText] = useState("");
   const [url, setUrl] = useState("");
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const reviewRef = useRef<HTMLDivElement | null>(null);
+  const detailRequestRef = useRef(0);
 
   async function load() {
     try {
@@ -50,13 +53,30 @@ export default function InboxView() {
   }
 
   async function loadDetail(sourceId: string) {
+    const requestId = detailRequestRef.current + 1;
+    detailRequestRef.current = requestId;
+    setSelectedId(sourceId);
+    setDetail(null);
+    setDetailLoading(true);
+    setMsg("자료를 여는 중입니다.");
     try {
       const response = await fetch(`/api/inbox/${sourceId}`);
       if (!response.ok) throw new Error("detail_failed");
-      setDetail(await response.json() as InboxDetail);
-      setSelectedId(sourceId);
+      const nextDetail = await response.json() as InboxDetail;
+      if (requestId !== detailRequestRef.current) return;
+      setDetail(nextDetail);
+      requestAnimationFrame(() => {
+        if (requestId !== detailRequestRef.current) return;
+        const review = reviewRef.current;
+        if (review && typeof review.scrollIntoView === "function") {
+          review.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+      });
     } catch {
+      if (requestId !== detailRequestRef.current) return;
       setMsg("자료의 검수 정보를 불러오지 못했습니다.");
+    } finally {
+      if (requestId === detailRequestRef.current) setDetailLoading(false);
     }
   }
 
@@ -186,6 +206,6 @@ export default function InboxView() {
         </button>)}</div>}
       </section>
     </div>
-    {detail && <IngestionReviewPane detail={detail} busy={busy} onReextract={() => void runAction(`/${detail.item.sourceId}/reextract`, "원문을 다시 가져왔습니다.")} onRenormalize={() => void runAction(`/${detail.item.sourceId}/renormalize`, "정규화를 다시 실행했습니다.")} onAnalyze={() => void runAction(`/${detail.item.sourceId}/analyze`, "현재 버전을 다시 분석했습니다.")} onActivate={(versionId) => void runAction(`/${detail.item.sourceId}/versions/${versionId}/activate`, "선택한 버전을 현재 버전으로 바꿨습니다.")} onReject={(versionId) => void runAction(`/${detail.item.sourceId}/versions/${versionId}/reject`, "검토 대기 버전을 보류했습니다.")} />}
+    {detail && <div ref={reviewRef}><IngestionReviewPane detail={detail} busy={busy || detailLoading} onReextract={() => void runAction(`/${detail.item.sourceId}/reextract`, "원문을 다시 가져왔습니다.")} onRenormalize={() => void runAction(`/${detail.item.sourceId}/renormalize`, "정규화를 다시 실행했습니다.")} onAnalyze={() => void runAction(`/${detail.item.sourceId}/analyze`, "현재 버전을 다시 분석했습니다.")} onActivate={(versionId) => void runAction(`/${detail.item.sourceId}/versions/${versionId}/activate`, "선택한 버전을 현재 버전으로 바꿨습니다.")} onReject={(versionId) => void runAction(`/${detail.item.sourceId}/versions/${versionId}/reject`, "검토 대기 버전을 보류했습니다.")} /></div>}
   </div>;
 }
