@@ -1,3 +1,5 @@
+import type { IngestChannel, InputFormat, NormalizationReport, QualityStatus, VersionOrigin, VersionReviewStatus } from "./ingestion";
+
 export const VIEWS = ["RADAR", "DISTILL", "RESERVOIR", "INBOX", "DISCOVER", "USAGE", "SETTINGS"] as const;
 export type View = (typeof VIEWS)[number];
 
@@ -138,10 +140,47 @@ export interface InboxItem {
   kind: SourceKind;
   reliability: Reliability;
   origin: string | null;
+  ingestChannel?: IngestChannel;
+  inputFormat?: InputFormat;
+  qualityStatus?: QualityStatus;
+  activeVersionId?: string | null;
+  versionCount?: number;
+  pendingVersionCount?: number;
+  analysisFresh?: boolean;
+  charCount?: number;
+  activeVersion?: InboxVersionSummary | null;
   status: ProcessingStatus;
   error: string | null;
   createdAt: string;
   updatedAt: string | null;
+}
+
+export interface InboxVersionSummary {
+  id: string;
+  version: number;
+  origin: VersionOrigin;
+  reviewStatus: VersionReviewStatus;
+  normalizationStatus: string;
+  qualityStatus: QualityStatus;
+  charCount: number;
+  createdAt: string;
+  reviewedAt: string | null;
+  isActive: boolean;
+}
+
+export interface InboxDetail {
+  item: InboxItem;
+  original: {
+    available: boolean;
+    r2Key: string | null;
+    url: string;
+  };
+  activeVersion: (InboxVersionSummary & {
+    extractedText: string | null;
+    normalizedText: string | null;
+    report: NormalizationReport | null;
+  }) | null;
+  versions: Array<InboxVersionSummary & { parentVersionId: string | null }>;
 }
 
 export interface RadarParams {

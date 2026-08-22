@@ -18,4 +18,11 @@ describe("InboxView", () => {
     await userEvent.type(screen.getByPlaceholderText("읽은 문장이나 메모를 붙여 넣으세요"), "읽을 문장");
     expect(screen.getByRole("button", { name: "메모 보존하기" })).toBeEnabled();
   });
+
+  it("separates capture formats so the file guidance is visible before upload", async () => {
+    render(<InboxView />);
+    await userEvent.click(screen.getByRole("tab", { name: "파일" }));
+    expect(screen.getByText("텍스트 PDF·스캔 PDF")).toBeInTheDocument();
+    expect(screen.getByText(/PDF 원본은 R2에 보존합니다/)).toBeInTheDocument();
+  });
 });

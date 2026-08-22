@@ -21,11 +21,11 @@ export async function analyzeSource(env: Env, sourceId: string): Promise<Analyze
   if (!src) return { sourceId, status: "failed", hasAnalysis: false, error: "not_found" };
 
   const version = await env.DB
-    .prepare("SELECT id, extracted_text FROM source_versions WHERE source_id = ? ORDER BY version DESC LIMIT 1")
+    .prepare("SELECT v.id, v.normalized_text, v.extracted_text FROM sources s LEFT JOIN source_versions v ON v.id = s.active_version_id WHERE s.id = ?")
     .bind(sourceId)
-    .first<{ id: string; extracted_text: string | null }>();
+    .first<{ id: string; normalized_text: string | null; extracted_text: string | null }>();
 
-  const text = version?.extracted_text?.trim();
+  const text = (version?.normalized_text ?? version?.extracted_text)?.trim();
   if (!text || text.length < 40) {
     await setSourceStatus(env, sourceId, "stored");
     return { sourceId, status: "analyzed", hasAnalysis: false, error: "no_text" };

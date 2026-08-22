@@ -43,7 +43,7 @@ Research Radar는 사진작가 윤태준의 개인 연구 편집 도구다. 챗�
 - `worker/`: Hono API, cron, D1/R2/Workers AI/AI Gateway
 - `web/`: Vite + React SPA
 - `shared/`: Worker와 Web의 공통 타입
-- `worker/migrations/0001~0006`: 초기 스키마, Queue 검증, V1 기능, topic, snapshot synthesis
+- `worker/migrations/0001~0010`: 초기 스키마, Queue 검증, V1 기능, topic, snapshot synthesis, 수신 자료 버전·정규화 검수
 - 배포 대상: `radar.taejunyun.com`
 - 패키지 매니저: `pnpm@11.21.0`
 
@@ -74,6 +74,9 @@ Discovery 후보는 제목과 초록·RSS 요약에 연구 기준어가 실제�
 - 저장소 판단은 목록 배지와 상세 바텀시트의 현재 상태로 즉시 확인한다. `제외하기` 자료는 기본 목록에서 숨기되 삭제하지 않고 `제외됨` 필터에서 복구·판단 변경할 수 있으며, `관찰 중` 자료는 기본 목록에 남긴다.
 - 착즙은 문서 목차와 읽기 큐를 제공하며, OpenAlex 검증 전 큐 항목의 저장소 승격을 막는다.
 - 받은편지함은 메모·URL·파일을 원본 보존 우선으로 접수하고 처리 실패를 재시도 가능하게 표시한다.
+- 받은 자료는 `수신 경로(MANUAL/OBSIDIAN/DISCOVERY/HOMEPAGE)`와 `입력 형식(플레인 텍스트/마크다운/Obsidian/PDF/URL 등)`을 별도로 기록한다. 원본(R2), 추출문, 정규화문을 분리하고 품질 상태(`검수 전/분석 가능/검토 필요/읽을 텍스트 없음/처리 실패`)를 표시한다.
+- Inbox에서 자료를 선택하면 원본 열기, 정규화 품질 리포트, 버전 이력, 다시 추출·다시 정규화·다시 분석·버전 승격을 한 흐름으로 확인한다. 기존 자료는 백필 API를 최대 20건씩 실행해 정규화한다.
+- Obsidian 자동 동기화는 현재 활성 버전이 수동 편집본이면 새 버전을 `검토 대기`로 보존하고 자동 승격하지 않는다. 사용자가 버전을 확인·승격해야 한다.
 - 설정과 사용량은 한국어 운영 문구와 월 예산 상태(NORMAL/WARNING/BLOCKED)를 사용한다.
 
 ## 4. 데이터와 provenance 규칙
@@ -149,6 +152,7 @@ pnpm deploy
 
 - API 진입점: `worker/src/index.ts`
 - ingestion/provenance: `worker/src/ingestion/`
+- 활성 버전 정책: `worker/src/ingestion/versioning.ts`
 - AI 분석: `worker/src/analysis/`
 - Distill: `worker/src/distill/`
 - Radar: `worker/src/radar/`

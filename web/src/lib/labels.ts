@@ -36,6 +36,47 @@ export const ORIGIN_LABELS: Record<string, string> = {
   discovery: "발견 수집",
 };
 
+export const INGEST_CHANNEL_LABELS: Record<string, string> = {
+  MANUAL: "직접 입력",
+  OBSIDIAN: "Obsidian 동기화",
+  DISCOVERY: "발견 수집",
+  HOMEPAGE: "홈페이지 수집",
+};
+
+export const INPUT_FORMAT_LABELS: Record<string, string> = {
+  PLAIN_TEXT: "플레인 텍스트",
+  MARKDOWN: "마크다운",
+  OBSIDIAN_MARKDOWN: "Obsidian 마크다운",
+  URL_HTML: "웹 페이지 HTML",
+  PDF_TEXT: "텍스트 PDF",
+  PDF_SCAN: "스캔 PDF",
+  HOMEPAGE_JSON: "홈페이지 JSON",
+  DISCOVERY_LINK: "발견 링크",
+};
+
+export const QUALITY_STATUS_LABELS: Record<string, string> = {
+  UNREVIEWED: "검수 전",
+  READY: "분석 가능",
+  REVIEW: "검토 필요",
+  EMPTY: "읽을 텍스트 없음",
+  FAILED: "처리 실패",
+};
+
+export const VERSION_ORIGIN_LABELS: Record<string, string> = {
+  INITIAL_INGEST: "최초 수신",
+  OBSIDIAN_SYNC: "Obsidian 동기화",
+  REEXTRACT: "다시 추출",
+  RENORMALIZE: "다시 정규화",
+  MANUAL_EDIT: "수동 편집",
+};
+
+export const VERSION_REVIEW_LABELS: Record<string, string> = {
+  ACTIVE: "현재 사용 중",
+  PENDING_REVIEW: "검토 대기",
+  SUPERSEDED: "이전 버전",
+  REJECTED: "제외됨",
+};
+
 export const PRIORITY_LABELS: Record<string, string> = {
   MUST: "우선 읽기",
   WORTH: "읽어볼 만함",

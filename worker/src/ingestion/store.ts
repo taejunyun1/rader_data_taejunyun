@@ -1,4 +1,5 @@
 import type { Reliability, SourceKind } from "@radar/shared";
+import { deriveIngestMeta, normalizeIngestText, type IngestChannel, type InputFormat, type QualityStatus, type VersionOrigin } from "@radar/shared/ingestion";
 import { findDuplicate } from "./dedup";
 import { uuid, sha256Hex } from "./ids";
 import { titleNorm } from "./normalize";
@@ -15,12 +16,17 @@ export interface CreateSourceInput {
   extractedText?: string;
   filename?: string;
   metadata?: Record<string, unknown>;
+  ingestChannel?: IngestChannel;
+  inputFormat?: InputFormat;
+  versionOrigin?: VersionOrigin;
 }
 
 export interface CreateSourceResult {
   sourceId: string;
   duplicateOf: string | null;
   title: string;
+  qualityStatus?: QualityStatus;
+  activeVersionId?: string;
 }
 
 export const RELIABILITY_BY_KIND: Record<SourceKind, Reliability> = {
@@ -62,13 +68,20 @@ export async function createSource(env: Env, input: CreateSourceInput): Promise<
 
   if (dup) {
     await recordReimport(env, dup.sourceId, dup.field, input.origin);
-    const row = await env.DB.prepare("SELECT title FROM sources WHERE id = ?")
+    const row = await env.DB.prepare("SELECT title, quality_status, active_version_id FROM sources WHERE id = ?")
       .bind(dup.sourceId)
-      .first<{ title: string }>();
-    return { sourceId: dup.sourceId, duplicateOf: dup.sourceId, title: row?.title ?? input.title };
+      .first<{ title: string; quality_status: QualityStatus | null; active_version_id: string | null }>();
+    return {
+      sourceId: dup.sourceId,
+      duplicateOf: dup.sourceId,
+      title: row?.title ?? input.title,
+      qualityStatus: row?.quality_status ?? undefined,
+      activeVersionId: row?.active_version_id ?? undefined,
+    };
   }
 
   const id = uuid();
+  const versionId = uuid();
   const clean = input.filename ? sanitizeFilename(input.filename) : null;
   const r2Key = `originals/${id}/v1${clean ? `-${clean}` : ""}`;
   await env.ORIGINALS.put(r2Key, input.original, {
@@ -76,6 +89,11 @@ export async function createSource(env: Env, input: CreateSourceInput): Promise<
   });
 
   const text = (input.extractedText ?? (typeof input.original === "string" ? input.original : "")).slice(0, 500_000);
+  const derivedMeta = deriveIngestMeta(input.origin, input.filename, input.metadata);
+  const ingestChannel = input.ingestChannel ?? derivedMeta.channel;
+  const inputFormat = input.inputFormat ?? derivedMeta.format;
+  const normalized = normalizeIngestText(text, inputFormat);
+  const versionContentHash = await sha256Hex(text || input.original);
   const status = text ? "extracted" : "stored";
   const ts = nowIso();
 
@@ -85,8 +103,8 @@ export async function createSource(env: Env, input: CreateSourceInput): Promise<
         `INSERT INTO sources
          (id, kind, title, title_norm, authors, year, canonical_url, doi, file_hash,
           reliability, provenance_class, status, origin, origins_json, r2_key, metadata_json,
-          created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SOURCE', ?, ?, ?, ?, ?, ?, ?)`
+          ingest_channel, input_format, active_version_id, quality_status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SOURCE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         id,
@@ -104,15 +122,21 @@ export async function createSource(env: Env, input: CreateSourceInput): Promise<
         JSON.stringify([input.origin]),
         r2Key,
         input.metadata ? JSON.stringify(input.metadata) : null,
+        ingestChannel,
+        inputFormat,
+        versionId,
+        normalized.qualityStatus,
         ts,
         ts
       ),
     env.DB
       .prepare(
-        `INSERT INTO source_versions (id, source_id, version, r2_key, extracted_text, char_count, created_at)
-         VALUES (?, ?, 1, ?, ?, ?, ?)`
+        `INSERT INTO source_versions
+         (id, source_id, version, r2_key, extracted_text, char_count, content_hash, normalized_text,
+          normalization_status, normalization_report_json, version_origin, review_status, created_at)
+         VALUES (?, ?, 1, ?, ?, ?, ?, ?, 'READY', ?, ?, 'ACTIVE', ?)`
       )
-      .bind(uuid(), id, r2Key, text, text.length, ts),
+      .bind(versionId, id, r2Key, text, text.length, versionContentHash, normalized.normalizedText, JSON.stringify(normalized.report), input.versionOrigin ?? "INITIAL_INGEST", ts),
     env.DB
       .prepare(
         `INSERT INTO processing_jobs (id, source_id, stage, status, error, retry_count, created_at, updated_at)
@@ -127,7 +151,7 @@ export async function createSource(env: Env, input: CreateSourceInput): Promise<
       .bind(uuid(), id, JSON.stringify({ origin: input.origin }), ts),
   ]);
 
-  return { sourceId: id, duplicateOf: null, title: input.title };
+  return { sourceId: id, duplicateOf: null, title: input.title, qualityStatus: normalized.qualityStatus, activeVersionId: versionId };
 }
 
 async function recordReimport(env: Env, sourceId: string, field: string, origin: string): Promise<void> {

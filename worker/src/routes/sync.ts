@@ -1,7 +1,9 @@
 import { Hono } from "hono";
+import { normalizeIngestText } from "@radar/shared/ingestion";
 import { analyzeSource } from "../analysis/analyze";
 import { sha256Hex, uuid } from "../ingestion/ids";
 import { createSource } from "../ingestion/store";
+import { activateVersion, decideIncomingVersion, getActiveVersion } from "../ingestion/versioning";
 
 function asciiOnly(meta: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
@@ -68,7 +70,7 @@ async function handleObsidianSync(
       filename,
       metadata: { vaultPath, mtime: body?.mtime ?? null },
     });
-    ctx.waitUntil(analyzeSource(env, r.sourceId).catch(() => undefined));
+    if (r.qualityStatus === "READY") ctx.waitUntil(analyzeSource(env, r.sourceId).catch(() => undefined));
     return Response.json({ sourceId: r.sourceId, status: "created" });
   }
 
@@ -76,12 +78,14 @@ async function handleObsidianSync(
     return Response.json({ sourceId: existing.id, status: "unchanged" });
   }
 
-  const vRow = await env.DB
-    .prepare("SELECT COALESCE(MAX(version), 0) AS v FROM source_versions WHERE source_id = ?")
-    .bind(existing.id)
-    .first<{ v: number }>();
+  const active = await getActiveVersion(env.DB, existing.id);
+  const vRow = await env.DB.prepare("SELECT COALESCE(MAX(version), 0) AS v FROM source_versions WHERE source_id = ?")
+    .bind(existing.id).first<{ v: number }>();
   const nextV = (vRow?.v ?? 0) + 1;
+  const versionId = uuid();
   const r2Key = `originals/${existing.id}/v${nextV}-${filename.replace(/[^a-zA-Z0-9._-]+/g, "_")}`;
+  const normalized = normalizeIngestText(text, "OBSIDIAN_MARKDOWN");
+  const decision = decideIncomingVersion({ activeOrigin: active?.version_origin ?? null, incomingOrigin: "OBSIDIAN_SYNC" });
   await env.ORIGINALS.put(r2Key, text, {
     customMetadata: asciiOnly({ sourceId: existing.id, origin }),
   });
@@ -89,20 +93,25 @@ async function handleObsidianSync(
   await env.DB.batch([
     env.DB
       .prepare(
-        `INSERT INTO source_versions (id, source_id, version, r2_key, extracted_text, char_count, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO source_versions
+         (id, source_id, version, r2_key, extracted_text, char_count, content_hash, normalized_text,
+          normalization_status, normalization_report_json, version_origin, parent_version_id, review_status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'READY', ?, 'OBSIDIAN_SYNC', ?, ?, ?)`
       )
-      .bind(uuid(), existing.id, nextV, r2Key, text.slice(0, 500_000), text.length, ts),
+      .bind(versionId, existing.id, nextV, r2Key, text.slice(0, 500_000), text.length, hash, normalized.normalizedText, JSON.stringify({ ...normalized.report, metadata: normalized.metadata }), active?.id ?? null, decision.reviewStatus, ts),
     env.DB
       .prepare("UPDATE sources SET file_hash = ?, r2_key = ?, status = 'extracted', updated_at = ? WHERE id = ?")
-      .bind(hash, r2Key, ts, existing.id),
+      .bind(hash, decision.activateIncoming ? r2Key : active?.r2_key ?? null, ts, existing.id),
     env.DB
       .prepare("UPDATE processing_jobs SET status = 'extracted', error = NULL, updated_at = ? WHERE source_id = ?")
       .bind(ts, existing.id),
   ]);
 
-  ctx.waitUntil(analyzeSource(env, existing.id).catch(() => undefined));
-  return Response.json({ sourceId: existing.id, status: "updated", version: nextV });
+  if (decision.activateIncoming) {
+    await activateVersion(env.DB, existing.id, versionId, normalized.qualityStatus, ts);
+    if (normalized.qualityStatus === "READY") ctx.waitUntil(analyzeSource(env, existing.id).catch(() => undefined));
+  }
+  return Response.json({ sourceId: existing.id, status: decision.activateIncoming ? "updated" : "review_required", version: nextV, qualityStatus: normalized.qualityStatus });
 }
 
 sync.get("/obsidian/status", async (c) => {

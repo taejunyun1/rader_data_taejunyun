@@ -143,7 +143,9 @@ exportRoute.get("/markdown", async (c) => {
     }
 
     const version = await db
-      .prepare(`SELECT extracted_text FROM source_versions WHERE source_id = ? ORDER BY version DESC LIMIT 1`)
+      .prepare(`SELECT COALESCE(v.normalized_text, v.extracted_text) AS extracted_text
+                FROM sources s JOIN source_versions v ON v.id = s.active_version_id
+                WHERE s.id = ?`)
       .bind(s.id)
       .first<{ extracted_text: string | null }>();
     if (version?.extracted_text) {
