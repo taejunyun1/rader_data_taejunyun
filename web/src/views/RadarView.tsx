@@ -1,29 +1,18 @@
 import { useEffect, useState } from "react";
 import type { RadarPeriod, View } from "@radar/shared";
 import { runTask, useTasks } from "../lib/tasks";
-import { KEYWORD_LABELS, labelOf, RADAR_SECTION_LABELS, SOURCE_KIND_LABELS } from "../lib/labels";
+import { RADAR_SECTION_LABELS } from "../lib/labels";
+import { type RadarStats, visibleSynthesisSections } from "../lib/radarPresentation";
 import PageHeader from "../components/layout/PageHeader";
+import RadarOverview from "../components/radar/RadarOverview";
 import StatusMessage from "../components/ui/StatusMessage";
 
-interface Stats { newSources: number; newKeywords: { keyword: string; count: number }[]; newQuestions: string[]; signalCounts: Record<string, number>; topKeptSources: { title: string; kind: string }[]; distillRuns: number; gapsRaised: number; readingQueueSize: number; kindBreakdown: Record<string, number>; }
 interface Synthesis { period: RadarPeriod; narrative: string; sections: { heading: string; items: string[] }[]; biasWatch: string[]; costUsd: number; }
 interface QueueItem { id: string; title: string; sourceUrl: string | null; verified: number; whyRead: string | null; }
 interface DistillSession { id: string; createdAt: string; }
 
 const PERIODS: { value: RadarPeriod; label: string }[] = [{ value: "WEEKLY", label: "이번 주" }, { value: "MONTHLY", label: "이번 달" }, { value: "YEARLY", label: "올해" }];
-const signalLabel: Record<string, string> = { develop: "발전", keep: "보관", watch: "관찰", ignore: "제외", view: "열람", import: "가져오기" };
 const OBJECT_LABELS: Record<string, string> = { observation: "관찰", recommendation: "추천", reason: "이유", evidence: "근거", direction: "방향", note: "메모", question: "질문", summary: "요약", text: "내용", overRepeating: "반복되는 영역" };
-
-interface KeywordCount { keyword: string; count: number; }
-
-function keywordLabel(keyword: string): string {
-  return labelOf(KEYWORD_LABELS, keyword, keyword.replaceAll("-", " · "));
-}
-
-function KeywordBoard({ items, label, compact = false }: { items: KeywordCount[]; label: string; compact?: boolean }) {
-  const max = Math.max(...items.map((item) => item.count), 1);
-  return <div className={`radar-keyword-board${compact ? " radar-keyword-board--compact" : ""}`} aria-label={label}>{items.map((item) => { const translated = keywordLabel(item.keyword); return <article className="radar-keyword-card" key={item.keyword} title={translated === item.keyword ? undefined : `원문 키워드: ${item.keyword}`}><div className="radar-keyword-card__top"><strong>{translated}</strong><span>{item.count}회</span></div>{translated !== item.keyword && <small>{item.keyword}</small>}<div className="radar-keyword-card__bar" aria-hidden="true"><span style={{ width: `${Math.max((item.count / max) * 100, 8)}%` }} /></div></article>; })}</div>;
-}
 
 function toRenderableText(value: unknown): string | null {
   if (typeof value === "string") return value.trim().replace(/\bDistill\b/gi, "착즙").replace(/\bReservoir\b/gi, "저장소").replace(/\bCounter layer\b/gi, "반대 관점 계층") || null;
@@ -60,7 +49,7 @@ function normalizeSynthesis(value: unknown, period: RadarPeriod): Synthesis | nu
 
 export default function RadarView({ onNavigate }: { onNavigate: (view: View) => void }) {
   const [period, setPeriod] = useState<RadarPeriod>("WEEKLY");
-  const [stats, setStats] = useState<Stats | null>(null);
+  const [stats, setStats] = useState<RadarStats | null>(null);
   const [synthesis, setSynthesis] = useState<Synthesis | null>(null);
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [topics, setTopics] = useState<{ topic: string; count: number }[]>([]);
@@ -68,18 +57,31 @@ export default function RadarView({ onNavigate }: { onNavigate: (view: View) => 
   const tasks = useTasks();
   const busy = tasks.some((task) => task.label === "레이더 생성" && task.status === "running");
 
-  useEffect(() => { fetch(`/api/radar/stats?period=${period}`).then((response) => response.json() as Promise<{ stats?: Stats }>).then((data) => setStats(data.stats ?? null)).catch(() => setStats(null)); }, [period]);
+  useEffect(() => { fetch(`/api/radar/stats?period=${period}`).then((response) => response.json() as Promise<{ stats?: RadarStats }>).then((data) => setStats(data.stats ?? null)).catch(() => setStats(null)); }, [period]);
   useEffect(() => { fetch("/api/reservoir/topics").then((response) => response.json() as Promise<{ topics?: { topic: string; count: number }[] }>).then((data) => setTopics(data.topics ?? [])).catch(() => undefined); fetch("/api/radar/snapshots").then((response) => response.json() as Promise<{ snapshots?: { period: RadarPeriod; synthesis: unknown }[] }>).then((data) => setSynthesis(normalizeSynthesis(data.snapshots?.find((snapshot) => snapshot.period === period && snapshot.synthesis)?.synthesis, period))).catch(() => setSynthesis(null)); fetch("/api/distill/sessions").then((response) => response.json() as Promise<{ sessions?: DistillSession[] }>).then(async (data) => { const latest = data.sessions?.[0]; if (!latest) return; const detail = await fetch(`/api/distill/sessions/${latest.id}`); if (!detail.ok) return; const result = await detail.json() as { readingQueue?: QueueItem[] }; setQueue((result.readingQueue ?? []).filter((item) => item.verified && item.sourceUrl).slice(0, 3)); }).catch(() => undefined); }, [period]);
 
   async function runSynthesis() { await runTask("레이더 생성", async (setTaskMsg, setProgress) => { setTaskMsg("기간 서사를 정리하는 중"); setProgress(30); const response = await fetch("/api/radar/synthesize", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ period }) }); const data = await response.json() as unknown; if (!response.ok) { const error = data && typeof data === "object" && "error" in data ? String((data as { error?: unknown }).error) : "레이더 생성에 실패했습니다."; throw new Error(error); } setProgress(85); setSynthesis(normalizeSynthesis(data, period)); setMsg("새 레이더를 만들었습니다."); }); }
 
   return <div className="view-stack"><PageHeader title="레이더" description="읽고 판단한 흔적에서 지금의 연구 방향을 확인합니다." primaryAction={<button className="ui-button" disabled={busy} onClick={() => void runSynthesis()}>{busy ? "정리 중…" : "레이더 새로 만들기"}</button>} />
     <div className="radar-periods">{PERIODS.map((item) => <button key={item.value} className={`filter-button${period === item.value ? " is-active" : ""}`} onClick={() => setPeriod(item.value)}>{item.label}</button>)}</div>{msg && <p className="reservoir-message" role="status">{msg}</p>}
-    {!stats ? <StatusMessage kind="empty" title="레이더 자료를 불러오는 중입니다" description="신호와 착즙 기록이 쌓이면 이곳에서 흐름을 읽을 수 있습니다." /> : <div className="radar-dashboard"><section className="radar-narrative"><p className="reading-section__label">{PERIODS.find((item) => item.value === period)?.label}의 서사</p>{synthesis ? <><p className="radar-narrative__copy">{synthesis.narrative}</p>{synthesis.sections.map((section) => <div className="radar-section" key={section.heading}><h2>{section.heading}</h2>{section.items.map((item) => <p key={item}>{item}</p>)}</div>)}</> : <p className="distill-copy">아직 생성된 서사가 없습니다. 레이더를 새로 만들어 보세요.</p>}</section>
-      <aside className="radar-side"><section><p className="reading-section__label">지금 직접 읽기</p>{queue.length ? queue.map((item) => <article className="radar-queue" key={item.id}><a href={item.sourceUrl ?? "#"} target="_blank" rel="noreferrer">{item.title} ↗</a><span>{item.whyRead ?? "검증된 다음 읽기"}</span></article>) : <p className="table-note">검증된 읽기 큐가 없습니다.</p>}<button className="ui-button-secondary" onClick={() => onNavigate("DISTILL")}>착즙에서 큐 편집</button></section><section><p className="reading-section__label">다음 행동</p><button className="next-action" onClick={() => onNavigate("DISCOVER")}>새 후보 확인 <span>발견으로 이동 →</span></button><button className="next-action" onClick={() => onNavigate("RESERVOIR")}>보존 자료 다시 읽기 <span>저장소로 이동 →</span></button></section></aside>
-      <section className="radar-metrics"><div><span>새 자료</span><strong>{stats.newSources}</strong></div><div><span>착즙</span><strong>{stats.distillRuns}</strong></div><div><span>연구 공백</span><strong>{stats.gapsRaised}</strong></div><div><span>읽기 큐</span><strong>{stats.readingQueueSize}</strong></div></section>
-      <section className="radar-section radar-section--wide"><h2>상승 신호</h2><p className="radar-section__hint">최근 자료에서 새롭게 나타난 키워드입니다. 숫자가 클수록 자주 등장했습니다.</p>{stats.newKeywords.length ? <KeywordBoard items={stats.newKeywords} label="상승 키워드" /> : <p className="table-note">아직 새로운 키워드가 없습니다.</p>}<h2>남은 질문</h2>{stats.newQuestions.length ? stats.newQuestions.slice(0, 5).map((question) => <p className="reading-question" key={question}><span>?</span>{question}</p>) : <p className="table-note">아직 기록된 질문이 없습니다.</p>}<h2>최근 판단</h2><p className="table-note">{Object.entries(stats.signalCounts).map(([key, count]) => `${signalLabel[key] ?? key} ${count}회`).join(" · ") || "기록 없음"}</p></section>
-      <section className="radar-section radar-section--wide"><h2>연구 지형</h2>{topics.length ? <KeywordBoard items={topics.slice(0, 14).map((topic) => ({ keyword: topic.topic, count: topic.count }))} label="연구 지형 키워드" compact /> : <p className="table-note">주제 태그가 아직 없습니다.</p>}<p className="table-note">자료 구성 · {Object.entries(stats.kindBreakdown).map(([kind, count]) => `${labelOf(SOURCE_KIND_LABELS, kind)} ${count}개`).join(" · ") || "기록 없음"}</p></section>
+    {!stats ? <StatusMessage kind="empty" title="레이더 자료를 불러오는 중입니다" description="신호와 착즙 기록이 쌓이면 이곳에서 흐름을 읽을 수 있습니다." /> : <div className="radar-dashboard">
+      <RadarOverview stats={stats} periodLabel={PERIODS.find((item) => item.value === period)?.label ?? "선택 기간"} />
+      <section className="radar-narrative">
+        <p className="reading-section__label">{PERIODS.find((item) => item.value === period)?.label}의 서사</p>
+        {synthesis ? <><p className="radar-narrative__copy">{synthesis.narrative}</p>{visibleSynthesisSections(synthesis.sections).map((section) => <div className="radar-section" key={section.heading}><h2>{section.heading}</h2>{section.items.map((item) => <p key={item}>{item}</p>)}</div>)}</> : <p className="distill-copy">아직 생성된 서사가 없습니다. 레이더를 새로 만들어 보세요.</p>}
+      </section>
+      <aside className="radar-side">
+        <section><p className="reading-section__label">지금 직접 읽기</p>{queue.length ? queue.map((item) => <article className="radar-queue" key={item.id}><a href={item.sourceUrl ?? "#"} target="_blank" rel="noreferrer">{item.title} ↗</a><span>{item.whyRead ?? "검증된 다음 읽기"}</span></article>) : <p className="table-note">검증된 읽기 큐가 없습니다.</p>}<button className="ui-button-secondary" onClick={() => onNavigate("DISTILL")}>착즙에서 큐 편집</button></section>
+        <section><p className="reading-section__label">다음 행동</p><button className="next-action" onClick={() => onNavigate("DISCOVER")}>새 후보 확인 <span>발견으로 이동 →</span></button><button className="next-action" onClick={() => onNavigate("RESERVOIR")}>보존 자료 다시 읽기 <span>저장소로 이동 →</span></button></section>
+      </aside>
+      <section className="radar-section radar-section--wide radar-questions">
+        <h2>남은 질문</h2>
+        {stats.newQuestions.length ? stats.newQuestions.slice(0, 5).map((question) => <p className="reading-question" key={question}><span>?</span>{question}</p>) : <p className="table-note">아직 기록된 질문이 없습니다.</p>}
+      </section>
+      <details className="radar-landscape radar-section--wide">
+        <summary>장기 연구 지형 <span>전체 누적 토픽 보기</span></summary>
+        {topics.length ? <ol className="radar-landscape__list" aria-label="전체 누적 연구 토픽">{topics.slice(0, 14).map((topic) => <li key={topic.topic}><span>{topic.topic}</span><strong>{topic.count}회</strong></li>)}</ol> : <p className="table-note">주제 태그가 아직 없습니다.</p>}
+      </details>
       {synthesis?.biasWatch?.length ? <section className="radar-section radar-section--wide radar-bias"><h2>편향 점검</h2>{synthesis.biasWatch.map((item) => <p key={item}>주의 · {item}</p>)}</section> : null}
     </div>}
   </div>;
