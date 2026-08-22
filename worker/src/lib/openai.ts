@@ -27,6 +27,7 @@ interface ChatCompletionResponse {
 
 const PRICE_PER_M_HIGH = { input: 0.4, output: 1.6 };
 const PRICE_PER_M_LOW = { input: 0.1, output: 0.4 };
+const PRICE_PER_M_DEEP = { input: 5, output: 30 };
 
 export async function callOpenAi(env: Env, opts: OpenAiCallOptions): Promise<OpenAiCallResult> {
   const tier = opts.model ?? "high";
@@ -59,7 +60,7 @@ export async function callOpenAi(env: Env, opts: OpenAiCallOptions): Promise<Ope
 
   const data = (await res.json()) as ChatCompletionResponse;
   const text = data.choices?.[0]?.message?.content ?? "";
-  const price = tier === "high" || tier === "deep" ? PRICE_PER_M_HIGH : PRICE_PER_M_LOW;
+  const price = tier === "deep" ? PRICE_PER_M_DEEP : tier === "high" ? PRICE_PER_M_HIGH : PRICE_PER_M_LOW;
   const inputTokens = data.usage?.prompt_tokens ?? 0;
   const outputTokens = data.usage?.completion_tokens ?? 0;
   const costUsd = (inputTokens / 1e6) * price.input + (outputTokens / 1e6) * price.output;
