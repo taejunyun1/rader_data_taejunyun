@@ -13,7 +13,7 @@ const inbox = new Hono<{ Bindings: Env }>();
 const KIND_SET = new Set<string>(SOURCE_KINDS);
 
 inbox.get("/", async (c) => {
-  const clauses = ["1 = 1"];
+  const clauses = ["s.excluded_at IS NULL"];
   const binds: unknown[] = [];
   const filter = (name: string, column: string) => {
     const value = c.req.query(name)?.trim();
@@ -183,12 +183,12 @@ inbox.post("/url", async (c) => {
 
 inbox.post("/file", async (c) => {
   const body = await c.req
-    .json<{ filename?: string; text?: string; originalBase64?: string; contentType?: string }>()
+    .json<{ filename?: string; text?: string; originalBase64?: string; previewBase64?: string; contentType?: string }>()
     .catch(() => null);
 
   const filename = body?.filename?.trim();
   if (!filename) return c.json({ error: "filename_required" }, 400);
-  if (body?.originalBase64 && body.originalBase64.length > 40_000_000) {
+  if (body?.originalBase64 && body.originalBase64.length > 39_000_000) {
     return c.json({ error: "file_too_large" }, 400);
   }
 
@@ -196,7 +196,7 @@ inbox.post("/file", async (c) => {
   let text = body?.text;
   if (body?.originalBase64) {
     original = b64ToBuffer(body.originalBase64);
-    if (!text) text = new TextDecoder().decode(original);
+    if (!text && !filename.toLowerCase().endsWith(".pdf")) text = new TextDecoder().decode(original);
   } else if (typeof text === "string" && text.length > 0) {
     original = text;
   } else {
@@ -222,6 +222,7 @@ inbox.post("/file", async (c) => {
       title: filename.replace(/\.[^.]+$/, ""),
       origin: isPdf ? "upload:pdf" : isTextFile ? "upload:md" : "upload:file",
       original,
+      storedOriginal: isPdf ? null : undefined,
       extractedText: text,
       filename,
       metadata: {
@@ -229,6 +230,7 @@ inbox.post("/file", async (c) => {
         pdfPages: textStr ? (textStr.match(/\[page \d+\]/g) ?? []).length : undefined,
         scannedPdf: isScannedPdf || undefined,
       },
+      preview: body?.previewBase64 ? { data: b64ToBuffer(body.previewBase64), contentType: "image/jpeg" } : undefined,
     });
     if (!result.duplicateOf && result.qualityStatus === "READY") await analyzeSource(c.env, result.sourceId);
     return c.json({ ...result, scannedPdf: isScannedPdf || undefined });
@@ -236,6 +238,14 @@ inbox.post("/file", async (c) => {
     console.error(JSON.stringify({ level: "error", scope: "inbox:file", message: (err as Error).message }));
     return c.json({ error: "create_failed" }, 500);
   }
+});
+
+inbox.post("/:sourceId/exclude", async (c) => {
+  const sourceId = c.req.param("sourceId");
+  const result = await c.env.DB.prepare("UPDATE sources SET excluded_at = ?, updated_at = ? WHERE id = ? AND excluded_at IS NULL")
+    .bind(new Date().toISOString(), new Date().toISOString(), sourceId).run();
+  if (!result.meta.changes) return c.json({ error: "not_found_or_excluded" }, 404);
+  return c.json({ ok: true, sourceId });
 });
 
 inbox.post("/:sourceId/versions", async (c) => {

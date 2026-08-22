@@ -38,6 +38,26 @@ export async function extractPdfText(file: File, onProgress?: (page: number, tot
   return { text: pages.join("\n\n"), pageCount: doc.numPages };
 }
 
+export async function renderPdfPreview(file: File): Promise<string | undefined> {
+  const pdfjs = await loadPdfjs();
+  const doc = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
+  try {
+    const page = await doc.getPage(1);
+    const base = page.getViewport({ scale: 1 });
+    const scale = Math.min(1, 480 / base.width);
+    const viewport = page.getViewport({ scale });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(viewport.width));
+    canvas.height = Math.max(1, Math.round(viewport.height));
+    const context = canvas.getContext("2d");
+    if (!context) return undefined;
+    await page.render({ canvasContext: context, viewport }).promise;
+    return canvas.toDataURL("image/jpeg", 0.55).split(",")[1];
+  } finally {
+    await doc.destroy();
+  }
+}
+
 export function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();

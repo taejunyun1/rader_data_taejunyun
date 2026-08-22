@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import type { InboxDetail, InboxItem } from "@radar/shared";
-import { extractPdfText, fileToBase64 } from "../lib/pdf";
+import { extractPdfText, fileToBase64, renderPdfPreview } from "../lib/pdf";
 import PageHeader from "../components/layout/PageHeader";
 import StatusMessage from "../components/ui/StatusMessage";
 import IngestionReviewPane from "../components/inbox/IngestionReviewPane";
@@ -138,9 +138,10 @@ export default function InboxView() {
           setMsg(`${file.name}에서 텍스트를 추출하는 중입니다.`);
           const extracted = await extractPdfText(file);
           const hasText = extracted.text.replace(/\[page \d+\]|\s/g, "").length >= 20;
-          const originalBase64 = file.size <= 10_000_000 ? await fileToBase64(file) : undefined;
-          const data = await post("/file", { filename: file.name, text: hasText ? extracted.text : undefined, originalBase64, contentType: "application/pdf" });
-          if (data) setMsg(data.duplicateOf ? "이미 저장된 자료와 연결했습니다." : hasText ? `${file.name}을 보존했습니다. (${extracted.pageCount}쪽)` : `${file.name}은 스캔 PDF입니다. 원본만 보존했으며 핵심 문장을 메모로 추가해 주세요.`);
+          if (file.size > 29_000_000) throw new Error("PDF는 29MB 이하만 받을 수 있습니다.");
+          const [originalBase64, previewBase64] = await Promise.all([fileToBase64(file), renderPdfPreview(file)]);
+          const data = await post("/file", { filename: file.name, text: hasText ? extracted.text : undefined, originalBase64, previewBase64, contentType: "application/pdf" });
+          if (data) setMsg(data.duplicateOf ? "이미 저장된 자료와 연결했습니다." : hasText ? `${file.name}의 텍스트와 작은 미리보기를 보존했습니다. (${extracted.pageCount}쪽)` : `${file.name}은 텍스트가 없는 PDF입니다. 작은 미리보기만 보존했습니다.`);
         } else {
           setMsg(`${file.name}: 지원하지 않는 파일 형식입니다.`);
         }
@@ -201,8 +202,9 @@ export default function InboxView() {
           <div className="inbox-item__body"><span className={`status-dot status-dot--${item.status}`} /> <strong>{item.title}</strong><p>{STATUS_LABEL[item.status] ?? item.status} · {labelOf(INGEST_CHANNEL_LABELS, item.ingestChannel)} · {labelOf(INPUT_FORMAT_LABELS, item.inputFormat)} · {labelOf(QUALITY_STATUS_LABELS, item.qualityStatus)} · {item.createdAt?.slice(0, 10)}</p>{Boolean(item.pendingVersionCount) && <span className="inbox-item__review">검토 대기 {item.pendingVersionCount}개</span>}{item.error && <span className="inbox-item__error">{item.error.slice(0, 120)}</span>}</div><span className="inbox-item__chevron" aria-hidden="true">→</span>
         </button>)}</div>}
       </section>
-      <aside className="inbox-review-panel" aria-label="자료 검수" aria-busy={detailLoading}>
-        {detail ? <IngestionReviewPane detail={detail} busy={busy || detailLoading} onReextract={() => void runAction(`/${detail.item.sourceId}/reextract`, "원문을 다시 가져왔습니다.")} onRenormalize={() => void runAction(`/${detail.item.sourceId}/renormalize`, "정규화를 다시 실행했습니다.")} onAnalyze={() => void runAction(`/${detail.item.sourceId}/analyze`, "현재 버전을 다시 분석했습니다.")} onActivate={(versionId) => void runAction(`/${detail.item.sourceId}/versions/${versionId}/activate`, "선택한 버전을 현재 버전으로 바꿨습니다.")} onReject={(versionId) => void runAction(`/${detail.item.sourceId}/versions/${versionId}/reject`, "검토 대기 버전을 보류했습니다.")} /> : <div className="inbox-review-panel__state" aria-live="polite"><p className="reading-section__label">선택한 자료</p><strong>{detailLoading ? "자료를 여는 중입니다." : detailError ? "자료를 열지 못했습니다." : "자료를 선택하세요"}</strong><p>{detailLoading ? "원문·정규화문·버전 정보를 준비하고 있습니다." : detailError || "가운데 목록에서 자료를 고르면 이곳에서 바로 검수할 수 있습니다."}</p></div>}
+      <aside className={`inbox-review-panel${selectedId || detailLoading || detailError ? " is-open" : ""}`} aria-label="자료 검수" aria-busy={detailLoading}>
+        <button className="inbox-review-panel__close" onClick={() => { setSelectedId(null); setDetail(null); setDetailError(""); }} aria-label="검수 패널 닫기">×</button>
+        {detail ? <><IngestionReviewPane detail={detail} busy={busy || detailLoading} onReextract={() => void runAction(`/${detail.item.sourceId}/reextract`, "원문을 다시 가져왔습니다.")} onRenormalize={() => void runAction(`/${detail.item.sourceId}/renormalize`, "정규화를 다시 실행했습니다.")} onAnalyze={() => void runAction(`/${detail.item.sourceId}/analyze`, "현재 버전을 다시 분석했습니다.")} onActivate={(versionId) => void runAction(`/${detail.item.sourceId}/versions/${versionId}/activate`, "선택한 버전을 현재 버전으로 바꿨습니다.")} onReject={(versionId) => void runAction(`/${detail.item.sourceId}/versions/${versionId}/reject`, "검토 대기 버전을 보류했습니다.")} /><button className="ui-button-secondary inbox-review-panel__exclude" disabled={busy} onClick={() => void runAction(`/${detail.item.sourceId}/exclude`, "자료를 받은 자료 목록에서 제외했습니다.")}>목록에서 제외</button></> : <div className="inbox-review-panel__state" aria-live="polite"><p className="reading-section__label">선택한 자료</p><strong>{detailLoading ? "자료를 여는 중입니다." : detailError ? "자료를 열지 못했습니다." : "자료를 선택하세요"}</strong><p>{detailLoading ? "원문·정규화문·버전 정보를 준비하고 있습니다." : detailError || "가운데 목록에서 자료를 고르면 이곳에서 바로 검수할 수 있습니다."}</p></div>}
       </aside>
       </div>
     </div>

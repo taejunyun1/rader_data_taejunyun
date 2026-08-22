@@ -13,6 +13,8 @@ export interface CreateSourceInput {
   doi?: string;
   origin: string;
   original: string | ArrayBuffer;
+  storedOriginal?: string | ArrayBuffer | null;
+  preview?: { data: ArrayBuffer; contentType: string };
   extractedText?: string;
   filename?: string;
   metadata?: Record<string, unknown>;
@@ -83,10 +85,12 @@ export async function createSource(env: Env, input: CreateSourceInput): Promise<
   const id = uuid();
   const versionId = uuid();
   const clean = input.filename ? sanitizeFilename(input.filename) : null;
-  const r2Key = `originals/${id}/v1${clean ? `-${clean}` : ""}`;
-  await env.ORIGINALS.put(r2Key, input.original, {
+  const r2Key = input.storedOriginal === null ? null : `originals/${id}/v1${clean ? `-${clean}` : ""}`;
+  if (r2Key) await env.ORIGINALS.put(r2Key, input.storedOriginal ?? input.original, {
     customMetadata: asciiOnly({ sourceId: id, origin: input.origin }),
   });
+  const previewKey = input.preview ? `previews/${id}/v1.jpg` : null;
+  if (previewKey && input.preview) await env.ORIGINALS.put(previewKey, input.preview.data, { httpMetadata: { contentType: input.preview.contentType } });
 
   const text = (input.extractedText ?? (typeof input.original === "string" ? input.original : "")).slice(0, 500_000);
   const derivedMeta = deriveIngestMeta(input.origin, input.filename, input.metadata);
@@ -121,7 +125,7 @@ export async function createSource(env: Env, input: CreateSourceInput): Promise<
         input.origin,
         JSON.stringify([input.origin]),
         r2Key,
-        input.metadata ? JSON.stringify(input.metadata) : null,
+        JSON.stringify({ ...(input.metadata ?? {}), ...(previewKey ? { previewKey } : {}), ...(input.storedOriginal === null ? { originalDiscarded: true } : {}) }),
         ingestChannel,
         inputFormat,
         versionId,
