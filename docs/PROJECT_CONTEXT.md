@@ -121,6 +121,8 @@ Semantic Search, Obsidian CLI, arXiv/RSS, Usage dashboard는 이미 구현된 �
 - Workers AI: 분석·분류·embedding 등 저비용 작업
 - AI Gateway → OpenAI: Distill/Critic/Counter/Radar synthesis
 - 모델명은 `MODEL_HIGH`, `MODEL_LOW` 등 config에서 주입
+- 설정 → AI 모델 역할에서 `기본 모델`과 `상위 통합·반론 검증 모델`을 선택할 수 있다. 모델 목록은 서버가 OpenAI 모델 목록 API에서 가져오며, 저장값은 `ai_model_roles_v1` KV에 보관한다. 연결 시험을 통과한 이후의 호출부터 적용하고, 설정이 없거나 목록 조회가 실패하면 `MODEL_HIGH`·`MODEL_DEEP`로 복귀한다.
+- 긴 자료 심층 정리는 청크 읽기·초벌 정리에 기본 모델을 사용하고, 최종 통합에 상위 모델을 사용한다. Distill은 초안은 기본 모델, Critic·Counter 검증·실패한 Counter 재검토·Radar 합성은 상위 모델을 사용한다.
 - `ai_usage`에 호출별 token/cost/purpose를 기록
 - 월 예산은 기본 `$10`, 80% 경고, 100% Distill 중단
 - 자동 작업을 추가할 때도 예산 초과 가능성과 guardrail 적용 범위를 확인한다.

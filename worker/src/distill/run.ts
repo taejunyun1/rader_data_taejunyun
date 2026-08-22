@@ -94,7 +94,7 @@ export async function runDistill(
 
   const criticRes = await callOpenAi(env, {
       purpose: "critic",
-      model: "high",
+      model: "deep",
       jsonMode: true,
       maxOutputTokens: 3000,
       messages: [
@@ -170,7 +170,7 @@ async function runCounter(
 
   const repaired = await callOpenAi(env, {
     purpose: "counter",
-    model: "high",
+    model: "deep",
     jsonMode: true,
     maxOutputTokens: 3200,
     messages: [
@@ -197,7 +197,7 @@ async function runCounter(
 async function validateCounter(env: Env, distillJson: string, counter: CounterOutput, sourceEvidence: string): Promise<{ status: "verified" | "unverified"; result: NonNullable<CounterOutput["validation"]>; costUsd: number }> {
   const response = await callOpenAi(env, {
     purpose: "counter_validation",
-    model: "high",
+    model: "deep",
     jsonMode: true,
     maxOutputTokens: 1600,
     messages: [

@@ -92,7 +92,7 @@ Rules: grounded in given data only; if data is thin, say so honestly in the item
 
   const res = await callOpenAi(env, {
     purpose: `radar-${period.toLowerCase()}`,
-    model: "high",
+    model: "deep",
     jsonMode: true,
     maxOutputTokens: 3000,
     messages: [

@@ -1,7 +1,7 @@
 import { uuid } from "../ingestion/ids";
 import { callOpenAi } from "../lib/openai";
 import { chunkText, extractJson, deepChunkPrompt, deepSynthesisPrompt, keepVerbatimQuotes, type DeepAnalysisPayload, type DeepChunkResult, validateDeepPayload } from "./deepPrompt";
-import { profileFor, type DeepProfile } from "./deepProfiles";
+import { modelTierForDeepStage, profileFor } from "./deepProfiles";
 
 export async function analyzeDeepSource(env: Env, sourceId: string, requestedProfile: unknown): Promise<{ payload: DeepAnalysisPayload; model: string; costUsd: number }> {
   const profile = profileFor(requestedProfile);
@@ -18,7 +18,7 @@ export async function analyzeDeepSource(env: Env, sourceId: string, requestedPro
   const chunkResults = await Promise.all(chunks.map(async (chunk, index) => {
     const result = await callOpenAi(env, {
       purpose: "deep_analysis",
-      model: profile.tier,
+      model: modelTierForDeepStage("chunk"),
       jsonMode: true,
       maxOutputTokens: 2600,
       messages: [
@@ -33,7 +33,7 @@ export async function analyzeDeepSource(env: Env, sourceId: string, requestedPro
 
   const synthesis = await callOpenAi(env, {
     purpose: "deep_analysis",
-    model: profile.tier,
+    model: modelTierForDeepStage("synthesis"),
     jsonMode: true,
     maxOutputTokens: 4200,
     messages: [

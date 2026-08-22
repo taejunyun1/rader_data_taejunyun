@@ -65,6 +65,11 @@ export type QueuePriority = "MUST" | "WORTH" | "REFERENCE";
 
 export type DiscoveryStatus = "CANDIDATE" | "KEPT" | "WATCHED" | "IGNORED";
 
+export interface AiModelRoles {
+  baseModel: string;
+  reviewModel: string;
+}
+
 export interface DiscoverySourcePreset {
   id: string;
   name: string;

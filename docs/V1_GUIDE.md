@@ -1,6 +1,6 @@
 # Research Radar — V1 가이드 및 기술 작동 방식
 
-최종 업데이트: 2026-08-19 · 라이브: https://radar.taejunyun.com
+최종 업데이트: 2026-08-22 · 라이브: https://radar.taejunyun.com
 
 ---
 
@@ -62,6 +62,7 @@ Discovery 탐색 ─────┘                              └─ Radar (�
 | 재착즙 | DISTILL — 요소 체크 후 Re-distill | 선택 요소 유지, 나머지 신선하게 |
 | 읽을거리 검증 | DISTILL — Verify via OpenAlex | 논문 실존 확인(책은 미검증 정상) |
 | 레이더 | RADAR — Run Radar synthesis | 주/월/년 리포트 + Bias watch |
+| 모델 변경 | SETTINGS — AI 모델 역할에서 두 모델 선택 → 연결 확인 → 저장 | 이후 작업부터 기본 모델·상위 통합/반론 검증 모델 적용 |
 | 외부 탐색 | DISCOVER — Run discovery / 후보 처리 | Keep 시 Reservoir 승격 |
 | 백업 | SETTINGS — Export 3종 + Backup originals | 벤더 비종속 보존 |
 
@@ -92,7 +93,7 @@ radar.taejunyun.com
          ├─ R2 "reservoir-exports"  — 백업 스냅샷
          ├─ Workers AI — llama-3.3-70b(분석) + bge-m3(임베딩)
          ├─ Vectorize "research-radar-embeddings" — 1024d cosine
-         └─ AI Gateway "research-radar" → OpenAI (gpt-5-mini/nano)
+         └─ AI Gateway "research-radar" → OpenAI (설정에서 선택, 환경변수 fallback)
               · Authenticated Gateway(cf-aig-authorization) + vault OpenAI 키
 외부: OpenAlex / arXiv API / RSS 피드
 ```
@@ -120,7 +121,7 @@ processing_jobs / ai_usage / kv
 | `/api/distill` | run / sessions / select / verify-queue / budget |
 | `/api/radar` | stats / snapshots / synthesize(period) |
 | `/api/discover` | run / candidates/:id/:action / queries / feeds |
-| `/api/settings` | params GET/PUT, import-homepage |
+| `/api/settings` | params GET/PUT, AI 모델 목록·연결 시험·역할 저장, import-homepage |
 | `/api/signals` | POST 기록, GET summary |
 | `/api/usage` | GET summary — 월별 비용 집계 (V2) |
 | `/api/export` | json/csv/markdown 다운로드, originals-to-r2 백업 |
@@ -138,12 +139,22 @@ INPUT → 식별 → dedup(DOI→canonical URL→title+author→SHA-256) → R2 
 
 ### Distill 파이프라인
 1. **Context Selection** (`distill/context.ts`): 최근 60일 모멘텀 키워드 + 미해결 질문 + 90일 내 Keep/Develop/Select 소스 + 키워드 매칭 소스. 최대 12소스/26k chars — **Reservoir 전체를 넣지 않음**(스펙 원칙)
-2. **Distill** (환경변수 모델, JSON 모드): keywords 5-7 / thoughts 3-5 / questions ~3 / read_next 3-5 / gaps 1-3 / research+artwork directions ~2 / 소실험. 프로세스 파라미터(familiarity/divergence 등)가 프롬프트에 반영
+2. **Distill** (설정된 역할 모델, JSON 모드): 기본 모델이 초안을 만들고 상위 통합 모델이 Critic·반론 검증·필요한 재검토를 담당한다. keywords 5-7 / thoughts 3-5 / questions ~3 / read_next 3-5 / gaps 1-3 / research+artwork directions ~2 / 소실험. 프로세스 파라미터(familiarity/divergence 등)가 프롬프트에 반영
 3. **Critic** 자동: 8개 경고 카테고리 + 학술적 근거부족 ↔ 예술적 실행가능성 구분
 4. **Counter** 기본 켜짐: 토글이 켜진 착즙에서 키워드/미학의 정면 반대 명제를 동적 생성하고, 실존 작가·기법으로 근거를 보강한 뒤 정합성 검증. counterStrength는 반대 여부가 아니라 실행 방향의 급진성과 낯섦을 조절
 5. **세션 저장**: input_context/sources_used/output/critic/counter/모델+프롬프트 버전/비용 전부 기록
 6. **Reading Queue 검증** (waitUntil 백그라운드): OpenAlex 제목 유사도 매칭 → verified/openalex_id/링크
 - 잘린 JSON 복구 파서 내장(truncation 대응)
+
+### 모델 역할과 비용
+
+- SETTINGS → AI 모델 역할에서 현재 API가 제공하는 텍스트 모델 목록을 새로 불러올 수 있다.
+- `기본 모델`은 자료 청크 읽기, 초벌 착즙, Counter 초안에 사용한다.
+- `상위 통합·반론 검증 모델`은 심층 정리 최종 통합, Critic, Counter 검증·재검토, Radar 합성에 사용한다.
+- 모델을 바꾸어도 과거 분석은 재생성하지 않는다. 새 작업부터 적용된다.
+- 연결 확인은 선택한 모델에 최소 JSON 요청을 보내며 `ai_usage`에 기록된다.
+- 가격이 등록되지 않은 신규 모델은 보수적 상한 단가로 비용을 계산한다. 설정 화면에서 경고를 확인한다.
+- 모델 ID·가격표는 `worker/wrangler.jsonc`의 vars로 관리하고, 저장된 역할은 D1 `kv`의 `ai_model_roles_v1`에 기록한다.
 
 ### Radar
 - **일일 cron**(10:00 KST): homepage_artist가 R2에 올린 읽을거리 JSON을 원본 스냅샷으로 보존하고 WEB 소스로 업서트·분석
@@ -154,7 +165,7 @@ INPUT → 식별 → dedup(DOI→canonical URL→title+author→SHA-256) → R2 
 ### 비용 관리
 - **원장**: ai_usage 테이블에 호출별 토큰·비용 기록(게이트웨이 경유 전 호출)
 - **월 $10 guardrail**: 80% 경고/100% Distill 차단(DISTILL 탭 배지)
-- **2계층 모델**: Workers AI(무료할당)=분석/임베딩, OpenAI mini=착즉. 실측: Distill 1회 ≈ $0.015
+- **2계층 모델**: Workers AI(무료할당)=분석/임베딩, OpenAI 기본 모델=초안·청크, OpenAI 상위 모델=통합·검증. 실측 비용은 선택 모델과 출력량에 따라 달라진다.
 - 모델명은 wrangler vars(MODEL_HIGH/MODEL_LOW)로 관리 — 하드코딩 없음
 
 ### 모니터링

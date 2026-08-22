@@ -1,3 +1,5 @@
+import { loadModelRoles, openAiHeaders, pricingForModel } from "./modelSettings";
+
 export interface OpenAiMessage {
   role: "system" | "user" | "assistant";
   content: string;
@@ -7,6 +9,7 @@ export interface OpenAiCallOptions {
   purpose: string;
   messages: OpenAiMessage[];
   model?: "high" | "low" | "deep";
+  modelId?: string;
   jsonMode?: boolean;
   maxOutputTokens?: number;
 }
@@ -17,6 +20,7 @@ export interface OpenAiCallResult {
   model: string;
   inputTokens: number;
   outputTokens: number;
+  pricingKnown: boolean;
 }
 
 interface ChatCompletionResponse {
@@ -25,13 +29,9 @@ interface ChatCompletionResponse {
   error?: { message: string };
 }
 
-const PRICE_PER_M_HIGH = { input: 0.25, output: 2 };
-const PRICE_PER_M_LOW = { input: 0.1, output: 0.4 };
-const PRICE_PER_M_DEEP = { input: 0.75, output: 4.5 };
-
 export async function callOpenAi(env: Env, opts: OpenAiCallOptions): Promise<OpenAiCallResult> {
   const tier = opts.model ?? "high";
-  const model = tier === "high" ? env.MODEL_HIGH : tier === "deep" ? (env.MODEL_DEEP || env.MODEL_HIGH) : env.MODEL_LOW;
+  const model = opts.modelId ?? await resolveModelId(env, tier);
   const url = `${env.OPENAI_BASE_URL}/chat/completions`;
 
   const body: Record<string, unknown> = {
@@ -41,15 +41,9 @@ export async function callOpenAi(env: Env, opts: OpenAiCallOptions): Promise<Ope
   if (opts.jsonMode) body.response_format = { type: "json_object" };
   if (opts.maxOutputTokens) body.max_completion_tokens = opts.maxOutputTokens;
 
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${env.OPENAI_API_KEY}`,
-    "Content-Type": "application/json",
-  };
-  if (env.CF_AIG_TOKEN) headers["cf-aig-authorization"] = `Bearer ${env.CF_AIG_TOKEN}`;
-
   const res = await fetch(url, {
     method: "POST",
-    headers,
+    headers: openAiHeaders(env),
     body: JSON.stringify(body),
   });
 
@@ -60,7 +54,7 @@ export async function callOpenAi(env: Env, opts: OpenAiCallOptions): Promise<Ope
 
   const data = (await res.json()) as ChatCompletionResponse;
   const text = data.choices?.[0]?.message?.content ?? "";
-  const price = tier === "deep" ? PRICE_PER_M_DEEP : tier === "high" ? PRICE_PER_M_HIGH : PRICE_PER_M_LOW;
+  const price = pricingForModel(env, model);
   const inputTokens = data.usage?.prompt_tokens ?? 0;
   const outputTokens = data.usage?.completion_tokens ?? 0;
   const costUsd = (inputTokens / 1e6) * price.input + (outputTokens / 1e6) * price.output;
@@ -73,7 +67,13 @@ export async function callOpenAi(env: Env, opts: OpenAiCallOptions): Promise<Ope
     costUsd,
   });
 
-  return { text, costUsd, model, inputTokens, outputTokens };
+  return { text, costUsd, model, inputTokens, outputTokens, pricingKnown: price.known };
+}
+
+async function resolveModelId(env: Env, tier: "high" | "low" | "deep"): Promise<string> {
+  if (tier === "low") return env.MODEL_LOW;
+  const roles = await loadModelRoles(env.DB, env);
+  return tier === "deep" ? roles.reviewModel : roles.baseModel;
 }
 
 async function recordAiUsage(
