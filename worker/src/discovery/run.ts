@@ -2,7 +2,7 @@ import { searchWorks, type OpenAlexWork } from "../lib/openalex";
 import { searchArxiv, type ArxivWork } from "../lib/arxiv";
 import { fetchFeed, type FeedItem } from "../lib/rss";
 import { uuid } from "../ingestion/ids";
-import { DEFAULT_DISCOVERY_FEEDS } from "@radar/shared";
+import { DEFAULT_DISCOVERY_FEEDS, discoverySourceByFeedUrl } from "@radar/shared";
 import {
   assessDiscoveryCandidate,
   classifyDiscoveryAccess,
@@ -34,7 +34,14 @@ const DISCOVERY_FEEDS_KEY = "discovery_feeds_v1";
 
 export type DiscoveryRunResult = SharedDiscoveryRunResult;
 
+export interface DiscoveryFeedInput {
+  sourceId: string;
+  feedUrl: string;
+  accessPolicy: "FREE_FULLTEXT" | "PAYWALLED" | "INSTITUTION" | "UNKNOWN";
+}
+
 export interface PendingCandidate extends SelectableDiscoveryCandidate {
+  sourceId: string | null;
   authors: string | null;
   year: number | null;
   abstract: string | null;
@@ -56,7 +63,7 @@ export interface DiscoveryCollectionInput {
   homepageKeywords: string[];
   momentumKeywords: string[];
   legacyQueries: string[];
-  feeds: string[];
+  feeds: DiscoveryFeedInput[];
   existingExternalIds: Set<string>;
   activeTitles: Set<string>;
   divergence: number;
@@ -114,12 +121,33 @@ export async function customQueries(db: D1Database): Promise<string[]> {
   return loadListKV(db, DISCOVERY_QUERIES_KEY, 4);
 }
 
+export function sanitizeCustomFeedUrls(feeds: string[]): string[] {
+  return [...new Set(
+    feeds
+      .map((feed) => feed.trim())
+      .filter((feed) => /^https?:\/\//.test(feed))
+      .filter((feed) => discoverySourceByFeedUrl(feed) === null),
+  )].slice(0, 6);
+}
+
+export function resolveDiscoveryReadingFeeds(customFeedUrls: string[]): DiscoveryFeedInput[] {
+  const feedUrls = [...DEFAULT_DISCOVERY_FEEDS, ...sanitizeCustomFeedUrls(customFeedUrls)];
+  return feedUrls.map((feedUrl) => {
+    const source = discoverySourceByFeedUrl(feedUrl);
+    return {
+      sourceId: source?.id ?? `custom:${feedUrl}`,
+      feedUrl,
+      accessPolicy: source?.accessPolicy ?? "UNKNOWN",
+    };
+  });
+}
+
 export async function customFeeds(db: D1Database): Promise<string[]> {
-  return loadListKV(db, DISCOVERY_FEEDS_KEY, 6, DEFAULT_DISCOVERY_FEEDS);
+  return sanitizeCustomFeedUrls(await loadListKV(db, DISCOVERY_FEEDS_KEY, 6, []));
 }
 
 export async function setCustomFeeds(db: D1Database, feeds: string[]): Promise<void> {
-  await saveListKV(db, DISCOVERY_FEEDS_KEY, feeds, 6);
+  await saveListKV(db, DISCOVERY_FEEDS_KEY, sanitizeCustomFeedUrls(feeds), 6);
 }
 
 async function loadListKV(db: D1Database, key: string, max: number, fallback: string[] = []): Promise<string[]> {
@@ -205,6 +233,7 @@ export async function collectDiscoveryCandidates(input: DiscoveryCollectionInput
       addPending({
         externalId: work.id,
         provider: "openalex",
+        sourceId: null,
         title: work.title,
         authors: work.authors ?? null,
         year: work.year,
@@ -228,6 +257,7 @@ export async function collectDiscoveryCandidates(input: DiscoveryCollectionInput
       addPending({
         externalId: work.id,
         provider: "arxiv",
+        sourceId: null,
         title: work.title,
         authors: work.authors || null,
         year: work.year,
@@ -262,8 +292,8 @@ export async function collectDiscoveryCandidates(input: DiscoveryCollectionInput
     if (executed) diagnostics.executedQueries += 1;
   }
 
-  for (const feedUrl of input.feeds) {
-    const result = await input.clients.rss(feedUrl, 8);
+  for (const feed of input.feeds) {
+    const result = await input.clients.rss(feed.feedUrl, 8);
     recordProviderResult(diagnostics, "rss", result);
     if (result.status !== "OK") continue;
     for (const item of result.items) {
@@ -271,19 +301,20 @@ export async function collectDiscoveryCandidates(input: DiscoveryCollectionInput
         recordCandidateOutcome(diagnostics, "rss", { kind: "MISSING_ACCESS", reason: "ACCESS_UNKNOWN" });
         continue;
       }
-      const accessStatus = classifyDiscoveryAccess("rss", item.url);
+      const accessStatus = classifyDiscoveryAccess("rss", item.url, feed.accessPolicy);
       const assessment = assessDiscoveryCandidate({ provider: "rss", title: item.title, summary: item.summary, year: item.year, accessStatus });
       if (!recordAssessment(diagnostics, "rss", assessment)) continue;
       addPending({
         externalId: item.url,
         provider: "rss",
+        sourceId: feed.sourceId,
         title: item.title,
         authors: null,
         year: item.year,
         abstract: item.summary,
         score: assessment.score,
         keywordOverlap: Math.min(1, assessment.matchedTerms.length / 3),
-        query: feedUrl.slice(0, 80),
+        query: feed.feedUrl.slice(0, 80),
         lane: "ORIGINAL",
         querySource: "FEED",
         url: item.url,
@@ -328,7 +359,7 @@ export async function runDiscovery(env: Env, input: number | { divergence: numbe
   const homepage = await homepageKeywords(env.DB, 2);
   const momentum = await momentumKeywords(env.DB, 4);
   const legacy = await customQueries(env.DB);
-  const feeds = await customFeeds(env.DB);
+  const feeds = resolveDiscoveryReadingFeeds(await customFeeds(env.DB));
   const plan = buildDiscoveryQueryPlan({ profile, homepageKeywords: homepage, momentumKeywords: momentum, legacyQueries: legacy });
   if (plan.length === 0 && feeds.length === 0) throw new Error("discovery_profile_empty");
 

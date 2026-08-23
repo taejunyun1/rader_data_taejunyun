@@ -77,4 +77,15 @@ describe("DiscoverView", () => {
     render(<DiscoveryRunSummary collected={0} diagnostics={diagnostics} onAction={vi.fn()} />);
     expect(screen.getByText("일부 출처 확인 실패")).toBeInTheDocument();
   });
+
+  it("separates automatic source status from the custom feed editor", async () => {
+    render(<DiscoverView onNavigate={vi.fn()} />);
+    await userEvent.click(screen.getByText("발견 범위와 수집 출처 조정"));
+
+    expect(screen.getByRole("heading", { name: "사용자 추가 RSS·Atom 피드" })).toBeVisible();
+    expect(screen.getByText(/기본 피드는 자동으로 적용됩니다/)).toBeVisible();
+    expect(screen.getByRole("link", { name: "Unthinking Photography ↗" }).closest(".discovery-source__row")).toHaveTextContent("읽을거리 자동 수집");
+    expect(screen.getByRole("link", { name: "CAA News ↗" }).closest(".discovery-source__row")).toHaveTextContent("현장 신호 자동 수집");
+    expect(screen.getByRole("link", { name: "Artforum ↗" }).closest(".discovery-source__row")).toHaveTextContent("공식 RSS · 자동 수집 안 함");
+  });
 });

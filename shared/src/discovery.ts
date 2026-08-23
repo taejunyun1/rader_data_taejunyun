@@ -413,6 +413,7 @@ export function resolveDiscoveryAccessForExisting(
 export interface SelectableDiscoveryCandidate {
   externalId: string;
   provider: string;
+  sourceId?: string | null;
   title: string;
   score: number;
   keywordOverlap?: number;
@@ -471,33 +472,42 @@ export function selectDiscoveryCandidatesByLane<T extends LaneSelectableDiscover
   const selectedIds = new Set<string>();
   const seenTitles = new Set<string>();
   const providerCounts = new Map<string, number>();
+  const sourceCounts = new Map<string, number>();
 
-  const take = (lane: DiscoveryLane, limit: number) => {
+  const canTake = (candidate: T, balancedPass: boolean): boolean => {
+    const title = normalizeDiscoveryTitle(candidate.title);
+    const providerCount = providerCounts.get(candidate.provider) ?? 0;
+    if (selectedIds.has(candidate.externalId) || !title || seenTitles.has(title)) return false;
+    if (providerCount >= (DISCOVERY_PROVIDER_QUOTAS[candidate.provider] ?? 8)) return false;
+    if (balancedPass && candidate.provider === "rss" && candidate.sourceId) {
+      return (sourceCounts.get(candidate.sourceId) ?? 0) === 0;
+    }
+    return true;
+  };
+
+  const remember = (candidate: T): void => {
+    const title = normalizeDiscoveryTitle(candidate.title);
+    selectedIds.add(candidate.externalId);
+    seenTitles.add(title);
+    providerCounts.set(candidate.provider, (providerCounts.get(candidate.provider) ?? 0) + 1);
+    if (candidate.sourceId) sourceCounts.set(candidate.sourceId, (sourceCounts.get(candidate.sourceId) ?? 0) + 1);
+    selected.push(candidate);
+  };
+
+  const take = (lane: DiscoveryLane, limit: number, balancedPass: boolean): void => {
     for (const candidate of ranked) {
       if (selected.length >= total || selected.filter((item) => item.lane === lane).length >= limit) break;
-      if (candidate.lane !== lane || selectedIds.has(candidate.externalId)) continue;
-      const title = normalizeDiscoveryTitle(candidate.title);
-      if (!title || seenTitles.has(title)) continue;
-      const count = providerCounts.get(candidate.provider) ?? 0;
-      if (count >= (DISCOVERY_PROVIDER_QUOTAS[candidate.provider] ?? 8)) continue;
-      selectedIds.add(candidate.externalId);
-      seenTitles.add(title);
-      providerCounts.set(candidate.provider, count + 1);
-      selected.push(candidate);
+      if (candidate.lane !== lane || !canTake(candidate, balancedPass)) continue;
+      remember(candidate);
     }
   };
 
-  take("ORIGINAL", quotas.ORIGINAL);
-  take("COUNTER", quotas.COUNTER);
+  take("ORIGINAL", quotas.ORIGINAL, true);
+  take("COUNTER", quotas.COUNTER, true);
   for (const candidate of ranked) {
     if (selected.length >= total) break;
-    const title = normalizeDiscoveryTitle(candidate.title);
-    const count = providerCounts.get(candidate.provider) ?? 0;
-    if (selectedIds.has(candidate.externalId) || !title || seenTitles.has(title) || count >= (DISCOVERY_PROVIDER_QUOTAS[candidate.provider] ?? 8)) continue;
-    selectedIds.add(candidate.externalId);
-    seenTitles.add(title);
-    providerCounts.set(candidate.provider, count + 1);
-    selected.push(candidate);
+    if (!canTake(candidate, false)) continue;
+    remember(candidate);
   }
   return selected;
 }

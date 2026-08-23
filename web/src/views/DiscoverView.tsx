@@ -47,11 +47,13 @@ const LANE_FILTERS = [
   { value: "COUNTER", label: "카운터" },
 ];
 
-const SOURCE_COLLECTION_LABELS = {
-  RSS: "공개 RSS 자동 수집",
-  API: "공식 API 연결 필요",
-  SEARCH: "검색 링크로 확인",
-} as const;
+function sourceCollectionLabel(source: DiscoverySourcePreset): string {
+  if (source.autoCollect && source.target === "READING") return "읽을거리 자동 수집";
+  if (source.autoCollect && source.target === "FIELD_SIGNAL") return "현장 신호 자동 수집";
+  if (source.collection === "RSS") return "공식 RSS · 자동 수집 안 함";
+  if (source.collection === "API") return "공식 API 연결 필요";
+  return "검색 링크로 확인";
+}
 
 const DISCOVERY_ACTIONS: DecisionAction[] = [
   { id: "develop", label: "발전시키기", description: "저장소에 보관하고 연구 방향에 반영" },
@@ -216,8 +218,19 @@ export default function DiscoverView({ onNavigate, jobs = [], onJobCreated }: { 
 
   async function saveFeeds() {
     const list = feeds.split("\n").map((feed) => feed.trim()).filter((feed) => /^https?:\/\//.test(feed)).slice(0, 6);
-    const response = await fetch("/api/discover/feeds", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ feeds: list }) });
-    setFeedMsg(response.ok ? `${list.length}개 피드를 저장했습니다.` : "피드 저장에 실패했습니다.");
+    const response = await fetch("/api/discover/feeds", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ feeds: list }),
+    });
+    if (!response.ok) {
+      setFeedMsg("피드 저장에 실패했습니다.");
+      return;
+    }
+    const data = await response.json() as { feeds?: string[] };
+    const saved = data.feeds ?? [];
+    setFeeds(saved.join("\n"));
+    setFeedMsg(`${saved.length}개 사용자 피드를 저장했습니다.`);
   }
 
   const selected = useMemo(() => candidates.find((candidate) => candidate.id === selectedId) ?? null, [candidates, selectedId]);
@@ -244,9 +257,9 @@ export default function DiscoverView({ onNavigate, jobs = [], onJobCreated }: { 
       <details className="discovery-settings">
         <summary>발견 범위와 수집 출처 조정</summary>
         <div className="discovery-settings__grid">
-          <section><h2>RSS·Atom 피드</h2><p>공개 피드만 자동 수집합니다. 한 줄에 하나씩, 최대 6개입니다.</p><textarea value={feeds} onChange={(event) => setFeeds(event.target.value)} placeholder="https://some-journal.org/rss" /><button className="ui-button-secondary" onClick={() => void saveFeeds()}>피드 저장</button>{feedMsg && <span className="table-note">{feedMsg}</span>}</section>
+          <section><h2>사용자 추가 RSS·Atom 피드</h2><p>검증된 기본 피드는 자동으로 적용됩니다. 여기는 별도 공개 피드만 한 줄에 하나씩, 최대 6개 추가합니다. 접근이 확인되지 않은 HTML은 읽을거리 후보가 되지 않습니다.</p><textarea value={feeds} onChange={(event) => setFeeds(event.target.value)} placeholder="https://some-journal.org/rss" /><button className="ui-button-secondary" onClick={() => void saveFeeds()}>피드 저장</button>{feedMsg && <span className="table-note">{feedMsg}</span>}</section>
         </div>
-        <section className="discovery-sources"><h2>추천 출처 · 수집 상태</h2><p>공개 피드는 자동 수집하고, 기관형 데이터베이스는 공식 연동 상태를 구분해 표시합니다.</p>{DISCOVERY_SOURCE_PRESETS.map((source: DiscoverySourcePreset) => <div className="discovery-source__row" key={source.id}><a href={source.url} target="_blank" rel="noreferrer">{source.name} ↗</a><span>{source.description} · {SOURCE_COLLECTION_LABELS[source.collection]}</span></div>)}</section>
+        <section className="discovery-sources"><h2>추천 출처 · 수집 상태</h2><p>공개 피드는 자동 수집하고, 기관형 데이터베이스는 공식 연동 상태를 구분해 표시합니다.</p>{DISCOVERY_SOURCE_PRESETS.map((source: DiscoverySourcePreset) => <div className="discovery-source__row" key={source.id}><a href={source.url} target="_blank" rel="noreferrer">{source.name} ↗</a><span>{source.description} · {sourceCollectionLabel(source)}</span></div>)}</section>
         {homepageProjects.length > 0 && <section className="discovery-sources"><h2>내 홈페이지 기반 출발점</h2><p>홈페이지에서 추출된 프로젝트가 발견 검색의 맥락으로 사용됩니다{homepageExtractedAt ? ` · 마지막 추출 ${new Date(homepageExtractedAt).toLocaleDateString("ko-KR")}` : ""}.</p>{homepageProjects.slice(0, 5).map((project) => <div className="discovery-source__row" key={project.slug}><a href={project.projectUrl} target="_blank" rel="noreferrer">{project.title} ↗</a><span>{project.year ?? "연도 미상"} · 이미지 {project.imageCount} · 영상 {project.videoCount}</span></div>)}</section>}
       </details>
     </div>

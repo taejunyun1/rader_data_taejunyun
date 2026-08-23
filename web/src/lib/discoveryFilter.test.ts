@@ -7,6 +7,7 @@ import {
   normalizeDiscoveryTitle,
   resolveDiscoveryAccessForExisting,
   selectDiscoveryCandidates,
+  selectDiscoveryCandidatesByLane,
 } from "@radar/shared/discovery";
 
 describe("discovery filtering", () => {
@@ -177,6 +178,18 @@ describe("discovery candidate selection", () => {
     expect(selected.filter((item) => item.provider === "arxiv")).toHaveLength(2);
     expect(selected.filter((item) => item.provider === "rss")).toHaveLength(2);
     expect(new Set(selected.map((item) => normalizeDiscoveryTitle(item.title))).size).toBe(selected.length);
+  });
+
+  it("balances RSS picks by source before taking a second item from the same feed", () => {
+    const selected = selectDiscoveryCandidatesByLane([
+      { externalId: "rss-1", provider: "rss", sourceId: "feed-a", title: "Photography and Visual Culture", score: 0.91, lane: "ORIGINAL", querySource: "FEED" },
+      { externalId: "rss-2", provider: "rss", sourceId: "feed-a", title: "Materiality and Tactility in Photography", score: 0.9, lane: "ORIGINAL", querySource: "FEED" },
+      { externalId: "rss-3", provider: "rss", sourceId: "feed-b", title: "Machine Vision and Authorship", score: 0.89, lane: "ORIGINAL", querySource: "FEED" },
+      { externalId: "oa-1", provider: "openalex", title: "OpenAlex One", score: 0.95, lane: "ORIGINAL", querySource: "SAVED" },
+      { externalId: "oa-2", provider: "openalex", title: "OpenAlex Two", score: 0.94, lane: "ORIGINAL", querySource: "SAVED" },
+    ], 100, 0, 0, 4);
+
+    expect(selected.map((item) => item.externalId)).toEqual(["oa-1", "oa-2", "rss-1", "rss-3"]);
   });
 });
 

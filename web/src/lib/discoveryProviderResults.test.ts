@@ -29,4 +29,25 @@ describe("discovery provider outcomes", () => {
     );
     await expect(fetchFeed("https://example.com/feed.xml", 1)).resolves.toMatchObject({ status: "PARSE_ERROR", items: [] });
   });
+
+  it("preserves exact RSS publication timestamps", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValueOnce(
+        new Response(
+          "<rss><channel><item><title>Machine Readable Photography</title><link>https://unthinking.photography/item</link><pubDate>Tue, 18 Aug 2026 00:00:00 +0000</pubDate><description>Photography and machine vision.</description></item></channel></rss>",
+          { status: 200, headers: { "content-type": "application/xml" } },
+        ),
+      ),
+    );
+
+    const result = await fetchFeed("https://unthinking.photography/feed", 1);
+
+    expect(result.status).toBe("OK");
+    expect(result.items[0]).toMatchObject({
+      title: "Machine Readable Photography",
+      year: 2026,
+      publishedAt: "2026-08-18T00:00:00.000Z",
+    });
+  });
 });

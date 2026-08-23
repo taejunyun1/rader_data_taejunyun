@@ -5,6 +5,7 @@ export interface FeedItem {
   title: string;
   url: string | null;
   year: number | null;
+  publishedAt: string | null;
   summary: string | null;
 }
 
@@ -56,9 +57,17 @@ function parseFeedXml(xml: string): FeedItem[] {
       b.match(/<guid[^>]*>(.*?)<\/guid>/)?.[1] ??
       null;
     const dateMatch = b.match(/<(?:pubDate|published|updated)>([^<]+)</);
-    const year = dateMatch ? new Date(dateMatch[1]!).getFullYear() : null;
+    const parsedDate = dateMatch ? new Date(decodeXml(dateMatch[1]!)) : null;
+    const publishedAt = parsedDate && Number.isFinite(parsedDate.getTime()) ? parsedDate.toISOString() : null;
+    const year = publishedAt ? new Date(publishedAt).getUTCFullYear() : null;
     const summary = cleanDiscoverySourceText(decodeXml(tag(b, "description") ?? tag(b, "summary") ?? ""));
-    items.push({ title, url: link ? decodeXml(link) : null, year: Number.isFinite(year) ? year : null, summary: summary.slice(0, 400) || null });
+    items.push({
+      title,
+      url: link ? decodeXml(link) : null,
+      year,
+      publishedAt,
+      summary: summary.slice(0, 400) || null,
+    });
   }
   return items;
 }

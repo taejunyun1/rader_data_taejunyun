@@ -113,7 +113,7 @@ discover.put("/feeds", async (c) => {
   if (!body?.feeds || !Array.isArray(body.feeds)) return c.json({ error: "feeds_required" }, 400);
   const clean = body.feeds.map((f) => String(f).trim()).filter((f) => /^https?:\/\//.test(f)).slice(0, 6);
   await setCustomFeeds(c.env.DB, clean);
-  return c.json({ feeds: clean });
+  return c.json({ feeds: await customFeeds(c.env.DB) });
 });
 
 discover.get("/queries", async (c) => {
