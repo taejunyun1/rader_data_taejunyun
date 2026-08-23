@@ -373,7 +373,7 @@ git commit -m "260823: discovery bilingual query planner"
 **Interfaces:**
 
 - Consumes: `DiscoveryProviderResult<T>` and `DiscoveryProviderOutcomeStatus` from `@radar/shared/discoveryRun`.
-- Produces: `searchWorks(): Promise<DiscoveryProviderResult<OpenAlexWork>>`, `searchArxiv(): Promise<DiscoveryProviderResult<ArxivWork>>`, and `fetchFeed(): Promise<DiscoveryProviderResult<FeedItem[]>>` for Tasks 4–6.
+- Produces: `searchWorks(): Promise<DiscoveryProviderResult<OpenAlexWork>>`, `searchArxiv(): Promise<DiscoveryProviderResult<ArxivWork>>`, and `fetchFeed(): Promise<DiscoveryProviderResult<FeedItem>>` for Tasks 4–6.
 
 - [ ] **Step 1: Write failing adapter behavior tests**
 
@@ -638,7 +638,7 @@ import type { OpenAlexWork } from "../lib/openalex";
 export interface DiscoveryProviderClients {
   openalex: (query: string, limit: number) => Promise<DiscoveryProviderResult<OpenAlexWork>>;
   arxiv: (query: string, limit: number) => Promise<DiscoveryProviderResult<ArxivWork>>;
-  rss: (feedUrl: string, limit: number) => Promise<DiscoveryProviderResult<FeedItem[]>>;
+  rss: (feedUrl: string, limit: number) => Promise<DiscoveryProviderResult<FeedItem>>;
 }
 
 export interface DiscoveryCollectionInput {
