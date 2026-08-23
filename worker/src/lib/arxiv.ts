@@ -1,3 +1,5 @@
+import type { DiscoveryProviderResult } from "@radar/shared/discoveryRun";
+
 export interface ArxivWork {
   id: string;
   title: string;
@@ -8,7 +10,8 @@ export interface ArxivWork {
   categories: string[];
 }
 
-export async function searchArxiv(query: string, limit = 3): Promise<ArxivWork[]> {
+export async function searchArxiv(query: string, limit = 3): Promise<DiscoveryProviderResult<ArxivWork>> {
+  const startedAt = Date.now();
   const params = new URLSearchParams({
     search_query: `all:${query} AND (cat:cs.CV OR cat:cs.HC OR cat:cs.MM OR cat:eess.IV OR cat:physics.optics)`,
     start: "0",
@@ -22,15 +25,30 @@ export async function searchArxiv(query: string, limit = 3): Promise<ArxivWork[]
       headers: { "User-Agent": "ResearchRadar/1.0 (personal research tool)" },
       signal: ac.signal,
     });
-    if (!res.ok) return [];
+    if (!res.ok) {
+      return { status: "HTTP_ERROR", items: [], errorCode: `HTTP_${res.status}`, elapsedMs: Date.now() - startedAt };
+    }
     const xml = await res.text();
+    if (!/<feed[\s>]/i.test(xml) || !/<\/feed>/i.test(xml)) {
+      return { status: "PARSE_ERROR", items: [], errorCode: "INVALID_XML", elapsedMs: Date.now() - startedAt };
+    }
     const entries = xml.split(/<entry>/).slice(1);
-    return entries
+    const items = entries
       .map(parseEntry)
       .filter((w): w is ArxivWork => w !== null)
       .slice(0, limit);
-  } catch {
-    return [];
+    if (entries.length > 0 && items.length === 0) {
+      return { status: "PARSE_ERROR", items: [], errorCode: "INVALID_ENTRY", elapsedMs: Date.now() - startedAt };
+    }
+    return { status: "OK", items, errorCode: null, elapsedMs: Date.now() - startedAt };
+  } catch (error) {
+    const isTimeout = error instanceof Error && error.name === "AbortError";
+    return {
+      status: isTimeout ? "TIMEOUT" : "HTTP_ERROR",
+      items: [],
+      errorCode: isTimeout ? "TIMEOUT" : "NETWORK_ERROR",
+      elapsedMs: Date.now() - startedAt,
+    };
   } finally {
     clearTimeout(timer);
   }

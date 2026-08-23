@@ -82,7 +82,7 @@ discover.post("/candidates/:id/:action", async (c) => {
     let oaUrl: string | null = null;
     if (cand.provider === "openalex") {
       const detail = await searchWorks(cand.title, 1);
-      const match = detail.find((w) => w.id === cand.openalex_id);
+      const match = detail.items.find((w) => w.id === cand.openalex_id);
       doi = match?.doi?.replace("https://doi.org/", "") ?? undefined;
       oaUrl = match?.openAccessUrl ?? null;
     }

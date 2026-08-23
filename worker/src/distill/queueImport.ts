@@ -19,10 +19,10 @@ export async function importQueuedItem(env: Env, item: { title: string; author: 
   let canonicalUrl: string | undefined;
 
   if (item.openalexId) {
-    canonicalUrl = item.openalexId;
+      canonicalUrl = item.openalexId;
     try {
       const works = await searchWorks(item.title, 3);
-      const match: OpenAlexWork | undefined = works.find((w) => w.id === item.openalexId) ?? works[0];
+      const match: OpenAlexWork | undefined = works.items.find((w) => w.id === item.openalexId) ?? works.items[0];
       if (match) {
         abstract = (await fetchWorkAbstract(match.id)) ?? null;
         year = match.year;

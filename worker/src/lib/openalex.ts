@@ -1,3 +1,5 @@
+import type { DiscoveryProviderResult } from "@radar/shared/discoveryRun";
+
 const OPENALEX_BASE = "https://api.openalex.org/works";
 
 export interface OpenAlexWork {
@@ -11,7 +13,8 @@ export interface OpenAlexWork {
   citedByCount: number;
 }
 
-export async function searchWorks(query: string, limit = 5): Promise<OpenAlexWork[]> {
+export async function searchWorks(query: string, limit = 5): Promise<DiscoveryProviderResult<OpenAlexWork>> {
+  const startedAt = Date.now();
   const params = new URLSearchParams({
     search: query,
     per_page: String(limit),
@@ -22,8 +25,10 @@ export async function searchWorks(query: string, limit = 5): Promise<OpenAlexWor
   const timer = setTimeout(() => ac.abort(), 12_000);
   try {
     const res = await fetch(`${OPENALEX_BASE}?${params}`, { signal: ac.signal });
-    if (!res.ok) return [];
-    const data = (await res.json()) as {
+    if (!res.ok) {
+      return { status: "HTTP_ERROR", items: [], errorCode: `HTTP_${res.status}`, elapsedMs: Date.now() - startedAt };
+    }
+    let data: {
       results?: {
         id: string;
         display_name: string;
@@ -35,7 +40,15 @@ export async function searchWorks(query: string, limit = 5): Promise<OpenAlexWor
         abstract_inverted_index?: Record<string, number[]> | null;
       }[];
     };
-    return (data.results ?? []).map((r) => ({
+    try {
+      data = (await res.json()) as typeof data;
+    } catch {
+      return { status: "PARSE_ERROR", items: [], errorCode: "INVALID_JSON", elapsedMs: Date.now() - startedAt };
+    }
+    if (!Array.isArray(data.results)) {
+      return { status: "PARSE_ERROR", items: [], errorCode: "MISSING_RESULTS", elapsedMs: Date.now() - startedAt };
+    }
+    const items = data.results.map((r) => ({
       id: r.id,
       title: r.display_name,
       authors: (r.authorships ?? [])
@@ -49,8 +62,15 @@ export async function searchWorks(query: string, limit = 5): Promise<OpenAlexWor
       openAccessUrl: r.open_access?.oa_url ?? null,
       citedByCount: r.cited_by_count,
     }));
-  } catch {
-    return [];
+    return { status: "OK", items, errorCode: null, elapsedMs: Date.now() - startedAt };
+  } catch (error) {
+    const isTimeout = error instanceof Error && error.name === "AbortError";
+    return {
+      status: isTimeout ? "TIMEOUT" : "HTTP_ERROR",
+      items: [],
+      errorCode: isTimeout ? "TIMEOUT" : "NETWORK_ERROR",
+      elapsedMs: Date.now() - startedAt,
+    };
   } finally {
     clearTimeout(timer);
   }
@@ -89,7 +109,7 @@ export async function verifyWork(title: string, author?: string | null): Promise
   const queries = [author ? `${title} ${author}` : title, title];
   for (const q of queries) {
     const results = await searchWorks(q, 5);
-    for (const r of results) {
+    for (const r of results.items) {
       if (titleSimilarity(title, r.title)) {
         if (author && r.authors) {
           const authorSurname = author.split(/\s+/)[0]?.toLowerCase() ?? "";

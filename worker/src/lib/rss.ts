@@ -1,4 +1,5 @@
 import { cleanDiscoverySourceText } from "@radar/shared/discovery";
+import type { DiscoveryProviderResult } from "@radar/shared/discoveryRun";
 
 export interface FeedItem {
   title: string;
@@ -7,7 +8,8 @@ export interface FeedItem {
   summary: string | null;
 }
 
-export async function fetchFeed(url: string, limit = 5): Promise<FeedItem[]> {
+export async function fetchFeed(url: string, limit = 5): Promise<DiscoveryProviderResult<FeedItem>> {
+  const startedAt = Date.now();
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 12_000);
   try {
@@ -16,15 +18,27 @@ export async function fetchFeed(url: string, limit = 5): Promise<FeedItem[]> {
       signal: ac.signal,
       redirect: "follow",
     });
-    if (!res.ok) return [];
+    if (!res.ok) {
+      return { status: "HTTP_ERROR", items: [], errorCode: `HTTP_${res.status}`, elapsedMs: Date.now() - startedAt };
+    }
     const ct = res.headers.get("content-type") ?? "";
     const body = await res.text();
     if (/xml|rss|atom/i.test(ct) || body.includes("<rss") || body.includes("<feed")) {
-      return parseFeedXml(body).slice(0, limit);
+      if (!/<(?:rss|feed)[\s>]/i.test(body)) {
+        return { status: "PARSE_ERROR", items: [], errorCode: "INVALID_XML", elapsedMs: Date.now() - startedAt };
+      }
+      const items = parseFeedXml(body).slice(0, limit);
+      return { status: "OK", items, errorCode: null, elapsedMs: Date.now() - startedAt };
     }
-    return [];
-  } catch {
-    return [];
+    return { status: "PARSE_ERROR", items: [], errorCode: "UNSUPPORTED_FEED_FORMAT", elapsedMs: Date.now() - startedAt };
+  } catch (error) {
+    const isTimeout = error instanceof Error && error.name === "AbortError";
+    return {
+      status: isTimeout ? "TIMEOUT" : "HTTP_ERROR",
+      items: [],
+      errorCode: isTimeout ? "TIMEOUT" : "NETWORK_ERROR",
+      elapsedMs: Date.now() - startedAt,
+    };
   } finally {
     clearTimeout(timer);
   }

@@ -198,7 +198,8 @@ export async function runDiscovery(env: Env, input: number | { divergence: numbe
   for (const descriptor of queryDescriptors) {
     const fetchLimit = strengthFetchLimit(descriptor.lane === "ORIGINAL" ? profile.original.strength : profile.counter.strength);
     const providerQuery = discoveryProviderQuery(descriptor.query);
-    const works: OpenAlexWork[] = await searchWorks(providerQuery, Math.min(fetchLimit || 1, 6));
+    const openAlexResult = await searchWorks(providerQuery, Math.min(fetchLimit || 1, 6));
+    const works: OpenAlexWork[] = openAlexResult.items;
     for (const w of works) {
       if (!w.id || !w.openAccessUrl) continue;
       const accessStatus: DiscoveryAccessStatus = "FREE_FULLTEXT";
@@ -226,7 +227,8 @@ export async function runDiscovery(env: Env, input: number | { divergence: numbe
   const arxivQueries = queryDescriptors.filter((item) => /photograph|visual|image|사진|이미지/i.test(item.query));
   for (const descriptor of arxivQueries) {
     const fetchLimit = strengthFetchLimit(descriptor.lane === "ORIGINAL" ? profile.original.strength : profile.counter.strength);
-    const works = await searchArxiv(discoveryProviderQuery(descriptor.query), Math.min(fetchLimit || 1, 6));
+    const arxivResult = await searchArxiv(discoveryProviderQuery(descriptor.query), Math.min(fetchLimit || 1, 6));
+    const works = arxivResult.items;
     for (const w of works) {
       const assessment = assessDiscoveryCandidate({ provider: "arxiv", title: w.title, summary: w.abstract, year: w.year, categories: w.categories, accessStatus: "PDF" });
       if (!assessment.accepted) continue;
@@ -249,7 +251,8 @@ export async function runDiscovery(env: Env, input: number | { divergence: numbe
   }
 
   for (const feedUrl of feeds) {
-    const items = await fetchFeed(feedUrl, 8);
+    const feedResult = await fetchFeed(feedUrl, 8);
+    const items = feedResult.items;
     for (const item of items) {
       if (!item.url) continue;
       const accessStatus = classifyDiscoveryAccess("rss", item.url);
