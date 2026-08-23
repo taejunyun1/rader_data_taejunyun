@@ -4,6 +4,7 @@ import type { ResearchJobKind, ResearchJobResultRef } from "@radar/shared/discov
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  vi.resetModules();
 });
 
 describe("remote acquisition job metadata", () => {
@@ -200,7 +201,7 @@ describe("remote acquisition", () => {
     const env = makeAcquisitionEnv({
       contentType: "application/pdf",
       body: new ArrayBuffer(32),
-      toMarkdown: async () => [{ name: "paper.md", blob: new Blob([`${"본문 ".repeat(400)}`]) }],
+      toMarkdown: async () => [{ name: "paper.md", blob: new Blob([`${"본문 ".repeat(600)}`]) }],
     });
     const response = withResponseUrl(
       new Response(env.__fixture.body.slice(0), { status: 200, headers: { "content-type": env.__fixture.contentType } }),
@@ -219,6 +220,30 @@ describe("remote acquisition", () => {
     expect(result.kind).toBe("PDF");
     expect(result.extractionMethod).toBe("PDF_REMOTE_TO_MARKDOWN");
     expect(result.textScope).toBe("FULLTEXT");
+  });
+
+  it("keeps long low-signal PDF markdown below the fulltext gate", async () => {
+    const { acquireRemoteSource } = await import("../../../worker/src/ingestion/acquireRemoteSource");
+    const env = makeAcquisitionEnv({
+      contentType: "application/pdf",
+      body: new ArrayBuffer(32),
+      toMarkdown: async () => [{ name: "paper.md", blob: new Blob([`${"* ".repeat(800)}${"A".repeat(400)}`]) }],
+    });
+    const response = withResponseUrl(
+      new Response(env.__fixture.body.slice(0), { status: 200, headers: { "content-type": env.__fixture.contentType } }),
+      "https://arxiv.org/pdf/5678",
+    );
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
+
+    const result = await acquireRemoteSource(env, {
+      sourceId: "s1",
+      url: "https://arxiv.org/pdf/5678",
+      version: 2,
+    }, {
+      resolveDns: allowPublicDnsResolution,
+    });
+
+    expect(result.textScope).toBe("PARTIAL");
   });
 
   it("reports a conversion failure without treating the binary as text", async () => {
@@ -243,6 +268,85 @@ describe("remote acquisition", () => {
     }, {
       resolveDns: allowPublicDnsResolution,
     })).rejects.toThrow("PDF_CONVERSION_FAILED");
+  });
+});
+
+describe("source acquisition workflow", () => {
+  it("uses one job-derived acquisition identity for storage and version reuse", async () => {
+    const fixture = setupResearchJobWorkflowFixture();
+    fixture.acquireRemoteSource.mockResolvedValue({
+      kind: "HTML",
+      r2Key: "originals/source-1/acq-job-123.html",
+      extractedText: "충분히 긴 본문 텍스트입니다. 연구 대상 본문으로 재사용할 수 있습니다.",
+      title: "Title",
+      contentType: "text/html",
+      finalUrl: "https://example.com/article",
+      warnings: [],
+      textScope: "FULLTEXT",
+      extractionMethod: "HTML_STATIC",
+    });
+    fixture.appendAcquisitionVersion.mockResolvedValue({
+      versionId: "acq-job-123",
+      version: 2,
+      qualityStatus: "READY",
+    });
+
+    const { executeSourceAcquisitionJob, db } = await loadSourceAcquisitionRunner(fixture);
+    await executeSourceAcquisitionJob({
+      env: { DB: db } as Env,
+      job: {
+        id: "job-123",
+        input: { sourceId: "source-1", url: "https://example.com/article" },
+      },
+      updateProgress: fixture.updateJobProgress,
+    });
+
+    expect(fixture.acquireRemoteSource).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        sourceId: "source-1",
+        url: "https://example.com/article",
+        versionId: "acq-job-123",
+      }),
+    );
+    expect(fixture.appendAcquisitionVersion).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({
+        sourceId: "source-1",
+        versionId: "acq-job-123",
+        r2Key: "originals/source-1/acq-job-123.html",
+      }),
+    );
+  });
+
+  it("marks the ingest job failed before rethrowing append errors", async () => {
+    const fixture = setupResearchJobWorkflowFixture();
+    fixture.acquireRemoteSource.mockResolvedValue({
+      kind: "HTML",
+      r2Key: "originals/source-1/acq-job-999.html",
+      extractedText: "충분히 긴 본문 텍스트입니다. 저장 직전 실패를 재현합니다.",
+      title: "Title",
+      contentType: "text/html",
+      finalUrl: "https://example.com/article",
+      warnings: [],
+      textScope: "FULLTEXT",
+      extractionMethod: "HTML_STATIC",
+    });
+    fixture.appendAcquisitionVersion.mockRejectedValue(new Error("insert_failed"));
+
+    const { executeSourceAcquisitionJob, db } = await loadSourceAcquisitionRunner(fixture);
+
+    await expect(executeSourceAcquisitionJob({
+      env: { DB: db } as Env,
+      job: {
+        id: "job-999",
+        input: { sourceId: "source-1", url: "https://example.com/article" },
+      },
+      updateProgress: fixture.updateJobProgress,
+    })).rejects.toThrow("insert_failed");
+
+    expect(fixture.updateIngestJob).toHaveBeenNthCalledWith(1, db, "source-1", "received", null);
+    expect(fixture.updateIngestJob).toHaveBeenNthCalledWith(2, db, "source-1", "failed", "source_version_store_failed");
   });
 });
 
@@ -315,4 +419,43 @@ function withResponseUrl(response: Response, url: string): Response {
 
 async function allowPublicDnsResolution(_hostname: string, recordType: "A" | "AAAA"): Promise<string[]> {
   return recordType === "A" ? ["93.184.216.34"] : ["2606:2800:220:1:248:1893:25c8:1946"];
+}
+
+function setupResearchJobWorkflowFixture() {
+  return {
+    getActiveVersion: vi.fn().mockResolvedValue(null),
+    acquireRemoteSource: vi.fn(),
+    appendAcquisitionVersion: vi.fn(),
+    updateIngestJob: vi.fn(),
+    updateJobProgress: vi.fn(),
+  };
+}
+
+async function loadSourceAcquisitionRunner(fixture: ReturnType<typeof setupResearchJobWorkflowFixture>) {
+  vi.doMock("../../../worker/src/ingestion/acquireRemoteSource", () => ({
+    acquireRemoteSource: fixture.acquireRemoteSource,
+  }));
+  vi.doMock("../../../worker/src/ingestion/store", () => ({
+    updateIngestJob: fixture.updateIngestJob,
+  }));
+  vi.doMock("../../../worker/src/ingestion/versioning", () => ({
+    appendAcquisitionVersion: fixture.appendAcquisitionVersion,
+    getActiveVersion: fixture.getActiveVersion,
+  }));
+  const db = {
+    prepare() {
+      return {
+        bind() {
+          return this;
+        },
+        async first() {
+          return null;
+        },
+      };
+    },
+  } as unknown as D1Database;
+
+  const mod = await import("../../../worker/src/workflows/sourceAcquisition");
+
+  return { executeSourceAcquisitionJob: mod.executeSourceAcquisitionJob, db };
 }

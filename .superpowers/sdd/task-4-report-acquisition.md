@@ -170,3 +170,46 @@ Reason:
 
 3. Task 4 does not yet connect Discovery Keep to this enqueue path.
    - That remains for the follow-up task described in the plan.
+
+## Review Fix Addendum (2026-08-23)
+
+Closed the three Task 4 review findings without expanding the acquisition schema surface:
+
+1. Job-specific retry identity
+   - Added `worker/src/workflows/sourceAcquisition.ts` to isolate the acquisition branch logic.
+   - The workflow now derives a stable acquisition `versionId` from the `SOURCE_ACQUISITION` job id: `acq-${job.id}`.
+   - `acquireRemoteSource(...)` accepts that stable `versionId` and uses it to build the R2 original key (`originals/<sourceId>/<versionId>.<ext>`), so workflow retries overwrite the same original instead of creating a new job-window candidate.
+   - Retry reuse no longer scans by `sourceId + created_at`. It only reuses a candidate when `source_versions.id` exactly matches the job-derived `versionId`, which prevents a later acquisition for a different URL from being reused by mistake.
+
+2. Deterministic ingest failure updates
+   - Wrapped the source-acquisition acquire/store stages so `updateIngestJob(...)` always records `failed` before the error is rethrown.
+   - Acquire failures store the stable acquisition error code when available (for example `PDF_CONVERSION_FAILED`).
+   - Append failures store `source_version_store_failed`.
+   - Errors still propagate to the existing outer workflow catch, so `research_jobs` continue to land in the normal `FAILED` state.
+
+3. PDF readiness gate uses meaningful characters only
+   - Removed the markdown-length fallback in `acquireRemoteSource.extractRemotePdf(...)`.
+   - PDF scope classification now uses `normalized.report.meaningfulChars` directly, which means `FULLTEXT` and `READY` only activate after the shared 1,000 meaningful-character threshold is actually met.
+   - Added a regression test with long markdown punctuation/spacing but only 400 meaningful characters; it stays `PARTIAL`.
+
+### Additional regression coverage
+
+- `web/src/lib/remoteAcquisition.test.ts`
+  - verifies low-signal PDF markdown does not cross the fulltext gate
+  - verifies the acquisition branch uses one job-derived identity for both R2 storage and `appendAcquisitionVersion(...)`
+  - verifies append failures mark `processing_jobs` as failed before the error is rethrown
+
+### Fresh verification (2026-08-23)
+
+Executed after the fixes:
+
+```bash
+pnpm --dir web exec vitest run src/lib/remoteAcquisition.test.ts
+pnpm --filter @radar/shared typecheck
+pnpm --filter @radar/worker typecheck
+```
+
+Results:
+- focused Vitest file: pass, `17 passed`
+- `@radar/shared` typecheck: pass
+- `@radar/worker` typecheck: pass

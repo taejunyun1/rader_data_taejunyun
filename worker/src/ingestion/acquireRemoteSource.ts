@@ -10,6 +10,7 @@ export interface RemoteAcquisitionInput {
   sourceId: string;
   url: string;
   version: number;
+  versionId?: string;
 }
 
 export interface RemoteAcquisitionResult {
@@ -68,7 +69,7 @@ export async function acquireRemoteSource(
     if (!kind) throw new RemoteAcquisitionError("UNSUPPORTED_CONTENT_TYPE");
 
     const rawBody = await readResponseBody(response);
-    const r2Key = buildOriginalKey(input.sourceId, input.version, kind);
+    const r2Key = buildOriginalKey(input.sourceId, input.version, input.versionId, kind);
     await env.ORIGINALS.put(r2Key, rawBody);
 
     if (kind === "PDF") {
@@ -246,7 +247,8 @@ async function readResponseBody(response: Response): Promise<ArrayBuffer> {
   return merged.buffer;
 }
 
-function buildOriginalKey(sourceId: string, version: number, kind: "HTML" | "PDF"): string {
+function buildOriginalKey(sourceId: string, version: number, versionId: string | undefined, kind: "HTML" | "PDF"): string {
+  if (versionId) return `originals/${sourceId}/${versionId}.${kind === "HTML" ? "html" : "pdf"}`;
   return `originals/${sourceId}/v${version}.${kind === "HTML" ? "html" : "pdf"}`;
 }
 
@@ -269,12 +271,9 @@ async function extractRemotePdf(
 
   const text = await readMarkdownConversion(converted);
   const normalized = normalizeIngestText(text, "PDF_TEXT");
-  const classificationChars = normalized.report.meaningfulChars < 200
-    ? normalized.report.meaningfulChars
-    : Math.max(normalized.report.meaningfulChars, normalized.normalizedText.length);
   const { scope } = classifyTextScope({
     format: "PDF_TEXT",
-    meaningfulChars: classificationChars,
+    meaningfulChars: normalized.report.meaningfulChars,
     warnings: normalized.report.warnings,
     extractionMethod: "PDF_REMOTE_TO_MARKDOWN",
   });
