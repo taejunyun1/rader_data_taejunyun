@@ -7,11 +7,12 @@ interface AcquisitionRow {
   acquisitionQualityStatus: string | null;
   acquisitionCharCount: number | null;
   acquisitionError: string | null;
-  acquisitionHasNormalizedText: number;
-  acquisitionHasExtractedText: number;
+  normalizedText: string | null;
+  extractedText: string | null;
 }
 
 function detailDb(acquisition: AcquisitionRow): D1Database {
+  const { normalizedText, extractedText, ...acquisitionColumns } = acquisition;
   const source = {
     id: "source-1",
     kind: "WEB",
@@ -32,7 +33,7 @@ function detailDb(acquisition: AcquisitionRow): D1Database {
     updatedAt: "2026-08-24T00:00:00.000Z",
     markedForNextResearch: 0,
     decisionStatus: null,
-    ...acquisition,
+    ...acquisitionColumns,
   };
 
   return {
@@ -41,7 +42,17 @@ function detailDb(acquisition: AcquisitionRow): D1Database {
         bind() { return this; },
         async first<T>() {
           if (sql.includes("FROM distill_sessions")) return null;
-          if (sql.includes("FROM sources")) return source as T;
+          if (sql.includes("FROM sources")) {
+            return {
+              ...source,
+              ...(sql.includes("acquisitionHasNormalizedText")
+                ? { acquisitionHasNormalizedText: normalizedText?.trim() ? 1 : 0 }
+                : {}),
+              ...(sql.includes("acquisitionHasExtractedText")
+                ? { acquisitionHasExtractedText: extractedText?.trim() ? 1 : 0 }
+                : {}),
+            } as T;
+          }
           return null;
         },
         async all<T>() { return { results: [] as T[], success: true, meta: {} }; },
@@ -52,13 +63,16 @@ function detailDb(acquisition: AcquisitionRow): D1Database {
 
 function originalTextDb(text: { normalized: string | null; extracted: string | null }): D1Database {
   return {
-    prepare() {
+    prepare(sql: string) {
       return {
         bind() { return this; },
         async first<T>() {
+          const activeText = sql.includes("v.extracted_text")
+            ? text.normalized?.trim() ? text.normalized : text.extracted?.trim() ? text.extracted : null
+            : text.normalized;
           return {
             source_id: "source-1",
-            active_text: text.normalized?.trim() ? text.normalized : text.extracted?.trim() ? text.extracted : null,
+            active_text: activeText,
           } as T;
         },
       };
@@ -75,8 +89,8 @@ describe("Reservoir acquisition detail", () => {
         acquisitionQualityStatus: "READY",
         acquisitionCharCount: 32_739,
         acquisitionError: null,
-        acquisitionHasNormalizedText: 1,
-        acquisitionHasExtractedText: 1,
+        normalizedText: "정제된 원문",
+        extractedText: "추출 원문",
       }),
     } as Env);
 
@@ -103,8 +117,8 @@ describe("Reservoir acquisition detail", () => {
         acquisitionQualityStatus: "REVIEW",
         acquisitionCharCount: 0,
         acquisitionError: "full_text_not_available",
-        acquisitionHasNormalizedText: 0,
-        acquisitionHasExtractedText: 0,
+        normalizedText: null,
+        extractedText: null,
       }),
     } as Env);
 
@@ -119,6 +133,23 @@ describe("Reservoir acquisition detail", () => {
       originalTextUrl: null,
       acquisitionError: "full_text_not_available",
     });
+  });
+
+  it("does not expose a stored-text URL when only extracted text exists", async () => {
+    const response = await reservoir.request("/source-1", undefined, {
+      DB: detailDb({
+        acquisitionTextScope: "FULLTEXT",
+        acquisitionExtractionMethod: "HTML_STATIC",
+        acquisitionQualityStatus: "REVIEW",
+        acquisitionCharCount: 1_024,
+        acquisitionError: null,
+        normalizedText: null,
+        extractedText: "<html><body>raw extracted HTML</body></html>",
+      }),
+    } as Env);
+
+    const body = await response.json() as { acquisition: { originalTextUrl: string | null } };
+    expect(body.acquisition.originalTextUrl).toBeNull();
   });
 });
 
@@ -138,12 +169,15 @@ describe("Reservoir safe original text", () => {
     expect(text).not.toContain("대체 추출문");
   });
 
-  it("returns 404 when the active version has no normalized or extracted text", async () => {
+  it("returns 404 and never serves raw extracted HTML when normalized text is empty", async () => {
+    const rawExtractedHtml = "<html><body><script>alert('raw')</script></body></html>";
     const response = await reservoir.request("/source-1/original-text", undefined, {
-      DB: originalTextDb({ normalized: "", extracted: "" }),
+      DB: originalTextDb({ normalized: "   ", extracted: rawExtractedHtml }),
     } as Env);
 
     expect(response.status).toBe(404);
-    await expect(response.json()).resolves.toEqual({ error: "original_text_not_available" });
+    const body = await response.text();
+    expect(JSON.parse(body)).toEqual({ error: "original_text_not_available" });
+    expect(body).not.toContain(rawExtractedHtml);
   });
 });

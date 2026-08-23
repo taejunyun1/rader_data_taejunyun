@@ -15,7 +15,6 @@ interface AcquisitionColumns {
   acquisitionCharCount: number | null;
   acquisitionError: string | null;
   acquisitionHasNormalizedText: number | boolean | null;
-  acquisitionHasExtractedText: number | boolean | null;
 }
 
 interface ResearchCycleMeta {
@@ -45,7 +44,6 @@ function sourceAcquisitionView(sourceId: string, row: AcquisitionColumns) {
   const qualityStatus = row.acquisitionQualityStatus ?? "UNREVIEWED";
   const charCount = Number(row.acquisitionCharCount ?? 0);
   const hasNormalizedText = Boolean(row.acquisitionHasNormalizedText);
-  const hasStoredText = hasNormalizedText || Boolean(row.acquisitionHasExtractedText);
   const readiness = isDeepAnalysisReady({ textScope, qualityStatus, charCount, normalizedText: hasNormalizedText ? "available" : null });
 
   return {
@@ -55,7 +53,7 @@ function sourceAcquisitionView(sourceId: string, row: AcquisitionColumns) {
     charCount,
     acquisitionLabel: acquisitionLabel(textScope, charCount),
     canDeepAnalyze: readiness.ok,
-    originalTextUrl: hasStoredText ? `/api/reservoir/${sourceId}/original-text` : null,
+    originalTextUrl: hasNormalizedText ? `/api/reservoir/${sourceId}/original-text` : null,
     ...(row.acquisitionError ? { acquisitionError: row.acquisitionError } : {}),
   };
 }
@@ -220,11 +218,7 @@ reservoir.get("/:sourceId/deep-analysis/:analysisId", async (c) => {
 reservoir.get("/:sourceId/original-text", async (c) => {
   const row = await c.env.DB.prepare(
     `SELECT s.id AS source_id,
-            CASE
-              WHEN LENGTH(TRIM(COALESCE(v.normalized_text, ''))) > 0 THEN v.normalized_text
-              WHEN LENGTH(TRIM(COALESCE(v.extracted_text, ''))) > 0 THEN v.extracted_text
-              ELSE NULL
-            END AS active_text
+            v.normalized_text AS active_text
      FROM sources s LEFT JOIN source_versions v ON v.id = s.active_version_id
      WHERE s.id = ?`
   ).bind(c.req.param("sourceId")).first<{
@@ -258,7 +252,6 @@ reservoir.get("/:sourceId", async (c) => {
               active.char_count AS acquisitionCharCount,
               active.extraction_error AS acquisitionError,
               CASE WHEN LENGTH(TRIM(COALESCE(active.normalized_text, ''))) > 0 THEN 1 ELSE 0 END AS acquisitionHasNormalizedText,
-              CASE WHEN LENGTH(TRIM(COALESCE(active.extracted_text, ''))) > 0 THEN 1 ELSE 0 END AS acquisitionHasExtractedText,
               CASE WHEN (SELECT us.action FROM user_signals us
                          WHERE us.source_id = sources.id AND us.action IN ('keep','develop','watch','ignore') AND us.created_at > ?
                          ORDER BY us.created_at DESC LIMIT 1) IN ('keep','develop') THEN 1 ELSE 0 END AS markedForNextResearch
@@ -279,7 +272,6 @@ reservoir.get("/:sourceId", async (c) => {
     acquisitionCharCount,
     acquisitionError,
     acquisitionHasNormalizedText,
-    acquisitionHasExtractedText,
     ...source
   } = src;
   const acquisition = sourceAcquisitionView(id, {
@@ -289,7 +281,6 @@ reservoir.get("/:sourceId", async (c) => {
     acquisitionCharCount,
     acquisitionError,
     acquisitionHasNormalizedText,
-    acquisitionHasExtractedText,
   });
 
   const [analysis, deepAnalysis, deepHistory, kws, qs, frags, versions, sigs] = await Promise.all([

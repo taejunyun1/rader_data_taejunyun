@@ -58,3 +58,48 @@ Result: both exited 0 with `tsc --noEmit`.
 - No schema changes, migrations, deploys, or remote operations were needed.
 - The plain-text endpoint intentionally falls back to the active version's extracted text only when normalized text is unavailable; it still returns `text/plain` with `nosniff`, so markup is displayed literally rather than executed.
 - Pre-existing unrelated untracked directories were not modified or staged.
+
+## Review finding addendum — normalized text only
+
+Date: 2026-08-24
+Commit message: `260824: 정제 원문만 노출하도록 Reservoir 원문 경로 수정`
+
+This addendum supersedes the extracted-text fallback statements above.
+
+### Finding and fix
+
+- Reservoir detail now exposes `originalTextUrl` only when the active version has non-empty `normalized_text`.
+- `GET /api/reservoir/:sourceId/original-text` now selects only the active version's `normalized_text`; it never falls back to `extracted_text`.
+- A missing, empty, or whitespace-only `normalized_text` returns `404` with `original_text_not_available`, even when raw extracted HTML exists.
+- The existing `/api/inbox/:sourceId/original` R2 binary endpoint and ReadingPane behavior were not changed.
+
+### TDD evidence
+
+RED:
+
+```text
+pnpm --dir web exec vitest run src/lib/reservoirAcquisition.test.ts
+```
+
+Result: exit 1 — 5 tests ran, with 2 expected failures. The detail response exposed an original-text URL for extracted-only content, and the endpoint returned raw extracted HTML with status 200.
+
+GREEN:
+
+```text
+pnpm --dir web exec vitest run src/components/reading/ReadingPane.test.tsx src/lib/reservoirAcquisition.test.ts
+```
+
+Result: exit 0 — 2 test files passed, 10 tests passed.
+
+```text
+pnpm --filter @radar/worker typecheck
+pnpm --filter @radar/shared typecheck
+```
+
+Result: both exited 0 with `tsc --noEmit`.
+
+### Addendum files
+
+- `worker/src/routes/reservoir.ts`
+- `web/src/lib/reservoirAcquisition.test.ts`
+- `.superpowers/sdd/task-7-report-acquisition.md`
