@@ -89,7 +89,31 @@ export function discoveryCombinedJobOutcome(
   fieldSignals: DiscoveryFieldSignalRunDiagnostics,
 ): "SUCCEEDED" | "FAILED" | "BLOCKED" {
   if (readingOutcome === "SUCCEEDED") return "SUCCEEDED";
+  if (readingOutcome === "BLOCKED") return "BLOCKED";
   const signalSucceeded = Object.values(fieldSignals.sources).some((source) => source.succeededRequests > 0);
   if (signalSucceeded) return "SUCCEEDED";
   return readingOutcome;
+}
+
+export function discoveryCombinedJobFailure(
+  outcome: "SUCCEEDED" | "FAILED" | "BLOCKED",
+):
+  | null
+  | { outcome: "FAILED"; errorCode: "discovery_providers_unavailable"; errorMessage: "discovery_providers_unavailable" }
+  | { outcome: "BLOCKED"; errorCode: "discovery_queries_unusable"; errorMessage: "검색어를 짧은 개념어로 수정하세요." } {
+  if (outcome === "FAILED") {
+    return {
+      outcome,
+      errorCode: "discovery_providers_unavailable",
+      errorMessage: "discovery_providers_unavailable",
+    };
+  }
+  if (outcome === "BLOCKED") {
+    return {
+      outcome,
+      errorCode: "discovery_queries_unusable",
+      errorMessage: "검색어를 짧은 개념어로 수정하세요.",
+    };
+  }
+  return null;
 }

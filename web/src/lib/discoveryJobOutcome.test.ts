@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { createEmptyDiscoveryDiagnostics } from "@radar/shared/discoveryRun";
-import { discoveryCombinedJobOutcome, discoveryJobOutcome } from "../../../worker/src/discovery/diagnostics";
+import {
+  discoveryCombinedJobFailure,
+  discoveryCombinedJobOutcome,
+  discoveryJobOutcome,
+} from "../../../worker/src/discovery/diagnostics";
 
 describe("discovery job outcome", () => {
   it("treats one successful empty provider as a successful zero-result run", () => {
@@ -75,5 +79,39 @@ describe("discovery job outcome", () => {
         incomplete: true,
       },
     )).toBe("FAILED");
+  });
+
+  it("keeps blocked when field-signal sources succeed but reading queries are unusable", () => {
+    expect(discoveryCombinedJobOutcome(
+      "BLOCKED",
+      {
+        sources: {
+          icp: {
+            requests: 1,
+            succeededRequests: 1,
+            failedRequests: 0,
+            received: 2,
+            rejected: 0,
+            stale: 0,
+            expired: 0,
+            missingUrl: 0,
+            duplicate: 0,
+            quotaExcluded: 0,
+            selected: 1,
+            errorCodes: [],
+          },
+        },
+        rejectedByReason: {},
+        incomplete: false,
+      },
+    )).toBe("BLOCKED");
+  });
+
+  it("maps a blocked combined outcome to the existing discovery query guidance", () => {
+    expect(discoveryCombinedJobFailure("BLOCKED")).toEqual({
+      outcome: "BLOCKED",
+      errorCode: "discovery_queries_unusable",
+      errorMessage: "검색어를 짧은 개념어로 수정하세요.",
+    });
   });
 });

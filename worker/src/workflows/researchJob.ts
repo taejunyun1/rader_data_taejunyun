@@ -4,7 +4,7 @@ import type { ResearchJob, ResearchJobResultRef } from "@radar/shared/discovery"
 import type { DiscoveryFieldSignalRunDiagnostics } from "@radar/shared/fieldSignals";
 import type { DiscoveryRunDiagnostics } from "@radar/shared/discoveryRun";
 import { runDiscovery } from "../discovery/run";
-import { discoveryCombinedJobOutcome, discoveryJobOutcome } from "../discovery/diagnostics";
+import { discoveryCombinedJobFailure, discoveryCombinedJobOutcome, discoveryJobOutcome } from "../discovery/diagnostics";
 import { loadParams } from "../lib/params";
 import { monthSpendUsd } from "../lib/openai";
 import { runDistill, verifyQueueItems } from "../distill/run";
@@ -73,8 +73,9 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
       const result = await runDiscovery(this.env, { divergence: input.divergence, profile: input.profile });
       const readingOutcome = discoveryJobOutcome(result.diagnostics, result.diagnostics.providers.rss.requests > 0);
       const outcome = discoveryCombinedJobOutcome(readingOutcome, result.fieldSignalDiagnostics);
-      if (outcome === "FAILED") throw new Error("discovery_providers_unavailable");
-      if (outcome === "BLOCKED") throw new JobBlockedError("discovery_queries_unusable", "검색어를 짧은 개념어로 수정하세요.");
+      const failure = discoveryCombinedJobFailure(outcome);
+      if (failure?.outcome === "FAILED") throw new Error(failure.errorMessage);
+      if (failure?.outcome === "BLOCKED") throw new JobBlockedError(failure.errorCode, failure.errorMessage);
       return {
         result: {
           collected: result.collected,
