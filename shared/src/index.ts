@@ -400,19 +400,6 @@ export const DISCOVERY_SOURCE_PRESETS: readonly DiscoverySourcePreset[] = [
     topicAnchors: ["photography", "photobooks", "visual culture"],
     description: NEW_DIRECTORY_DESCRIPTIONS["one-thousand-words"],
   },
-  {
-    id: "icp-news",
-    name: "International Center of Photography",
-    category: "ARTS",
-    url: "https://www.icp.org/news",
-    feedUrl: null,
-    collection: "SEARCH",
-    target: "READING",
-    autoCollect: false,
-    accessPolicy: "UNKNOWN",
-    topicAnchors: ["photography", "visual culture", "photojournalism"],
-    description: "사진 전시·교육·아카이브·동시대 사진 담론",
-  },
 ] as const;
 
 export const DEFAULT_DISCOVERY_FEEDS = DISCOVERY_SOURCE_PRESETS.flatMap((source) =>

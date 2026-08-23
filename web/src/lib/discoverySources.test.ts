@@ -44,6 +44,7 @@ describe("discovery source registry", () => {
     });
     expect(discoverySourceByFeedUrl("https://unknown.example/feed")).toBeNull();
     expect(discoverySourceById("icp")).toMatchObject({ target: "FIELD_SIGNAL", autoCollect: true });
+    expect(discoverySourceById("icp-news")).toBeNull();
     expect(discoverySourceById("unknown-source")).toBeNull();
   });
 });

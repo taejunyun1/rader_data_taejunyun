@@ -2,7 +2,7 @@ import { searchWorks, type OpenAlexWork } from "../lib/openalex";
 import { searchArxiv, type ArxivWork } from "../lib/arxiv";
 import { fetchFeed, type FeedItem } from "../lib/rss";
 import { uuid } from "../ingestion/ids";
-import { DEFAULT_DISCOVERY_FEEDS, discoverySourceById } from "@radar/shared";
+import { DEFAULT_DISCOVERY_FEEDS } from "@radar/shared";
 import {
   assessDiscoveryCandidate,
   classifyDiscoveryAccess,
@@ -334,7 +334,7 @@ export async function runDiscovery(env: Env, input: number | { divergence: numbe
 
   const existing = await env.DB
     .prepare(
-      `SELECT id, openalex_id, title, abstract, year, provider, external_url, access_status, status, relevance_score, created_at, source_id
+      `SELECT id, openalex_id, title, abstract, year, provider, external_url, access_status, status, relevance_score, created_at
        FROM discovery_candidates
        ORDER BY relevance_score DESC, created_at ASC`
     )
@@ -350,7 +350,6 @@ export async function runDiscovery(env: Env, input: number | { divergence: numbe
       status: string;
       relevance_score: number;
       created_at: string;
-      source_id: string | null;
     }>();
 
   const existingRows = existing.results ?? [];
@@ -365,8 +364,7 @@ export async function runDiscovery(env: Env, input: number | { divergence: numbe
   let existingReclassified = 0;
   for (const candidate of existingRows) {
     if (candidate.status !== "CANDIDATE") continue;
-    const sourcePolicy = candidate.source_id ? discoverySourceById(candidate.source_id)?.accessPolicy : undefined;
-    const accessStatus = resolveDiscoveryAccessForExisting(candidate.access_status, candidate.provider, candidate.external_url, sourcePolicy);
+    const accessStatus = resolveDiscoveryAccessForExisting(candidate.access_status, candidate.provider, candidate.external_url);
     const assessment = assessDiscoveryCandidate({
       provider: candidate.provider,
       title: candidate.title,
