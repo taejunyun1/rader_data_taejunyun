@@ -83,6 +83,103 @@ describe("static HTML extraction", () => {
 });
 
 describe("remote acquisition", () => {
+  describe("fetchRemoteDocument", () => {
+    it("blocks direct private network targets before issuing a request", async () => {
+      const { fetchRemoteDocument } = await import("../../../worker/src/ingestion/fetchRemoteDocument");
+      const fetchSpy = vi.fn();
+      vi.stubGlobal("fetch", fetchSpy);
+
+      await expect(fetchRemoteDocument("http://127.0.0.1/private"))
+        .rejects.toThrow("REDIRECT_BLOCKED");
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it("blocks redirects into private networks", async () => {
+      const { fetchRemoteDocument } = await import("../../../worker/src/ingestion/fetchRemoteDocument");
+      const fetchSpy = vi.fn().mockResolvedValue(new Response(null, {
+        status: 302,
+        headers: { location: "http://169.254.169.254/latest" },
+      }));
+      vi.stubGlobal("fetch", fetchSpy);
+
+      await expect(fetchRemoteDocument("https://public.example/start", {
+        resolveDns: allowPublicDnsResolution,
+        fetchImpl: fetchSpy,
+      })).rejects.toThrow("REDIRECT_BLOCKED");
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("rejects bodies larger than 20 MiB while streaming", async () => {
+      const { fetchRemoteDocument } = await import("../../../worker/src/ingestion/fetchRemoteDocument");
+      const oversized = makeStreamResponse([
+        new Uint8Array(20 * 1024 * 1024),
+        new Uint8Array(1),
+      ], {
+        "content-type": "text/html; charset=utf-8",
+      });
+
+      await expect(fetchRemoteDocument("https://public.example/large", {
+        resolveDns: allowPublicDnsResolution,
+        fetchImpl: vi.fn().mockResolvedValue(oversized),
+      })).rejects.toThrow("SIZE_LIMIT");
+    });
+
+    it("maps body-read aborts to FETCH_TIMEOUT", async () => {
+      const { fetchRemoteDocument } = await import("../../../worker/src/ingestion/fetchRemoteDocument");
+      vi.useFakeTimers();
+
+      const hanging = new Response(new ReadableStream({
+        start() {
+          // keep pending until abort
+        },
+        cancel() {
+          return undefined;
+        },
+      }), {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      });
+      const response = withResponseUrl(hanging, "https://public.example/slow");
+
+      const promise = fetchRemoteDocument("https://public.example/slow", {
+        resolveDns: allowPublicDnsResolution,
+        fetchImpl: vi.fn((_url: string, init?: RequestInit) => {
+          init?.signal?.addEventListener("abort", () => {
+            // noop: stream cancellation surfaces the abort
+          }, { once: true });
+          return Promise.resolve(response);
+        }),
+      });
+      const outcome = promise.then(
+        () => "resolved",
+        (error: unknown) => error instanceof Error ? error.message : String(error),
+      );
+
+      await vi.advanceTimersByTimeAsync(20_000);
+
+      await expect(outcome).resolves.toBe("FETCH_TIMEOUT");
+    });
+
+    it("returns raw HTML with normalized content type and final URL", async () => {
+      const { fetchRemoteDocument } = await import("../../../worker/src/ingestion/fetchRemoteDocument");
+      const body = "<html><body><article>본문</article></body></html>";
+      const response = withResponseUrl(new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+      }), "https://public.example/final");
+
+      const result = await fetchRemoteDocument("https://public.example/start", {
+        resolveDns: allowPublicDnsResolution,
+        fetchImpl: vi.fn().mockResolvedValue(response),
+      });
+
+      expect(result.kind).toBe("HTML");
+      expect(result.contentType).toBe("text/html");
+      expect(result.finalUrl).toBe("https://public.example/final");
+      expect(new TextDecoder().decode(result.body)).toContain("본문");
+    });
+  });
+
   it("converts DNS resolution timeout into FETCH_TIMEOUT within the 20-second acquisition boundary", async () => {
     vi.useFakeTimers();
     const { acquireRemoteSource } = await import("../../../worker/src/ingestion/acquireRemoteSource");
@@ -200,7 +297,7 @@ describe("remote acquisition", () => {
     const { acquireRemoteSource } = await import("../../../worker/src/ingestion/acquireRemoteSource");
     const env = makeAcquisitionEnv({
       contentType: "application/pdf",
-      body: new ArrayBuffer(32),
+      body: makePdfBuffer(),
       toMarkdown: async () => [{ name: "paper.md", blob: new Blob([`${"본문 ".repeat(600)}`]) }],
     });
     const response = withResponseUrl(
@@ -226,7 +323,7 @@ describe("remote acquisition", () => {
     const { acquireRemoteSource } = await import("../../../worker/src/ingestion/acquireRemoteSource");
     const env = makeAcquisitionEnv({
       contentType: "application/pdf",
-      body: new ArrayBuffer(32),
+      body: makePdfBuffer(),
       toMarkdown: async () => [{ name: "paper.md", blob: new Blob([`${"* ".repeat(800)}${"A".repeat(400)}`]) }],
     });
     const response = withResponseUrl(
@@ -250,7 +347,7 @@ describe("remote acquisition", () => {
     const { acquireRemoteSource } = await import("../../../worker/src/ingestion/acquireRemoteSource");
     const env = makeAcquisitionEnv({
       contentType: "application/pdf",
-      body: new ArrayBuffer(32),
+      body: makePdfBuffer(),
       toMarkdown: async () => {
         throw new Error("conversion_failed");
       },
@@ -268,6 +365,59 @@ describe("remote acquisition", () => {
     }, {
       resolveDns: allowPublicDnsResolution,
     })).rejects.toThrow("PDF_CONVERSION_FAILED");
+  });
+
+  it("treats a .pdf URL with HTML content as HTML and skips PDF conversion", async () => {
+    const { acquireRemoteSource } = await import("../../../worker/src/ingestion/acquireRemoteSource");
+    const env = makeAcquisitionEnv();
+    const response = withResponseUrl(
+      new Response(
+        `<html><head><title>HTML fallback</title></head><body><main><article><p>${"본문 ".repeat(260)}</p></article></main></body></html>`,
+        { status: 200, headers: { "content-type": "text/html; charset=utf-8" } },
+      ),
+      "https://example.com/file.pdf",
+    );
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
+    const toMarkdownSpy = vi.spyOn(env.AI, "toMarkdown");
+
+    const result = await acquireRemoteSource(env, {
+      sourceId: "source-html-pdf-url",
+      url: "https://example.com/file.pdf",
+      version: 2,
+    }, {
+      resolveDns: allowPublicDnsResolution,
+    });
+
+    expect(result.kind).toBe("HTML");
+    expect(result.r2Key).toBe("originals/source-html-pdf-url/v2.html");
+    expect(result.extractionMethod).toBe("HTML_STATIC");
+    expect(toMarkdownSpy).not.toHaveBeenCalled();
+  });
+
+  it("stores invalid claimed PDFs before surfacing PDF_SIGNATURE_INVALID", async () => {
+    const { acquireRemoteSource } = await import("../../../worker/src/ingestion/acquireRemoteSource");
+    const env = makeAcquisitionEnv({
+      contentType: "application/pdf",
+      body: new TextEncoder().encode("not-a-pdf").buffer,
+    });
+    const response = withResponseUrl(
+      new Response(env.__fixture.body.slice(0), {
+        status: 200,
+        headers: { "content-type": "application/pdf" },
+      }),
+      "https://example.com/paper.pdf",
+    );
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
+
+    await expect(acquireRemoteSource(env, {
+      sourceId: "source-invalid-pdf",
+      url: "https://example.com/paper.pdf",
+      version: 2,
+    }, {
+      resolveDns: allowPublicDnsResolution,
+    })).rejects.toThrow("PDF_SIGNATURE_INVALID");
+
+    expect(env.__fixture.objects.has("originals/source-invalid-pdf/v2.pdf")).toBe(true);
   });
 });
 
@@ -472,6 +622,24 @@ function makeAcquisitionEnv(input: {
 function withResponseUrl(response: Response, url: string): Response {
   Object.defineProperty(response, "url", { value: url, configurable: true });
   return response;
+}
+
+function makeStreamResponse(chunks: Uint8Array[], headers: HeadersInit, url = "https://public.example/stream"): Response {
+  const response = new Response(new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  }), {
+    status: 200,
+    headers,
+  });
+
+  return withResponseUrl(response, url);
+}
+
+function makePdfBuffer(prefix = "%PDF-1.7\nmock pdf body"): ArrayBuffer {
+  return new TextEncoder().encode(prefix).buffer;
 }
 
 async function allowPublicDnsResolution(_hostname: string, recordType: "A" | "AAAA"): Promise<string[]> {
