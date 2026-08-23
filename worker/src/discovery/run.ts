@@ -2,7 +2,7 @@ import { searchWorks, type OpenAlexWork } from "../lib/openalex";
 import { searchArxiv, type ArxivWork } from "../lib/arxiv";
 import { fetchFeed, type FeedItem } from "../lib/rss";
 import { uuid } from "../ingestion/ids";
-import { DEFAULT_DISCOVERY_FEEDS, discoverySourceByFeedUrl } from "@radar/shared";
+import { DEFAULT_DISCOVERY_FEEDS, discoverySourceByFeedUrl, discoverySourceById } from "@radar/shared";
 import {
   assessDiscoveryCandidate,
   classifyDiscoveryAccess,
@@ -365,7 +365,7 @@ export async function runDiscovery(env: Env, input: number | { divergence: numbe
 
   const existing = await env.DB
     .prepare(
-      `SELECT id, openalex_id, title, abstract, year, provider, external_url, access_status, status, relevance_score, created_at
+      `SELECT id, openalex_id, title, abstract, year, provider, external_url, access_status, status, relevance_score, created_at, source_id
        FROM discovery_candidates
        ORDER BY relevance_score DESC, created_at ASC`
     )
@@ -381,6 +381,7 @@ export async function runDiscovery(env: Env, input: number | { divergence: numbe
       status: string;
       relevance_score: number;
       created_at: string;
+      source_id: string | null;
     }>();
 
   const existingRows = existing.results ?? [];
@@ -395,7 +396,13 @@ export async function runDiscovery(env: Env, input: number | { divergence: numbe
   let existingReclassified = 0;
   for (const candidate of existingRows) {
     if (candidate.status !== "CANDIDATE") continue;
-    const accessStatus = resolveDiscoveryAccessForExisting(candidate.access_status, candidate.provider, candidate.external_url);
+    const sourcePolicy = candidate.source_id ? discoverySourceById(candidate.source_id)?.accessPolicy : undefined;
+    const accessStatus = resolveDiscoveryAccessForExisting(
+      candidate.access_status,
+      candidate.provider,
+      candidate.external_url,
+      sourcePolicy,
+    );
     const assessment = assessDiscoveryCandidate({
       provider: candidate.provider,
       title: candidate.title,
@@ -434,8 +441,8 @@ export async function runDiscovery(env: Env, input: number | { divergence: numbe
     stmts.push(
       env.DB
         .prepare(
-          `INSERT INTO discovery_candidates (id, openalex_id, title, authors, year, abstract, relevance_score, status, query_used, created_at, provider, external_url, access_status, discovery_lane, query_source)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'CANDIDATE', ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO discovery_candidates (id, openalex_id, title, authors, year, abstract, relevance_score, status, query_used, created_at, provider, external_url, access_status, discovery_lane, query_source, source_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'CANDIDATE', ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .bind(
           uuid(),
@@ -452,6 +459,7 @@ export async function runDiscovery(env: Env, input: number | { divergence: numbe
           candidate.accessStatus,
           candidate.lane,
           candidate.querySource,
+          candidate.sourceId,
         ),
     );
   }

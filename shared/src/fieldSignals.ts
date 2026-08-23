@@ -197,3 +197,46 @@ export function assessDiscoveryFieldSignal(
     ...dates,
   };
 }
+
+export interface DiscoveryFieldSignalSourceStats {
+  requests: number;
+  succeededRequests: number;
+  failedRequests: number;
+  received: number;
+  rejected: number;
+  stale: number;
+  expired: number;
+  missingUrl: number;
+  duplicate: number;
+  quotaExcluded: number;
+  selected: number;
+  errorCodes: string[];
+}
+
+export interface DiscoveryFieldSignalRunDiagnostics {
+  sources: Record<string, DiscoveryFieldSignalSourceStats>;
+  rejectedByReason: Partial<Record<DiscoveryFieldSignalRejectionReason, number>>;
+  incomplete: boolean;
+}
+
+export interface DiscoveryFieldSignalRunResult {
+  collected: number;
+  diagnostics: DiscoveryFieldSignalRunDiagnostics;
+}
+
+export function emptyDiscoveryFieldSignalSourceStats(): DiscoveryFieldSignalSourceStats {
+  return {
+    requests: 0,
+    succeededRequests: 0,
+    failedRequests: 0,
+    received: 0,
+    rejected: 0,
+    stale: 0,
+    expired: 0,
+    missingUrl: 0,
+    duplicate: 0,
+    quotaExcluded: 0,
+    selected: 0,
+    errorCodes: [],
+  };
+}
