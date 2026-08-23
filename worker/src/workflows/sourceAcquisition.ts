@@ -70,7 +70,7 @@ export async function executeSourceAcquisitionJob(input: ExecuteSourceAcquisitio
       versionId,
     });
   } catch (error) {
-    await updateIngestJob(env.DB, sourceId, "failed", acquisitionFailureCode(error));
+    await tryUpdateIngestJobFailed(env.DB, sourceId, acquisitionFailureCode(error));
     throw error;
   }
 
@@ -93,7 +93,7 @@ export async function executeSourceAcquisitionJob(input: ExecuteSourceAcquisitio
       versionOrigin: "REEXTRACT",
     });
   } catch (error) {
-    await updateIngestJob(env.DB, sourceId, "failed", "source_version_store_failed");
+    await tryUpdateIngestJobFailed(env.DB, sourceId, "source_version_store_failed");
     throw error;
   }
 
@@ -137,4 +137,12 @@ function acquisitionFailureCode(error: unknown): string {
   if (error instanceof RemoteAcquisitionError) return error.code;
   if (error instanceof Error && error.message) return error.message.slice(0, 100);
   return "source_acquisition_failed";
+}
+
+async function tryUpdateIngestJobFailed(db: D1Database, sourceId: string, error: string): Promise<void> {
+  try {
+    await updateIngestJob(db, sourceId, "failed", error);
+  } catch {
+    // The acquisition or version-store error remains the workflow's primary failure.
+  }
 }

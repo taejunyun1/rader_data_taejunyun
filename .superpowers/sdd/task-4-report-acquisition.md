@@ -213,3 +213,9 @@ Results:
 - focused Vitest file: pass, `17 passed`
 - `@radar/shared` typecheck: pass
 - `@radar/worker` typecheck: pass
+
+## Follow-up Review Fix Addendum (2026-08-24)
+
+- Made failure-state `updateIngestJob(...)` calls best-effort in both the remote acquisition and version append catch paths.
+- A rejected failure-status update can no longer mask the original acquisition or store error; the original error object is always rethrown.
+- Added focused regression tests for both paths, including `updateIngestJob(...)` rejection and original error identity preservation.

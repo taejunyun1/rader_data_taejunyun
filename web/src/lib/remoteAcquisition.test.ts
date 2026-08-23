@@ -348,6 +348,63 @@ describe("source acquisition workflow", () => {
     expect(fixture.updateIngestJob).toHaveBeenNthCalledWith(1, db, "source-1", "received", null);
     expect(fixture.updateIngestJob).toHaveBeenNthCalledWith(2, db, "source-1", "failed", "source_version_store_failed");
   });
+
+  it("preserves the acquisition error when the failed ingest update rejects", async () => {
+    const fixture = setupResearchJobWorkflowFixture();
+    const acquisitionError = new Error("acquire_failed");
+    fixture.acquireRemoteSource.mockRejectedValue(acquisitionError);
+    fixture.updateIngestJob
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("failed_status_update_failed"));
+
+    const { executeSourceAcquisitionJob, db } = await loadSourceAcquisitionRunner(fixture);
+
+    await expect(executeSourceAcquisitionJob({
+      env: { DB: db } as Env,
+      job: {
+        id: "job-acquire-failure",
+        input: { sourceId: "source-1", url: "https://example.com/article" },
+      },
+      updateProgress: fixture.updateJobProgress,
+    })).rejects.toBe(acquisitionError);
+
+    expect(fixture.updateIngestJob).toHaveBeenNthCalledWith(1, db, "source-1", "received", null);
+    expect(fixture.updateIngestJob).toHaveBeenNthCalledWith(2, db, "source-1", "failed", "acquire_failed");
+  });
+
+  it("preserves the append error when the failed ingest update rejects", async () => {
+    const fixture = setupResearchJobWorkflowFixture();
+    const appendError = new Error("append_failed");
+    fixture.acquireRemoteSource.mockResolvedValue({
+      kind: "HTML",
+      r2Key: "originals/source-1/acq-job-append-failure.html",
+      extractedText: "충분히 긴 본문 텍스트입니다. 저장 상태 업데이트 실패를 재현합니다.",
+      title: "Title",
+      contentType: "text/html",
+      finalUrl: "https://example.com/article",
+      warnings: [],
+      textScope: "FULLTEXT",
+      extractionMethod: "HTML_STATIC",
+    });
+    fixture.appendAcquisitionVersion.mockRejectedValue(appendError);
+    fixture.updateIngestJob
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("failed_status_update_failed"));
+
+    const { executeSourceAcquisitionJob, db } = await loadSourceAcquisitionRunner(fixture);
+
+    await expect(executeSourceAcquisitionJob({
+      env: { DB: db } as Env,
+      job: {
+        id: "job-append-failure",
+        input: { sourceId: "source-1", url: "https://example.com/article" },
+      },
+      updateProgress: fixture.updateJobProgress,
+    })).rejects.toBe(appendError);
+
+    expect(fixture.updateIngestJob).toHaveBeenNthCalledWith(1, db, "source-1", "received", null);
+    expect(fixture.updateIngestJob).toHaveBeenNthCalledWith(2, db, "source-1", "failed", "source_version_store_failed");
+  });
 });
 
 describe("manual URL extraction compatibility", () => {
@@ -432,7 +489,8 @@ function setupResearchJobWorkflowFixture() {
 }
 
 async function loadSourceAcquisitionRunner(fixture: ReturnType<typeof setupResearchJobWorkflowFixture>) {
-  vi.doMock("../../../worker/src/ingestion/acquireRemoteSource", () => ({
+  vi.doMock("../../../worker/src/ingestion/acquireRemoteSource", async (importOriginal) => ({
+    ...await importOriginal<typeof import("../../../worker/src/ingestion/acquireRemoteSource")>(),
     acquireRemoteSource: fixture.acquireRemoteSource,
   }));
   vi.doMock("../../../worker/src/ingestion/store", () => ({
