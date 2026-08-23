@@ -1,18 +1,26 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { DiscoveryKeywordRecommendation, DiscoveryProfile, DiscoverySourcePreset, ResearchJob, View } from "@radar/shared";
-import type { DiscoveryRunDiagnostics } from "@radar/shared/discoveryRun";
 import { DISCOVERY_SOURCE_PRESETS } from "@radar/shared";
-import { deriveSourceAccess } from "../lib/sourceAccess";
-import { labelOf, PROVIDER_LABELS } from "../lib/labels";
+import type { DiscoveryRunDiagnostics } from "@radar/shared/discoveryRun";
+import type {
+  DiscoveryFieldSignal,
+  DiscoveryFieldSignalRunDiagnostics,
+  DiscoveryFieldSignalStatus,
+  DiscoveryFieldSignalType,
+} from "@radar/shared/fieldSignals";
 import DiscoveryDirectionPanel from "../components/discovery/DiscoveryDirectionPanel";
 import DiscoveryRunSummary from "../components/discovery/DiscoveryRunSummary";
+import FieldSignalList from "../components/discovery/FieldSignalList";
+import FieldSignalRunSummary from "../components/discovery/FieldSignalRunSummary";
 import PageHeader from "../components/layout/PageHeader";
 import DecisionBottomSheet from "../components/reading/DecisionBottomSheet";
 import ReadingPane from "../components/reading/ReadingPane";
 import SourceIndex from "../components/reading/SourceIndex";
 import SplitWorkspace from "../components/reading/SplitWorkspace";
-import StatusMessage from "../components/ui/StatusMessage";
 import type { DecisionAction, ReadingDocument, SourceIndexItem } from "../components/reading/types";
+import StatusMessage from "../components/ui/StatusMessage";
+import { labelOf, PROVIDER_LABELS } from "../lib/labels";
+import { deriveSourceAccess } from "../lib/sourceAccess";
 
 interface Candidate {
   id: string;
@@ -32,7 +40,14 @@ interface Candidate {
   querySource?: string;
 }
 
-interface HomepageProject { slug: string; title: string; year: number | null; projectUrl: string; imageCount: number; videoCount: number; }
+interface HomepageProject {
+  slug: string;
+  title: string;
+  year: number | null;
+  projectUrl: string;
+  imageCount: number;
+  videoCount: number;
+}
 
 const STATUS_FILTERS = [
   { value: "CANDIDATE", label: "새 후보" },
@@ -45,6 +60,24 @@ const LANE_FILTERS = [
   { value: "", label: "전체 방향" },
   { value: "ORIGINAL", label: "오리지널" },
   { value: "COUNTER", label: "카운터" },
+];
+
+const FIELD_SIGNAL_STATUS_FILTERS: Array<{ value: DiscoveryFieldSignalStatus; label: string }> = [
+  { value: "NEW", label: "새 신호" },
+  { value: "SAVED", label: "저장됨" },
+  { value: "DISMISSED", label: "제외됨" },
+];
+
+const FIELD_SIGNAL_TYPE_FILTERS: Array<{ value: "" | DiscoveryFieldSignalType; label: string }> = [
+  { value: "", label: "전체 유형" },
+  { value: "CONFERENCE", label: "학회·심포지엄" },
+  { value: "CALL_FOR_PAPERS", label: "CFP" },
+  { value: "EXHIBITION", label: "전시" },
+  { value: "GRANT", label: "지원·펠로십" },
+  { value: "RESIDENCY", label: "레지던시" },
+  { value: "WORKSHOP", label: "워크숍" },
+  { value: "INSTITUTION_NEWS", label: "기관 소식" },
+  { value: "OTHER", label: "기타" },
 ];
 
 function sourceCollectionLabel(source: DiscoverySourcePreset): string {
@@ -63,14 +96,24 @@ const DISCOVERY_ACTIONS: DecisionAction[] = [
 ];
 
 function candidateAccess(candidate: Candidate) {
-  return deriveSourceAccess({ provider: candidate.provider, href: candidate.externalUrl ?? candidate.openalexId, accessStatus: candidate.accessStatus ?? undefined });
+  return deriveSourceAccess({
+    provider: candidate.provider,
+    href: candidate.externalUrl ?? candidate.openalexId,
+    accessStatus: candidate.accessStatus ?? undefined,
+  });
 }
 
 function toIndexItem(candidate: Candidate): SourceIndexItem {
   return {
     id: candidate.id,
     title: candidate.titleKo?.trim() || candidate.title,
-    meta: [candidate.discoveryLane === "COUNTER" ? "카운터" : "오리지널", "후보", labelOf(PROVIDER_LABELS, candidate.provider), candidate.year, candidate.relevanceScore == null ? null : `관련도 ${candidate.relevanceScore.toFixed(2)}`].filter(Boolean).join(" · "),
+    meta: [
+      candidate.discoveryLane === "COUNTER" ? "카운터" : "오리지널",
+      "후보",
+      labelOf(PROVIDER_LABELS, candidate.provider),
+      candidate.year,
+      candidate.relevanceScore == null ? null : `관련도 ${candidate.relevanceScore.toFixed(2)}`,
+    ].filter(Boolean).join(" · "),
     tags: [candidate.queryUsed, candidate.querySource].filter(Boolean).map(String),
     access: candidateAccess(candidate),
   };
@@ -91,7 +134,16 @@ function toReadingDocument(candidate: Candidate): ReadingDocument {
   };
 }
 
-export default function DiscoverView({ onNavigate, jobs = [], onJobCreated }: { onNavigate: (view: View) => void; jobs?: ResearchJob[]; onJobCreated?: () => Promise<void> }) {
+export default function DiscoverView({
+  onNavigate,
+  jobs = [],
+  onJobCreated,
+}: {
+  onNavigate: (view: View) => void;
+  jobs?: ResearchJob[];
+  onJobCreated?: () => Promise<void>;
+}) {
+  const [contentMode, setContentMode] = useState<"READING" | "FIELD_SIGNAL">("READING");
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [statusFilter, setStatusFilter] = useState("CANDIDATE");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -102,9 +154,16 @@ export default function DiscoverView({ onNavigate, jobs = [], onJobCreated }: { 
   const [listError, setListError] = useState("");
   const [busy, setBusy] = useState(false);
   const [laneFilter, setLaneFilter] = useState("");
-  const [profile, setProfile] = useState<DiscoveryProfile>({ original: { keywords: [], strength: 70 }, counter: { keywords: [], strength: 30 }, updatedAt: "" });
+  const [profile, setProfile] = useState<DiscoveryProfile>({
+    original: { keywords: [], strength: 70 },
+    counter: { keywords: [], strength: 30 },
+    updatedAt: "",
+  });
   const [profileDraft, setProfileDraft] = useState(profile);
-  const [recommendations, setRecommendations] = useState<{ original: DiscoveryKeywordRecommendation[]; counter: DiscoveryKeywordRecommendation[] }>({ original: [], counter: [] });
+  const [recommendations, setRecommendations] = useState<{ original: DiscoveryKeywordRecommendation[]; counter: DiscoveryKeywordRecommendation[] }>({
+    original: [],
+    counter: [],
+  });
   const [profileDirty, setProfileDirty] = useState(false);
   const [feeds, setFeeds] = useState("");
   const [feedMsg, setFeedMsg] = useState("");
@@ -112,6 +171,13 @@ export default function DiscoverView({ onNavigate, jobs = [], onJobCreated }: { 
   const [homepageExtractedAt, setHomepageExtractedAt] = useState<string | null>(null);
   const [runSummary, setRunSummary] = useState<DiscoveryRunDiagnostics | null>(null);
   const [runCollected, setRunCollected] = useState(0);
+  const [fieldSignals, setFieldSignals] = useState<DiscoveryFieldSignal[]>([]);
+  const [fieldSignalStatus, setFieldSignalStatus] = useState<DiscoveryFieldSignalStatus>("NEW");
+  const [fieldSignalType, setFieldSignalType] = useState<"" | DiscoveryFieldSignalType>("");
+  const [fieldSignalError, setFieldSignalError] = useState("");
+  const [pendingFieldSignalId, setPendingFieldSignalId] = useState<string | null>(null);
+  const [fieldSignalRunSummary, setFieldSignalRunSummary] = useState<DiscoveryFieldSignalRunDiagnostics | null>(null);
+  const [fieldSignalsCollected, setFieldSignalsCollected] = useState(0);
 
   const load = useCallback(async () => {
     setListError("");
@@ -122,36 +188,89 @@ export default function DiscoverView({ onNavigate, jobs = [], onJobCreated }: { 
       const next = data.items ?? [];
       setCandidates(next);
       setSelectedId((current) => current && next.some((candidate) => candidate.id === current) ? current : next[0]?.id ?? null);
-    } catch { setListError("발견 후보를 불러오지 못했습니다."); }
+    } catch {
+      setListError("발견 후보를 불러오지 못했습니다.");
+    }
   }, [laneFilter, statusFilter]);
 
-  useEffect(() => { void load(); }, [load]);
+  const loadFieldSignals = useCallback(async () => {
+    setFieldSignalError("");
+    try {
+      const response = await fetch(`/api/discover/signals?status=${fieldSignalStatus}${fieldSignalType ? `&type=${fieldSignalType}` : ""}`);
+      if (!response.ok) throw new Error("field_signals_failed");
+      const data = await response.json() as { items?: DiscoveryFieldSignal[] };
+      setFieldSignals(data.items ?? []);
+    } catch {
+      setFieldSignalError("현장 신호를 불러오지 못했습니다.");
+    }
+  }, [fieldSignalStatus, fieldSignalType]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  useEffect(() => {
+    if (contentMode === "FIELD_SIGNAL") {
+      void loadFieldSignals();
+    }
+  }, [contentMode, loadFieldSignals]);
 
   useEffect(() => {
     const latest = jobs.find((job) => job.kind === "DISCOVERY_RUN");
     if (!latest) return;
+
     if (latest.status === "SUCCEEDED") {
-      const result = latest.result && typeof latest.result === "object" ? latest.result as { collected?: unknown; diagnostics?: DiscoveryRunDiagnostics } : {};
-      setMsg(`발견 수집 완료 · 새 후보 ${Number(result.collected ?? 0)}개`);
-      setRunCollected(Number(result.collected ?? 0));
+      const result = latest.result && typeof latest.result === "object"
+        ? latest.result as {
+            collected?: unknown;
+            fieldSignalsCollected?: unknown;
+            diagnostics?: DiscoveryRunDiagnostics;
+            fieldSignalDiagnostics?: DiscoveryFieldSignalRunDiagnostics;
+          }
+        : {};
+      const readingCount = Number(result.collected ?? 0);
+      const signalCount = Number(result.fieldSignalsCollected ?? 0);
+      setMsg(`발견 수집 완료 · 새 읽을거리 ${readingCount}개 · 현장 신호 ${signalCount}개`);
+      setRunCollected(readingCount);
+      setFieldSignalsCollected(signalCount);
       setRunSummary(result.diagnostics ?? null);
+      setFieldSignalRunSummary(result.fieldSignalDiagnostics ?? null);
       void load();
-    } else if (latest.status === "FAILED" || latest.status === "BLOCKED") {
+      void loadFieldSignals();
+      return;
+    }
+
+    if (latest.status === "FAILED" || latest.status === "BLOCKED") {
       setMsg(latest.error ?? "발견 수집에 실패했습니다.");
       setRunSummary(null);
+      setFieldSignalRunSummary(null);
     }
-  }, [jobs, load]);
+  }, [jobs, load, loadFieldSignals]);
 
   useEffect(() => {
-    fetch("/api/discover/profile").then((r) => r.json() as Promise<{ profile?: DiscoveryProfile }>).then((data) => { if (data.profile) { setProfile(data.profile); setProfileDraft(data.profile); } }).catch(() => undefined);
-    fetch("/api/discover/recommendations").then((r) => r.json() as Promise<{ recommendations?: { original?: DiscoveryKeywordRecommendation[]; counter?: DiscoveryKeywordRecommendation[] } }>).then((data) => setRecommendations({ original: data.recommendations?.original ?? [], counter: data.recommendations?.counter ?? [] })).catch(() => undefined);
+    fetch("/api/discover/profile").then((r) => r.json() as Promise<{ profile?: DiscoveryProfile }>).then((data) => {
+      if (data.profile) {
+        setProfile(data.profile);
+        setProfileDraft(data.profile);
+      }
+    }).catch(() => undefined);
+    fetch("/api/discover/recommendations").then((r) => r.json() as Promise<{ recommendations?: { original?: DiscoveryKeywordRecommendation[]; counter?: DiscoveryKeywordRecommendation[] } }>).then((data) => {
+      setRecommendations({
+        original: data.recommendations?.original ?? [],
+        counter: data.recommendations?.counter ?? [],
+      });
+    }).catch(() => undefined);
     fetch("/api/discover/feeds").then((r) => r.json() as Promise<{ feeds: string[] }>).then((data) => setFeeds((data.feeds ?? []).join("\n"))).catch(() => undefined);
-    fetch("/api/settings/homepage").then((r) => r.json() as Promise<{ extractedAt?: string; projects?: HomepageProject[] }>).then((data) => { setHomepageProjects(data.projects ?? []); setHomepageExtractedAt(data.extractedAt ?? null); }).catch(() => undefined);
+    fetch("/api/settings/homepage").then((r) => r.json() as Promise<{ extractedAt?: string; projects?: HomepageProject[] }>).then((data) => {
+      setHomepageProjects(data.projects ?? []);
+      setHomepageExtractedAt(data.extractedAt ?? null);
+    }).catch(() => undefined);
   }, []);
 
   async function runDiscovery() {
     setBusy(true);
     setRunSummary(null);
+    setFieldSignalRunSummary(null);
     try {
       const response = await fetch("/api/discover/run", { method: "POST" });
       const data = await response.json() as { job?: unknown; reused?: boolean; error?: string };
@@ -159,8 +278,12 @@ export default function DiscoverView({ onNavigate, jobs = [], onJobCreated }: { 
       await onJobCreated?.();
       setMsg(data.reused ? "이미 진행 중인 발견 수집을 계속합니다." : "발견 수집을 시작했습니다. 완료되면 상단 작업센터에서 후보를 확인할 수 있습니다.");
       setStatusFilter("CANDIDATE");
-    } catch (error) { setMsg(error instanceof Error ? error.message : "발견 실행을 시작하지 못했습니다."); }
-    finally { setBusy(false); }
+      setFieldSignalStatus("NEW");
+    } catch (error) {
+      setMsg(error instanceof Error ? error.message : "발견 실행을 시작하지 못했습니다.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   function handleSummaryAction(action: "RETRY" | "EDIT_QUERY" | "OPEN_STATUS") {
@@ -170,6 +293,7 @@ export default function DiscoverView({ onNavigate, jobs = [], onJobCreated }: { 
     }
     if (action === "OPEN_STATUS") {
       setStatusFilter("KEPT");
+      setContentMode("READING");
       setMsg("보관됨 후보를 표시했습니다.");
       return;
     }
@@ -187,7 +311,11 @@ export default function DiscoverView({ onNavigate, jobs = [], onJobCreated }: { 
       const data = await response.json() as { status?: string; sourceId?: string; error?: string };
       if (!response.ok) throw new Error(data.error ?? "분류 저장에 실패했습니다.");
       if (action === "develop" && data.sourceId) {
-        await fetch("/api/signals", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceId: data.sourceId, action: "develop" }) });
+        await fetch("/api/signals", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sourceId: data.sourceId, action: "develop" }),
+        });
         setMsg("발전시키기로 기록했습니다. 저장소에서 이어 읽습니다.");
         setDecisionOpen(false);
         onNavigate("RESERVOIR");
@@ -196,8 +324,26 @@ export default function DiscoverView({ onNavigate, jobs = [], onJobCreated }: { 
         setDecisionOpen(false);
       }
       await load();
-    } catch (error) { setDecisionError(error instanceof Error ? error.message : "분류를 저장하지 못했습니다."); }
-    finally { setBusy(false); setPendingAction(null); }
+    } catch (error) {
+      setDecisionError(error instanceof Error ? error.message : "분류를 저장하지 못했습니다.");
+    } finally {
+      setBusy(false);
+      setPendingAction(null);
+    }
+  }
+
+  async function actOnFieldSignal(id: string, action: "save" | "dismiss" | "restore") {
+    setPendingFieldSignalId(id);
+    try {
+      const response = await fetch(`/api/discover/signals/${id}/${action}`, { method: "POST" });
+      if (!response.ok) throw new Error("field_signal_action_failed");
+      setMsg(action === "save" ? "현장 신호를 저장했습니다." : action === "dismiss" ? "현장 신호를 제외했습니다." : "현장 신호를 복구했습니다.");
+      await loadFieldSignals();
+    } catch {
+      setMsg("현장 신호 상태를 저장하지 못했습니다.");
+    } finally {
+      setPendingFieldSignalId(null);
+    }
   }
 
   function selectCandidate(id: string) {
@@ -208,7 +354,10 @@ export default function DiscoverView({ onNavigate, jobs = [], onJobCreated }: { 
 
   async function saveProfile() {
     const response = await fetch("/api/discover/profile", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ profile: profileDraft }) });
-    if (!response.ok) { setMsg("검색 설정을 저장하지 못했습니다."); return; }
+    if (!response.ok) {
+      setMsg("검색 설정을 저장하지 못했습니다.");
+      return;
+    }
     const data = await response.json() as { profile: DiscoveryProfile };
     setProfile(data.profile);
     setProfileDraft(data.profile);
@@ -240,20 +389,51 @@ export default function DiscoverView({ onNavigate, jobs = [], onJobCreated }: { 
     <div className="view-stack">
       <PageHeader title="발견" description="새로운 후보를 읽고, 다음 연구 행동을 바로 결정합니다." primaryAction={<button className="ui-button" disabled={busy || profileDirty} onClick={() => void runDiscovery()}>{profileDirty ? "설정을 먼저 저장" : busy ? "수집 요청 중…" : "지금 새로 찾기"}</button>} />
       <DiscoveryDirectionPanel profile={profileDraft} recommendations={recommendations} dirty={profileDirty} onChange={(next) => { setProfileDraft(next); setProfileDirty(true); }} onSave={() => void saveProfile()} />
-      <div className="discovery-toolbar">
-        <div className="filter-strip" aria-label="후보 상태 필터">
-          {STATUS_FILTERS.map((filter) => <button key={filter.value} className={`filter-button${statusFilter === filter.value ? " is-active" : ""}`} onClick={() => setStatusFilter(filter.value)}>{filter.label}</button>)}
-        </div>
-        <div className="filter-strip" aria-label="발견 방향 필터">{LANE_FILTERS.map((filter) => <button key={filter.value} className={`filter-button${laneFilter === filter.value ? " is-active" : ""}`} onClick={() => setLaneFilter(filter.value)}>{filter.label}</button>)}</div>
-        <span className="table-note">저장 키워드 {profile.original.keywords.length + profile.counter.keywords.length}개 · 관련도 0.65 이상 · 무료 원문/PDF · 최대 8개/회</span>
+      <div className="discovery-content-tabs" aria-label="발견 콘텐츠 종류">
+        <button className={contentMode === "READING" ? "is-active" : ""} onClick={() => setContentMode("READING")}>읽을거리</button>
+        <button className={contentMode === "FIELD_SIGNAL" ? "is-active" : ""} onClick={() => setContentMode("FIELD_SIGNAL")}>현장 신호</button>
       </div>
       {msg && <p className="reservoir-message" role="status">{msg}</p>}
-      {runSummary && <DiscoveryRunSummary collected={runCollected} diagnostics={runSummary} onAction={handleSummaryAction} />}
-      {listError ? <StatusMessage kind="error" title={listError} action={<button className="ui-button-secondary" onClick={() => void load()}>다시 시도</button>} /> : <SplitWorkspace
-        index={<SourceIndex title="발견 후보" items={candidates.map(toIndexItem)} selectedId={selectedId} onSelect={selectCandidate} />}
-        reading={document ? <ReadingPane document={document} /> : <StatusMessage kind="empty" title="읽을 후보를 선택하세요" description="왼쪽 목록에서 후보를 고르면 실제 접근 링크와 함께 읽기 질문을 확인할 수 있습니다." />}
-      />}
-      {document && <DecisionBottomSheet actions={DISCOVERY_ACTIONS} document={document} open={decisionOpen} pending={busy} pendingAction={pendingAction} error={decisionError} onClose={() => setDecisionOpen(false)} onAction={(action) => void act(document.id, action)} />}
+      {contentMode === "READING" && (
+        <>
+          <div className="discovery-toolbar">
+            <div className="filter-strip" aria-label="후보 상태 필터">
+              {STATUS_FILTERS.map((filter) => <button key={filter.value} className={`filter-button${statusFilter === filter.value ? " is-active" : ""}`} onClick={() => setStatusFilter(filter.value)}>{filter.label}</button>)}
+            </div>
+            <div className="filter-strip" aria-label="발견 방향 필터">{LANE_FILTERS.map((filter) => <button key={filter.value} className={`filter-button${laneFilter === filter.value ? " is-active" : ""}`} onClick={() => setLaneFilter(filter.value)}>{filter.label}</button>)}</div>
+            <span className="table-note">저장 키워드 {profile.original.keywords.length + profile.counter.keywords.length}개 · 관련도 0.65 이상 · 무료 원문/PDF · 최대 8개/회</span>
+          </div>
+          {runSummary && <DiscoveryRunSummary collected={runCollected} diagnostics={runSummary} onAction={handleSummaryAction} />}
+          {listError ? (
+            <StatusMessage kind="error" title={listError} action={<button className="ui-button-secondary" onClick={() => void load()}>다시 시도</button>} />
+          ) : (
+            <SplitWorkspace
+              index={<SourceIndex title="발견 후보" items={candidates.map(toIndexItem)} selectedId={selectedId} onSelect={selectCandidate} />}
+              reading={document ? <ReadingPane document={document} /> : <StatusMessage kind="empty" title="읽을 후보를 선택하세요" description="왼쪽 목록에서 후보를 고르면 실제 접근 링크와 함께 읽기 질문을 확인할 수 있습니다." />}
+            />
+          )}
+          {document && <DecisionBottomSheet actions={DISCOVERY_ACTIONS} document={document} open={decisionOpen} pending={busy} pendingAction={pendingAction} error={decisionError} onClose={() => setDecisionOpen(false)} onAction={(action) => void act(document.id, action)} />}
+        </>
+      )}
+      {contentMode === "FIELD_SIGNAL" && (
+        <>
+          <div className="discovery-toolbar">
+            <div className="filter-strip" aria-label="현장 신호 상태 필터">
+              {FIELD_SIGNAL_STATUS_FILTERS.map((filter) => <button key={filter.value} className={`filter-button${fieldSignalStatus === filter.value ? " is-active" : ""}`} onClick={() => setFieldSignalStatus(filter.value)}>{filter.label}</button>)}
+            </div>
+            <select aria-label="현장 신호 유형" value={fieldSignalType} onChange={(event) => setFieldSignalType(event.target.value as "" | DiscoveryFieldSignalType)}>
+              {FIELD_SIGNAL_TYPE_FILTERS.map((filter) => <option key={filter.value} value={filter.value}>{filter.label}</option>)}
+            </select>
+            <span className="table-note">회당 최대 12개 · 출처당 최대 4개</span>
+          </div>
+          {fieldSignalRunSummary && <FieldSignalRunSummary collected={fieldSignalsCollected} diagnostics={fieldSignalRunSummary} />}
+          {fieldSignalError ? (
+            <StatusMessage kind="error" title={fieldSignalError} action={<button className="ui-button-secondary" onClick={() => void loadFieldSignals()}>다시 시도</button>} />
+          ) : (
+            <FieldSignalList items={fieldSignals} status={fieldSignalStatus} pendingId={pendingFieldSignalId} onAction={(id, action) => void actOnFieldSignal(id, action)} />
+          )}
+        </>
+      )}
       <details className="discovery-settings">
         <summary>발견 범위와 수집 출처 조정</summary>
         <div className="discovery-settings__grid">

@@ -6,11 +6,30 @@ import DiscoveryRunSummary from "../components/discovery/DiscoveryRunSummary";
 import DiscoverView from "./DiscoverView";
 
 const candidate = { id: "candidate-1", openalexId: "https://openalex.org/W1", title: "자료 후보", authors: "저자", year: 2026, relevanceScore: 0.82, status: "CANDIDATE", queryUsed: "사진 연구", provider: "openalex", externalUrl: "https://doi.org/10.0000/example" };
+const fieldSignal = {
+  id: "signal-1",
+  sourceId: "caa-news",
+  sourceName: "CAA News",
+  externalUrl: "https://www.collegeart.org/news/cfp-photography",
+  title: "Call for Papers: Photography and Visual Culture",
+  summary: "A conference on photography, AI, and image politics.",
+  signalType: "CALL_FOR_PAPERS",
+  publishedAt: "2026-08-20T00:00:00.000Z",
+  eventAt: "2026-09-12T00:00:00.000Z",
+  deadlineAt: "2026-08-31T00:00:00.000Z",
+  matchedTerms: ["photography", "visual culture"],
+  relevanceScore: 0.85,
+  status: "NEW",
+  createdAt: "2026-08-23T00:00:00.000Z",
+  updatedAt: "2026-08-23T00:00:00.000Z",
+};
 
 beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url === "/api/discover/candidates/candidate-1/keep" && init?.method === "POST") return Promise.resolve(new Response(JSON.stringify({ ok: true, status: "KEPT", sourceId: "source-1" })));
+    if (url.startsWith("/api/discover/signals?") && !init?.method) return Promise.resolve(new Response(JSON.stringify({ items: [fieldSignal] })));
+    if (url === "/api/discover/signals/signal-1/save" && init?.method === "POST") return Promise.resolve(new Response(JSON.stringify({ ok: true, status: "SAVED" })));
     if (url.startsWith("/api/discover/candidates")) return Promise.resolve(new Response(JSON.stringify({ items: [candidate] })));
     if (url === "/api/discover/queries") return Promise.resolve(new Response(JSON.stringify({ queries: [] })));
     if (url === "/api/discover/feeds") return Promise.resolve(new Response(JSON.stringify({ feeds: [] })));
@@ -87,5 +106,27 @@ describe("DiscoverView", () => {
     expect(screen.getByRole("link", { name: "Unthinking Photography ↗" }).closest(".discovery-source__row")).toHaveTextContent("읽을거리 자동 수집");
     expect(screen.getByRole("link", { name: "CAA News ↗" }).closest(".discovery-source__row")).toHaveTextContent("현장 신호 자동 수집");
     expect(screen.getByRole("link", { name: "Artforum ↗" }).closest(".discovery-source__row")).toHaveTextContent("공식 RSS · 자동 수집 안 함");
+  });
+
+  it("shows field signals separately from reading candidates", async () => {
+    render(<DiscoverView onNavigate={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: "현장 신호" }));
+
+    expect(await screen.findByRole("heading", { name: "Call for Papers: Photography and Visual Culture" })).toBeVisible();
+    expect(screen.getByText("CAA News")).toBeVisible();
+    expect(screen.getByText("마감 2026. 8. 31.")).toBeVisible();
+    expect(screen.queryByRole("option", { name: /자료 후보/ })).not.toBeInTheDocument();
+  });
+
+  it("saves a field signal without promoting it to Reservoir", async () => {
+    render(<DiscoverView onNavigate={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: "현장 신호" }));
+    await userEvent.click(await screen.findByRole("button", { name: "신호 저장" }));
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+      "/api/discover/signals/signal-1/save",
+      { method: "POST" },
+    ));
+    expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/signals"), expect.anything());
   });
 });
