@@ -587,6 +587,15 @@ describe("source acquisition workflow", () => {
 });
 
 describe("manual URL extraction compatibility", () => {
+  it("blocks direct private network targets before issuing a request", async () => {
+    const { fetchAndExtract } = await import("../../../worker/src/ingestion/extractUrl");
+    const fetchSpy = vi.fn().mockRejectedValue(new Error("raw_fetch_called"));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await expect(fetchAndExtract("http://127.0.0.1/")).rejects.toThrow("REDIRECT_BLOCKED");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("preserves legacy fields while exposing new extraction metadata", async () => {
     const { fetchAndExtract } = await import("../../../worker/src/ingestion/extractUrl");
     const response = withResponseUrl(
@@ -596,7 +605,7 @@ describe("manual URL extraction compatibility", () => {
       ),
       "https://final.example/post",
     );
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
+    vi.stubGlobal("fetch", createSafeFetchStub(response));
 
     const page = await fetchAndExtract("https://start.example/post");
 
@@ -608,6 +617,40 @@ describe("manual URL extraction compatibility", () => {
     expect(page.finalUrl).toBe("https://final.example/post");
     expect(page.method).toBe("HTML_STATIC");
     expect(page.scope).toBe("FULLTEXT");
+  });
+
+  it("treats HTML served from a .pdf URL as static HTML text", async () => {
+    const { fetchAndExtract } = await import("../../../worker/src/ingestion/extractUrl");
+    const response = withResponseUrl(
+      new Response(
+        `<html><head><title>HTML Landing</title></head><body><main><article><p>${"본문 ".repeat(620)}</p></article></main></body></html>`,
+        { status: 200, headers: { "content-type": "text/html; charset=utf-8" } },
+      ),
+      "https://example.com/paper.pdf",
+    );
+    vi.stubGlobal("fetch", createSafeFetchStub(response));
+
+    const page = await fetchAndExtract("https://example.com/paper.pdf");
+
+    expect(page.finalUrl).toBe("https://example.com/paper.pdf");
+    expect(page.method).toBe("HTML_STATIC");
+    expect(page.scope).toBe("FULLTEXT");
+    expect(page.text).toContain("본문");
+  });
+
+  it("fails oversized HTML bodies with SIZE_LIMIT before calling response.text()", async () => {
+    const { fetchAndExtract } = await import("../../../worker/src/ingestion/extractUrl");
+    const response = makeStreamResponse([
+      new Uint8Array(20 * 1024 * 1024),
+      new Uint8Array(1),
+    ], {
+      "content-type": "text/html; charset=utf-8",
+    }, "https://public.example/oversized");
+    const textSpy = vi.spyOn(response, "text").mockRejectedValue(new Error("raw_text_called"));
+    vi.stubGlobal("fetch", createSafeFetchStub(response));
+
+    await expect(fetchAndExtract("https://public.example/oversized")).rejects.toThrow("SIZE_LIMIT");
+    expect(textSpy).not.toHaveBeenCalled();
   });
 });
 
@@ -653,6 +696,23 @@ function makeAcquisitionEnv(input: {
 function withResponseUrl(response: Response, url: string): Response {
   Object.defineProperty(response, "url", { value: url, configurable: true });
   return response;
+}
+
+function createSafeFetchStub(documentResponse: Response) {
+  return vi.fn((input: string | URL | Request) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (url.startsWith("https://cloudflare-dns.com/dns-query")) {
+      const recordType = new URL(url).searchParams.get("type");
+      const answer = recordType === "AAAA"
+        ? [{ type: 28, data: "2606:2800:220:1:248:1893:25c8:1946" }]
+        : [{ type: 1, data: "93.184.216.34" }];
+      return Promise.resolve(new Response(JSON.stringify({ Status: 0, Answer: answer }), {
+        status: 200,
+        headers: { "content-type": "application/dns-json" },
+      }));
+    }
+    return Promise.resolve(documentResponse);
+  });
 }
 
 function makeStreamResponse(chunks: Uint8Array[], headers: HeadersInit, url = "https://public.example/stream"): Response {

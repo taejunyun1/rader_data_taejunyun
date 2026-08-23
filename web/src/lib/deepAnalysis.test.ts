@@ -250,16 +250,81 @@ describe("inbox retry separation", () => {
       finalUrl: "https://example.com/final",
       versionOrigin: "REEXTRACT",
     }));
-    expect(put).toHaveBeenCalledOnce();
+    expect(put).toHaveBeenCalledWith(
+      expect.stringMatching(/^originals\/source-1\/acq-/),
+      "<html><body>원문</body></html>",
+      { customMetadata: { sourceId: "source-1", versionId: expect.any(String), origin: "REEXTRACT" } },
+    );
     expect(analyzeSource).toHaveBeenCalledWith(env, "source-1");
     expect(enqueueResearchJob).not.toHaveBeenCalled();
+  });
+
+  it("retains the legacy synchronous reextract path for URL sources", async () => {
+    const analyzeSource = vi.fn().mockResolvedValue({ status: "analyzed" });
+    const fetchAndExtract = vi.fn().mockResolvedValue({
+      html: "<html><body>재추출 원문</body></html>",
+      title: "자료",
+      text: "재추출 본문 ".repeat(320),
+      siteName: "Example",
+      description: null,
+      finalUrl: "https://example.com/reextract-final",
+      warnings: [],
+      scope: "FULLTEXT",
+      method: "HTML_STATIC",
+    });
+    const appendAcquisitionVersion = vi.fn().mockResolvedValue({
+      versionId: "version-reextract",
+      version: 3,
+      qualityStatus: "READY",
+    });
+    const getActiveVersion = vi.fn()
+      .mockResolvedValueOnce({ id: "version-active", version_origin: "INITIAL_INGEST" })
+      .mockResolvedValueOnce({ id: "version-reextract", version_origin: "REEXTRACT" });
+    vi.doMock("../../../worker/src/analysis/analyze", () => ({ analyzeSource }));
+    vi.doMock("../../../worker/src/ingestion/extractUrl", () => ({ fetchAndExtract }));
+    vi.doMock("../../../worker/src/ingestion/versioning", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../../worker/src/ingestion/versioning")>(),
+      appendAcquisitionVersion,
+      getActiveVersion,
+    }));
+    const db = retryDb();
+    const put = vi.fn().mockResolvedValue(undefined);
+    const env = { DB: db, ORIGINALS: { put } } as unknown as Env;
+    const { default: inbox } = await import("../../../worker/src/routes/inbox");
+
+    const response = await inbox.request("/source-1/reextract", { method: "POST" }, env);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      ok: true,
+      sourceId: "source-1",
+      versionId: "version-reextract",
+      version: 3,
+      status: "ACTIVE",
+      qualityStatus: "READY",
+    });
+    expect(fetchAndExtract).toHaveBeenCalledWith("https://example.com/article");
+    expect(appendAcquisitionVersion).toHaveBeenCalledWith(db, expect.objectContaining({
+      sourceId: "source-1",
+      extractedText: "재추출 본문 ".repeat(320),
+      finalUrl: "https://example.com/reextract-final",
+      versionOrigin: "REEXTRACT",
+    }));
+    expect(put).toHaveBeenCalledWith(
+      expect.stringMatching(/^originals\/source-1\/acq-/),
+      "<html><body>재추출 원문</body></html>",
+      { customMetadata: { sourceId: "source-1", versionId: expect.any(String), origin: "REEXTRACT" } },
+    );
+    expect(analyzeSource).toHaveBeenCalledWith(env, "source-1");
   });
 
   it("enqueues canonical URL acquisition for fetch=1 without analyzing", async () => {
     const enqueueResearchJob = vi.fn().mockResolvedValue({ job: { id: "fetch-job", kind: "SOURCE_ACQUISITION" }, reused: false });
     const analyzeSource = vi.fn();
+    const fetchAndExtract = vi.fn().mockRejectedValue(new Error("legacy_sync_fetch_called"));
     vi.doMock("../../../worker/src/jobs/enqueue", () => ({ enqueueResearchJob }));
     vi.doMock("../../../worker/src/analysis/analyze", () => ({ analyzeSource }));
+    vi.doMock("../../../worker/src/ingestion/extractUrl", () => ({ fetchAndExtract }));
     const db = {
       prepare() {
         return {
@@ -283,6 +348,7 @@ describe("inbox retry separation", () => {
       "local",
     );
     expect(analyzeSource).not.toHaveBeenCalled();
+    expect(fetchAndExtract).not.toHaveBeenCalled();
   });
 });
 

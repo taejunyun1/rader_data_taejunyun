@@ -1,5 +1,6 @@
 import type { TextScope } from "@radar/shared/ingestion";
 import { extractStaticHtml } from "./extractHtml";
+import { fetchRemoteDocument, RemoteFetchError } from "./fetchRemoteDocument";
 
 export interface ExtractedPage {
   html: string;
@@ -14,32 +15,11 @@ export interface ExtractedPage {
 }
 
 export async function fetchAndExtract(url: string): Promise<ExtractedPage> {
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), 20_000);
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      headers: {
-        "User-Agent": "ResearchRadar/0.1 (personal research tool)",
-        Accept: "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5",
-      },
-      redirect: "follow",
-      signal: ac.signal,
-    });
-  } finally {
-    clearTimeout(timer);
-  }
+  const remote = await fetchRemoteDocument(url);
+  if (remote.kind !== "HTML") throw new RemoteFetchError("UNSUPPORTED_CONTENT_TYPE");
 
-  if (!res.ok) throw new Error(`fetch_failed_${res.status}`);
-  const ct = res.headers.get("content-type") ?? "";
-  if (!/text\/html|text\/plain|xhtml/i.test(ct)) {
-    throw new Error(`unsupported_content_type:${ct.split(";")[0] ?? "unknown"}`);
-  }
-
-  const raw = await res.text();
-  const html = raw.length > 2_000_000 ? raw.slice(0, 2_000_000) : raw;
-  const finalUrl = res.url || url;
-  const extracted = extractStaticHtml(html, finalUrl);
+  const html = new TextDecoder().decode(remote.body);
+  const extracted = extractStaticHtml(html, remote.finalUrl);
 
   return {
     html,
@@ -47,7 +27,7 @@ export async function fetchAndExtract(url: string): Promise<ExtractedPage> {
     text: extracted.text,
     siteName: extracted.siteName,
     description: extracted.description,
-    finalUrl,
+    finalUrl: remote.finalUrl,
     warnings: extracted.warnings,
     scope: extracted.scope,
     method: extracted.method,
