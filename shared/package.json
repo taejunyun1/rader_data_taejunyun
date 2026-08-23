@@ -6,7 +6,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./discovery": "./src/discovery.ts",
-    "./ingestion": "./src/ingestion.ts"
+    "./ingestion": "./src/ingestion.ts",
+    "./discoveryRun": "./src/discoveryRun.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
