@@ -5,7 +5,8 @@ export type ResearchJobRequest =
   | { kind: "DISCOVERY_RUN"; input: { divergence: number; profile: DiscoveryProfile } }
   | { kind: "DISTILL_RUN"; input: { includeCounter: boolean; redistillOf?: string; keepElements?: string[]; promptVariant?: string } }
   | { kind: "RADAR_SYNTHESIS"; input: { period: "WEEKLY" | "MONTHLY" | "YEARLY" } }
-  | { kind: "DEEP_ANALYSIS"; input: { sourceId: string; profile: "precision" | "maximum" } };
+  | { kind: "DEEP_ANALYSIS"; input: { sourceId: string; profile: "precision" | "maximum" } }
+  | { kind: "SOURCE_ACQUISITION"; input: { sourceId: string; url: string } };
 
 function stable(value: unknown): string {
   return JSON.stringify(value, Object.keys((value && typeof value === "object" ? value : {}) as object).sort());

@@ -46,6 +46,8 @@ export interface CreateSourceResult {
   activeVersionId?: string;
 }
 
+export type IngestProcessingStatus = "received" | "stored" | "extracted" | "analyzed" | "indexed" | "failed";
+
 export const RELIABILITY_BY_KIND: Record<SourceKind, Reliability> = {
   PERSONAL_WORK: "PRIMARY",
   PERSONAL_TEXT: "PRIMARY",
@@ -223,4 +225,28 @@ async function recordReimport(env: Env, sourceId: string, field: string, origin:
       )
       .bind(uuid(), sourceId, JSON.stringify({ origin, dedup: field }), ts),
   ]);
+}
+
+export async function updateIngestJob(
+  db: D1Database,
+  sourceId: string,
+  status: IngestProcessingStatus,
+  error: string | null,
+): Promise<void> {
+  const now = nowIso();
+  const existing = await db.prepare(
+    "SELECT id FROM processing_jobs WHERE source_id = ? ORDER BY updated_at DESC, created_at DESC LIMIT 1",
+  ).bind(sourceId).first<{ id: string }>();
+
+  if (existing?.id) {
+    await db.prepare(
+      "UPDATE processing_jobs SET stage = 'acquisition', status = ?, error = ?, updated_at = ? WHERE id = ?",
+    ).bind(status, error, now, existing.id).run();
+    return;
+  }
+
+  await db.prepare(
+    `INSERT INTO processing_jobs (id, source_id, stage, status, error, retry_count, created_at, updated_at)
+     VALUES (?, ?, 'acquisition', ?, ?, 0, ?, ?)`,
+  ).bind(uuid(), sourceId, status, error, now, now).run();
 }

@@ -194,6 +194,56 @@ describe("remote acquisition", () => {
     }))
       .rejects.toThrow("UNSUPPORTED_CONTENT_TYPE");
   });
+
+  it("converts a remote PDF through Workers AI and preserves the method", async () => {
+    const { acquireRemoteSource } = await import("../../../worker/src/ingestion/acquireRemoteSource");
+    const env = makeAcquisitionEnv({
+      contentType: "application/pdf",
+      body: new ArrayBuffer(32),
+      toMarkdown: async () => [{ name: "paper.md", blob: new Blob([`${"본문 ".repeat(400)}`]) }],
+    });
+    const response = withResponseUrl(
+      new Response(env.__fixture.body.slice(0), { status: 200, headers: { "content-type": env.__fixture.contentType } }),
+      "https://arxiv.org/pdf/1234",
+    );
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
+
+    const result = await acquireRemoteSource(env, {
+      sourceId: "s1",
+      url: "https://arxiv.org/pdf/1234",
+      version: 2,
+    }, {
+      resolveDns: allowPublicDnsResolution,
+    });
+
+    expect(result.kind).toBe("PDF");
+    expect(result.extractionMethod).toBe("PDF_REMOTE_TO_MARKDOWN");
+    expect(result.textScope).toBe("FULLTEXT");
+  });
+
+  it("reports a conversion failure without treating the binary as text", async () => {
+    const { acquireRemoteSource } = await import("../../../worker/src/ingestion/acquireRemoteSource");
+    const env = makeAcquisitionEnv({
+      contentType: "application/pdf",
+      body: new ArrayBuffer(32),
+      toMarkdown: async () => {
+        throw new Error("conversion_failed");
+      },
+    });
+    const response = withResponseUrl(
+      new Response(env.__fixture.body.slice(0), { status: 200, headers: { "content-type": env.__fixture.contentType } }),
+      "https://arxiv.org/pdf/1234",
+    );
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
+
+    await expect(acquireRemoteSource(env, {
+      sourceId: "s1",
+      url: "https://arxiv.org/pdf/1234",
+      version: 2,
+    }, {
+      resolveDns: allowPublicDnsResolution,
+    })).rejects.toThrow("PDF_CONVERSION_FAILED");
+  });
 });
 
 describe("manual URL extraction compatibility", () => {
@@ -221,8 +271,14 @@ describe("manual URL extraction compatibility", () => {
   });
 });
 
-function makeAcquisitionEnv() {
+function makeAcquisitionEnv(input: {
+  contentType?: string;
+  body?: ArrayBuffer;
+  toMarkdown?: (files: unknown[]) => Promise<{ name: string; blob: Blob }[]>;
+} = {}) {
   const objects = new Map<string, ArrayBuffer>();
+  const contentType = input.contentType ?? "text/html";
+  const body = input.body ?? new TextEncoder().encode("<html></html>").buffer;
   return {
     ORIGINALS: {
       put: async (key: string, value: ArrayBuffer | Blob | string) => {
@@ -237,8 +293,19 @@ function makeAcquisitionEnv() {
         objects.set(key, new TextEncoder().encode(value).buffer);
       },
     },
-    __fixture: { objects },
-  } as unknown as Env & { __fixture: { objects: Map<string, ArrayBuffer> } };
+    AI: {
+      toMarkdown: async (filesOrRequest: unknown[] | { files: unknown[] }) => (input.toMarkdown
+        ? input.toMarkdown(Array.isArray(filesOrRequest) ? filesOrRequest : filesOrRequest.files)
+        : [{ name: "document.md", blob: new Blob([]) }]),
+    },
+    __fixture: { contentType, body, objects },
+  } as unknown as Env & {
+    __fixture: {
+      contentType: string;
+      body: ArrayBuffer;
+      objects: Map<string, ArrayBuffer>;
+    };
+  };
 }
 
 function withResponseUrl(response: Response, url: string): Response {

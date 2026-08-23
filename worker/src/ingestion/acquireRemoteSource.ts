@@ -1,4 +1,4 @@
-import type { ExtractionMethod, TextScope } from "@radar/shared/ingestion";
+import { classifyTextScope, normalizeIngestText, type ExtractionMethod, type TextScope } from "@radar/shared/ingestion";
 import { extractStaticHtml } from "./extractHtml";
 
 const FETCH_TIMEOUT_MS = 20_000;
@@ -72,7 +72,18 @@ export async function acquireRemoteSource(
     await env.ORIGINALS.put(r2Key, rawBody);
 
     if (kind === "PDF") {
-      throw new RemoteAcquisitionError("PDF_CONVERSION_FAILED");
+      const extracted = await extractRemotePdf(env, input, rawBody);
+      return {
+        kind,
+        r2Key,
+        extractedText: extracted.text,
+        title: null,
+        contentType,
+        finalUrl,
+        warnings: extracted.warnings,
+        textScope: extracted.scope,
+        extractionMethod: "PDF_REMOTE_TO_MARKDOWN",
+      };
     }
 
     const html = new TextDecoder().decode(rawBody);
@@ -237,6 +248,65 @@ async function readResponseBody(response: Response): Promise<ArrayBuffer> {
 
 function buildOriginalKey(sourceId: string, version: number, kind: "HTML" | "PDF"): string {
   return `originals/${sourceId}/v${version}.${kind === "HTML" ? "html" : "pdf"}`;
+}
+
+async function extractRemotePdf(
+  env: Env,
+  input: RemoteAcquisitionInput,
+  rawBody: ArrayBuffer,
+): Promise<{ text: string; warnings: string[]; scope: TextScope }> {
+  let converted: unknown;
+  try {
+    converted = await env.AI.toMarkdown([
+      {
+        name: `${input.sourceId}.pdf`,
+        blob: new Blob([rawBody], { type: "application/pdf" }),
+      },
+    ]);
+  } catch {
+    throw new RemoteAcquisitionError("PDF_CONVERSION_FAILED");
+  }
+
+  const text = await readMarkdownConversion(converted);
+  const normalized = normalizeIngestText(text, "PDF_TEXT");
+  const classificationChars = normalized.report.meaningfulChars < 200
+    ? normalized.report.meaningfulChars
+    : Math.max(normalized.report.meaningfulChars, normalized.normalizedText.length);
+  const { scope } = classifyTextScope({
+    format: "PDF_TEXT",
+    meaningfulChars: classificationChars,
+    warnings: normalized.report.warnings,
+    extractionMethod: "PDF_REMOTE_TO_MARKDOWN",
+  });
+
+  return {
+    text,
+    warnings: normalized.report.warnings,
+    scope,
+  };
+}
+
+async function readMarkdownConversion(value: unknown): Promise<string> {
+  const results = Array.isArray(value) ? value : [value];
+  const parts: string[] = [];
+
+  for (const result of results) {
+    if (!result || typeof result !== "object") continue;
+
+    const errorFormat = "format" in result && result.format === "error";
+    if (errorFormat) throw new RemoteAcquisitionError("PDF_CONVERSION_FAILED");
+
+    if ("data" in result && typeof result.data === "string") {
+      parts.push(result.data);
+      continue;
+    }
+
+    if ("blob" in result && result.blob instanceof Blob) {
+      parts.push(await result.blob.text());
+    }
+  }
+
+  return parts.join("\n\n").trim();
 }
 
 async function resolveDnsSafely(
