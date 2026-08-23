@@ -147,6 +147,7 @@
 .deep-analysis-controls label { display: grid; gap: 4px; color: var(--color-muted); font-size: 9px; }
 .deep-analysis-controls select { min-height: 34px; padding: 6px 9px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-surface); color: var(--color-ink); font: inherit; font-size: 11px; }
 .deep-analysis-controls button { min-height: 34px; }
+.deep-analysis-blocked { max-width: 760px; margin: -2px auto 10px; color: var(--color-danger); font-size: 11px; text-align: right; }
 .distill-counter { padding-top: 24px; border-top: 2px solid var(--color-accent); }
 .distill-counter.is-unverified { border-top-color: var(--color-warning); }
 .counter-contrast { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 12px 0 18px; }

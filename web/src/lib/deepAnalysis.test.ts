@@ -7,6 +7,8 @@ afterEach(() => {
   vi.doUnmock("../../../worker/src/lib/openai");
   vi.doUnmock("../../../worker/src/jobs/enqueue");
   vi.doUnmock("../../../worker/src/analysis/analyze");
+  vi.doUnmock("../../../worker/src/ingestion/extractUrl");
+  vi.doUnmock("../../../worker/src/ingestion/versioning");
   vi.resetModules();
 });
 
@@ -178,6 +180,81 @@ describe("deep analysis route gate", () => {
 });
 
 describe("inbox retry separation", () => {
+  it("reanalyzes the current active version for analyze=1 without remote fetch", async () => {
+    const enqueueResearchJob = vi.fn();
+    const analyzeSource = vi.fn().mockResolvedValue({ status: "analyzed", sourceId: "source-1" });
+    const remoteFetch = vi.fn().mockRejectedValue(new Error("remote_fetch_called"));
+    vi.doMock("../../../worker/src/jobs/enqueue", () => ({ enqueueResearchJob }));
+    vi.doMock("../../../worker/src/analysis/analyze", () => ({ analyzeSource }));
+    vi.stubGlobal("fetch", remoteFetch);
+    const env = { DB: {} as D1Database } as Env;
+    const { default: inbox } = await import("../../../worker/src/routes/inbox");
+
+    const response = await inbox.request("/retry/source-1?analyze=1", { method: "POST" }, env);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ status: "analyzed", sourceId: "source-1" });
+    expect(analyzeSource).toHaveBeenCalledWith(env, "source-1");
+    expect(remoteFetch).not.toHaveBeenCalled();
+    expect(enqueueResearchJob).not.toHaveBeenCalled();
+  });
+
+  it("retains the legacy synchronous refetch path without retry query flags", async () => {
+    const enqueueResearchJob = vi.fn();
+    const analyzeSource = vi.fn().mockResolvedValue({ status: "analyzed" });
+    const fetchAndExtract = vi.fn().mockResolvedValue({
+      html: "<html><body>원문</body></html>",
+      title: "자료",
+      text: "충분한 원문 ".repeat(300),
+      siteName: "Example",
+      description: null,
+      finalUrl: "https://example.com/final",
+      warnings: [],
+      scope: "FULLTEXT",
+      method: "HTML_STATIC",
+    });
+    const appendAcquisitionVersion = vi.fn().mockResolvedValue({
+      versionId: "version-retry",
+      version: 2,
+      qualityStatus: "READY",
+    });
+    const getActiveVersion = vi.fn()
+      .mockResolvedValueOnce({ id: "version-active", version_origin: "INITIAL_INGEST" })
+      .mockResolvedValueOnce({ id: "version-retry", version_origin: "REEXTRACT" });
+    vi.doMock("../../../worker/src/jobs/enqueue", () => ({ enqueueResearchJob }));
+    vi.doMock("../../../worker/src/analysis/analyze", () => ({ analyzeSource }));
+    vi.doMock("../../../worker/src/ingestion/extractUrl", () => ({ fetchAndExtract }));
+    vi.doMock("../../../worker/src/ingestion/versioning", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../../worker/src/ingestion/versioning")>(),
+      appendAcquisitionVersion,
+      getActiveVersion,
+    }));
+    const db = retryDb();
+    const put = vi.fn().mockResolvedValue(undefined);
+    const env = { DB: db, ORIGINALS: { put } } as unknown as Env;
+    const { default: inbox } = await import("../../../worker/src/routes/inbox");
+
+    const response = await inbox.request("/retry/source-1", { method: "POST" }, env);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      ok: true,
+      versionId: "version-retry",
+      version: 2,
+      qualityStatus: "READY",
+    });
+    expect(fetchAndExtract).toHaveBeenCalledWith("https://example.com/article");
+    expect(appendAcquisitionVersion).toHaveBeenCalledWith(db, expect.objectContaining({
+      sourceId: "source-1",
+      extractedText: "충분한 원문 ".repeat(300),
+      finalUrl: "https://example.com/final",
+      versionOrigin: "REEXTRACT",
+    }));
+    expect(put).toHaveBeenCalledOnce();
+    expect(analyzeSource).toHaveBeenCalledWith(env, "source-1");
+    expect(enqueueResearchJob).not.toHaveBeenCalled();
+  });
+
   it("enqueues canonical URL acquisition for fetch=1 without analyzing", async () => {
     const enqueueResearchJob = vi.fn().mockResolvedValue({ job: { id: "fetch-job", kind: "SOURCE_ACQUISITION" }, reused: false });
     const analyzeSource = vi.fn();
@@ -218,6 +295,32 @@ function readinessDb(row: Record<string, unknown>): D1Database {
           if (sql.includes("FROM ai_usage")) return { total: 0 };
           return row;
         },
+      };
+    },
+  } as unknown as D1Database;
+}
+
+function retryDb(): D1Database {
+  return {
+    prepare(sql: string) {
+      return {
+        bind() { return this; },
+        async first() {
+          if (sql === "SELECT id, canonical_url FROM sources WHERE id = ?") {
+            return { id: "source-1", canonical_url: "https://example.com/article" };
+          }
+          if (sql === "SELECT id, title, input_format, canonical_url, r2_key FROM sources WHERE id = ?") {
+            return {
+              id: "source-1",
+              title: "자료",
+              input_format: "URL_HTML",
+              canonical_url: "https://example.com/article",
+              r2_key: "originals/source-1/v1",
+            };
+          }
+          return null;
+        },
+        async run() { return { success: true }; },
       };
     },
   } as unknown as D1Database;

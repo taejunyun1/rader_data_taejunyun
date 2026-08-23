@@ -28,3 +28,22 @@
 ## Residual concerns
 
 - The legacy retry request without either query flag still follows its pre-existing synchronous URL refetch path. The explicit `analyze=1` and `fetch=1` contracts are separated; changing the unflagged compatibility path was outside Task 6.
+
+## Review-fix addendum — 2026-08-24
+
+### Findings resolved
+
+- Reservoir now recognizes the existing structured HTTP 422 `deep_analysis_text_not_ready` response. `METADATA_ONLY`, `PARTIAL`, empty/unknown text, non-ready quality, and sub-1,000-character cases are translated into actionable Korean reasons instead of exposing the API error code.
+- After the readiness response, the profile selector and deep-analysis action are disabled, and the action label changes to `원문 수집 필요`. The existing READY path still sends the selected deep-analysis profile unchanged.
+- Added direct Hono route regressions for all retry modes without changing backend semantics:
+  - plain `POST /retry/:id` performs the legacy synchronous remote refetch/version append path;
+  - `?analyze=1` calls `analyzeSource` for the current source without a remote fetch or acquisition enqueue;
+  - `?fetch=1` returns HTTP 202 and enqueues `SOURCE_ACQUISITION` without analysis or synchronous fetch.
+
+### Verification
+
+- RED: the new Reservoir blocked-state test failed while the UI displayed `deep_analysis_text_not_ready` and left the action enabled.
+- GREEN: `pnpm --dir web exec vitest run src/lib/deepAnalysis.test.ts src/lib/ingestion.test.ts src/lib/remoteAcquisition.test.ts src/views/ReservoirView.test.tsx` — 4 files, 53 tests passed.
+- Typechecks: `pnpm --filter @radar/worker typecheck` and `pnpm --filter @radar/shared typecheck` passed.
+- Rendered validation at `http://127.0.0.1:5173/` with a local mock API confirmed the flow `저장소 → 메타데이터 자료 → 심층 정리하기 → 차단 사유`, disabled action/profile controls, and zero browser console warnings or errors.
+- An additional `@radar/web` typecheck remains blocked by existing test Node-type and cross-package Worker `Env` errors outside this review-fix diff; the focused Vitest transform and rendered Vite flow both passed.
