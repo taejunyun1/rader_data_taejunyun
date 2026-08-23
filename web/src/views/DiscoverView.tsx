@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { DiscoveryKeywordRecommendation, DiscoveryProfile, DiscoverySourcePreset, ResearchJob, View } from "@radar/shared";
+import type { DiscoveryKeepResponse, DiscoveryKeywordRecommendation, DiscoveryProfile, DiscoverySourcePreset, ResearchJob, View } from "@radar/shared";
 import { DISCOVERY_SOURCE_PRESETS } from "@radar/shared";
 import type { DiscoveryRunDiagnostics } from "@radar/shared/discoveryRun";
 import type {
@@ -216,6 +216,15 @@ export default function DiscoverView({
   }, [contentMode, loadFieldSignals]);
 
   useEffect(() => {
+    const latest = jobs.find((job) => job.kind === "SOURCE_ACQUISITION");
+    const resultRef = latest?.resultRef;
+    if (latest?.status === "SUCCEEDED" && resultRef?.view === "RESERVOIR" && "acquisition" in resultRef && resultRef.acquisition) {
+      setMsg("원문 수집이 완료되었습니다. 저장소에서 확인하세요.");
+      onNavigate("RESERVOIR");
+    }
+  }, [jobs, onNavigate]);
+
+  useEffect(() => {
     const latest = jobs.find((job) => job.kind === "DISCOVERY_RUN");
     if (!latest) return;
 
@@ -308,7 +317,7 @@ export default function DiscoverView({
     try {
       const backendAction = action === "develop" || action === "keep" ? "keep" : action;
       const response = await fetch(`/api/discover/candidates/${id}/${backendAction}`, { method: "POST" });
-      const data = await response.json() as { status?: string; sourceId?: string; error?: string };
+      const data = await response.json() as Partial<DiscoveryKeepResponse> & { error?: string };
       if (!response.ok) throw new Error(data.error ?? "분류 저장에 실패했습니다.");
       if (action === "develop" && data.sourceId) {
         await fetch("/api/signals", {
@@ -320,7 +329,13 @@ export default function DiscoverView({
         setDecisionOpen(false);
         onNavigate("RESERVOIR");
       } else {
-        setMsg(`${action === "keep" ? "보관하기" : action === "watch" ? "관찰하기" : "제외하기"}로 기록했습니다.`);
+        setMsg(action === "keep"
+          ? data.acquisitionStatus === "LINK_ONLY"
+            ? "링크만 저장했습니다. 원문 주소를 확인해 주세요."
+            : data.jobId
+              ? "원문 수집을 시작했습니다. 작업센터에서 진행 상태를 확인하세요."
+              : "보관하기로 기록했습니다."
+          : `${action === "watch" ? "관찰하기" : "제외하기"}로 기록했습니다.`);
         setDecisionOpen(false);
       }
       await load();

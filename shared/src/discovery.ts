@@ -40,6 +40,16 @@ export type ResearchJobKind =
 
 export type ResearchJobStatus = "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "BLOCKED";
 
+export type DiscoveryAcquisitionStatus = "QUEUED" | "LINK_ONLY";
+
+export interface DiscoveryKeepResponse {
+  ok: true;
+  status: "KEPT";
+  sourceId: string;
+  jobId?: string;
+  acquisitionStatus?: DiscoveryAcquisitionStatus;
+}
+
 export type ResearchJobResultRef =
   | { view: "DISCOVER" }
   | { view: "DISTILL"; sessionId: string }
@@ -212,7 +222,6 @@ const GENERIC_QUERY_SEEDS = new Set(["data", "theory", "ai", "image", "visual", 
 
 function decodeEntityText(value: string): string {
   return value
-    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, "$1")
     .replace(/&(?:amp|#38);/gi, "&")
     .replace(/&(?:nbsp|#160);/gi, " ")
     .replace(/&lt;/gi, "<")
@@ -221,8 +230,12 @@ function decodeEntityText(value: string): string {
     .replace(/&apos;/gi, "'");
 }
 
+function stripCdata(value: string): string {
+  return value.replace(/^<!\[CDATA\[/i, "").replace(/\]\]>$/i, "").trim();
+}
+
 export function normalizeDiscoveryTitle(value: string): string {
-  return decodeEntityText(value)
+  return stripCdata(decodeEntityText(value))
     .toLowerCase()
     .replace(/[“”‘’]/g, "'")
     .replace(/[-_/]+/g, " ")
@@ -232,14 +245,14 @@ export function normalizeDiscoveryTitle(value: string): string {
 }
 
 export function cleanDiscoverySourceText(value: string): string {
-  return decodeEntityText(value)
+  return stripCdata(decodeEntityText(value))
     .replace(/<[^>]+>/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
 function normalize(value: string): string {
-  return decodeEntityText(value).toLowerCase().replace(/[“”‘’]/g, "'").replace(/[-_/]+/g, " ").replace(/\s+/g, " ").trim();
+  return stripCdata(decodeEntityText(value)).toLowerCase().replace(/[“”‘’]/g, "'").replace(/[-_/]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
 export function isUsableDiscoveryQuery(query: string): boolean {
@@ -269,7 +282,7 @@ export function normalizeDiscoveryKeywords(value: unknown, max = 4): string[] {
  * while keeping the original phrase intact in provenance and the UI.
  */
 export function discoveryProviderQuery(value: string): string {
-  const query = decodeEntityText(value).replace(/\s+/g, " ").trim();
+  const query = stripCdata(decodeEntityText(value)).replace(/\s+/g, " ").trim();
   const lower = query.toLowerCase();
   const concepts: string[] = [];
   if (/\bai\b|인공지능|알고리즘|머신비전|machine vision|computer vision/i.test(lower)) concepts.push("AI algorithm visual culture");

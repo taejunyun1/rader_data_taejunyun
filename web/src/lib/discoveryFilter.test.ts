@@ -188,5 +188,6 @@ describe("discovery candidate selection", () => {
 describe("discovery source text", () => {
   it("cleans RSS CDATA, entities, and markup", () => {
     expect(cleanDiscoverySourceText("<![CDATA[An&nbsp;image &#160; &amp; <b>labor</b>]]>")).toBe("An image & labor");
+    expect(cleanDiscoverySourceText("&lt;![CDATA[At This Year's Rencontres d'Arles]]&gt;")).toBe("At This Year's Rencontres d'Arles");
   });
 });

@@ -27,6 +27,32 @@ function parseMatchedTerms(value: unknown): string[] {
   }
 }
 
+function usableHttpUrl(value: string | null | undefined): string | null {
+  const candidate = value?.trim();
+  if (!candidate) return null;
+  try {
+    const url = new URL(candidate);
+    return url.protocol === "http:" || url.protocol === "https:" ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
+function candidatePdfUrl(value: string | null | undefined): string | null {
+  const candidate = usableHttpUrl(value);
+  if (!candidate) return null;
+  try {
+    const url = new URL(candidate);
+    if (/\/pdf\//i.test(url.pathname) || /\.pdf$/i.test(url.pathname)) return candidate;
+    if (/arxiv\.org$/i.test(url.hostname) && url.pathname.startsWith("/abs/")) {
+      return `${url.protocol}//${url.hostname}/pdf/${url.pathname.slice("/abs/".length)}.pdf`;
+    }
+  } catch {
+    return null;
+  }
+  return candidate;
+}
+
 discover.get("/sources", (c) => c.json({ items: DISCOVERY_SOURCE_PRESETS }));
 
 discover.get("/candidates", async (c) => {
@@ -92,8 +118,10 @@ discover.post("/candidates/:id/:action", async (c) => {
   await c.env.DB.prepare("UPDATE discovery_candidates SET status = ? WHERE id = ?").bind(newStatus, id).run();
 
   let sourceId: string | null = null;
-  if (action === "keep" && cand.openalex_id) {
-    const link = cand.external_url ?? cand.openalex_id;
+  let jobId: string | undefined;
+  let acquisitionStatus: "QUEUED" | "LINK_ONLY" | undefined;
+  if (action === "keep") {
+    const link = usableHttpUrl(cand.external_url) ?? usableHttpUrl(cand.openalex_id) ?? cand.external_url ?? cand.openalex_id ?? undefined;
     let doi: string | undefined;
     let oaUrl: string | null = null;
     if (cand.provider === "openalex") {
@@ -102,6 +130,12 @@ discover.post("/candidates/:id/:action", async (c) => {
       doi = match?.doi?.replace("https://doi.org/", "") ?? undefined;
       oaUrl = match?.openAccessUrl ?? null;
     }
+    const provider = cand.provider.toLowerCase();
+    const acquisitionUrl = provider === "openalex"
+      ? usableHttpUrl(oaUrl) ?? usableHttpUrl(cand.external_url)
+      : provider === "arxiv"
+        ? candidatePdfUrl(cand.external_url ?? cand.openalex_id)
+        : usableHttpUrl(cand.external_url);
     const r = await createSource(c.env, {
       kind: "DISCOVERY",
       title: cand.title,
@@ -111,13 +145,24 @@ discover.post("/candidates/:id/:action", async (c) => {
       doi,
       origin: `discovery:${cand.provider}`,
       original: cand.title,
-      extractedText: undefined,
-      metadata: { provider: cand.provider, externalId: cand.openalex_id, oaUrl, accessStatus: cand.access_status },
+      storedOriginal: null,
+      extractedText: "",
+      textScope: "METADATA_ONLY",
+      extractionMethod: "DISCOVERY_METADATA",
+      metadata: { provider: cand.provider, externalId: cand.openalex_id, oaUrl: acquisitionUrl, accessStatus: cand.access_status },
     });
     sourceId = r.sourceId;
+    if (acquisitionUrl) {
+      const requestedBy = c.req.header("CF-Access-Authenticated-User-Email") ?? "local";
+      const queued = await enqueueResearchJob(c.env, { kind: "SOURCE_ACQUISITION", input: { sourceId, url: acquisitionUrl } }, requestedBy);
+      jobId = queued.job.id;
+      acquisitionStatus = "QUEUED";
+    } else {
+      acquisitionStatus = "LINK_ONLY";
+    }
   }
 
-  return c.json({ ok: true, status: newStatus, sourceId });
+  return c.json({ ok: true, status: newStatus, sourceId, ...(jobId ? { jobId } : {}), ...(acquisitionStatus ? { acquisitionStatus } : {}) });
 });
 
 discover.get("/signals", async (c) => {

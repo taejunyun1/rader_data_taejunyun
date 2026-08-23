@@ -29,7 +29,7 @@ beforeEach(() => {
   let fieldSignalStatus = "NEW";
   vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
-    if (url === "/api/discover/candidates/candidate-1/keep" && init?.method === "POST") return Promise.resolve(new Response(JSON.stringify({ ok: true, status: "KEPT", sourceId: "source-1" })));
+    if (url === "/api/discover/candidates/candidate-1/keep" && init?.method === "POST") return Promise.resolve(new Response(JSON.stringify({ ok: true, status: "KEPT", sourceId: "source-1", jobId: "job-acquisition-1" })));
     if (url.startsWith("/api/discover/signals?") && !init?.method) {
       const requestedStatus = url.match(/status=([^&]+)/)?.[1] ?? "NEW";
       return Promise.resolve(new Response(JSON.stringify({
@@ -74,6 +74,14 @@ describe("DiscoverView", () => {
     await userEvent.click(screen.getByRole("button", { name: "발전시키기" }));
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/signals", expect.objectContaining({ method: "POST", body: JSON.stringify({ sourceId: "source-1", action: "develop" }) })));
     expect(onNavigate).toHaveBeenCalledWith("RESERVOIR");
+  });
+
+  it("tells the user that a kept candidate is being imported", async () => {
+    render(<DiscoverView onNavigate={vi.fn()} />);
+    await userEvent.click(await screen.findByRole("option", { name: /자료 후보/ }));
+    await userEvent.click(screen.getByRole("button", { name: "보관하기" }));
+
+    expect(await screen.findByText(/원문 수집을 시작했습니다/)).toBeInTheDocument();
   });
 
   it("opens diagnostics automatically when the run collected zero candidates", () => {
