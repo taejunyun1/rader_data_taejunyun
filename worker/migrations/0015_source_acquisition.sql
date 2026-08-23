@@ -1,4 +1,3 @@
-BEGIN;
 PRAGMA defer_foreign_keys = ON;
 
 ALTER TABLE source_versions ADD COLUMN text_scope TEXT NOT NULL DEFAULT 'UNKNOWN';
@@ -51,5 +50,3 @@ ALTER TABLE research_jobs_new RENAME TO research_jobs;
 CREATE INDEX idx_research_jobs_recent ON research_jobs(created_at DESC);
 CREATE INDEX idx_research_jobs_status ON research_jobs(status, updated_at DESC);
 CREATE UNIQUE INDEX idx_research_jobs_active_dedupe ON research_jobs(dedupe_key) WHERE status IN ('QUEUED', 'RUNNING');
-
-COMMIT;

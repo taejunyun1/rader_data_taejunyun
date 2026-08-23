@@ -98,6 +98,12 @@ describe("ingestion normalization", () => {
     ]);
   });
 
+  it("keeps the source acquisition migration compatible with Wrangler D1 execution", () => {
+    const migrationSql = readFileSync(join(process.cwd(), "../worker/migrations/0015_source_acquisition.sql"), "utf8");
+
+    expect(migrationSql).not.toMatch(/^\s*(?:BEGIN|COMMIT)\s*;/im);
+  });
+
   it("stores metadata-only discovery sources without a fake original", async () => {
     const env = createCreateSourceEnv();
 

@@ -45,6 +45,9 @@ function StoredOriginalText({ url, initialText }: { url: string; initialText?: s
 }
 
 export default function ReadingPane({ document, deepAnalysis, deepAnalysisHistory = [], onOpenDeepHistory }: { document: ReadingDocument; deepAnalysis?: DeepAnalysisViewModel | null; deepAnalysisHistory?: { id: string; model?: string; createdAt: string; costUsd?: number }[]; onOpenDeepHistory?: (id: string) => void }) {
+  const acquisitionProvenance = document.acquisition
+    ? `원문 범위 ${document.acquisition.textScope} · 수집 방식 ${document.acquisition.extractionMethod} · 품질 ${document.acquisition.qualityStatus}`
+    : undefined;
   return (
     <article className="reading-pane" aria-labelledby="reading-pane-title">
       <header className="reading-pane__header">
@@ -57,7 +60,7 @@ export default function ReadingPane({ document, deepAnalysis, deepAnalysisHistor
           {document.acquisition ? <SourceAcquisitionBadge acquisition={document.acquisition} /> : null}
         </div>
       </header>
-      <ProvenanceNotice>{document.provenance}</ProvenanceNotice>
+      <ProvenanceNotice acquisition={acquisitionProvenance}>{document.provenance}</ProvenanceNotice>
       <div className="reading-pane__body">
         {document.acquisition?.originalTextUrl
           ? <StoredOriginalText url={document.acquisition.originalTextUrl} initialText={document.originalText} />

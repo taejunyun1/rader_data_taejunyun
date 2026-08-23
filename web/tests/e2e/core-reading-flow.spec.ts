@@ -1,4 +1,139 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+
+interface AcquisitionFixture {
+  candidateId: string;
+  sourceId: string;
+  jobId: string;
+  title: string;
+  externalUrl: string;
+  textScope: "FULLTEXT" | "METADATA_ONLY";
+  extractionMethod: "HTML_STATIC" | "PDF_REMOTE_TO_MARKDOWN" | "DISCOVERY_METADATA";
+  qualityStatus: "READY" | "REVIEW";
+  charCount: number;
+  originalText: string | null;
+  jobStatus: "SUCCEEDED" | "FAILED";
+  errorCode?: string;
+  error?: string;
+}
+
+async function installAcquisitionFixture(page: Page, fixture: AcquisitionFixture) {
+  await page.unroute("**/api/**");
+  let kept = false;
+
+  await page.route("**/api/**", async (route) => {
+    const url = new URL(route.request().url());
+    const method = route.request().method();
+    const candidate = {
+      id: fixture.candidateId,
+      openalexId: null,
+      title: fixture.title,
+      authors: "Fixture Author",
+      year: 2026,
+      relevanceScore: 0.92,
+      status: kept ? "KEPT" : "CANDIDATE",
+      queryUsed: "photography",
+      provider: "rss",
+      externalUrl: fixture.externalUrl,
+      accessStatus: "FREE_FULLTEXT",
+      sourceId: kept ? fixture.sourceId : null,
+    };
+    const reservoirItem = {
+      id: fixture.sourceId,
+      title: fixture.title,
+      kind: "DISCOVERY",
+      reliability: "DISCOVERY",
+      status: "indexed",
+      origin: "discovery:rss",
+      year: 2026,
+      canonicalUrl: fixture.externalUrl,
+      createdAt: "2026-08-24T00:00:00.000Z",
+      topics: "[]",
+      keywordCount: 0,
+      signalCount: 0,
+    };
+
+    if (url.pathname === "/api/usage/summary") return route.fulfill({ json: { usedUsd: 1, budgetUsd: 10, usedPct: 10, blocked: false } });
+    if (url.pathname === "/api/radar/stats") return route.fulfill({ json: { stats: { newSources: 0, newKeywords: [], newQuestions: [], signalCounts: {}, topKeptSources: [], distillRuns: 0, gapsRaised: 0, readingQueueSize: 0, kindBreakdown: {} } } });
+    if (url.pathname === "/api/radar/snapshots") return route.fulfill({ json: { snapshots: [] } });
+    if (url.pathname === "/api/distill/sessions") return route.fulfill({ json: { sessions: [] } });
+    if (url.pathname === "/api/jobs" && kept) {
+      return route.fulfill({ json: { jobs: [{
+        id: fixture.jobId,
+        workflowInstanceId: "workflow-fixture",
+        kind: "SOURCE_ACQUISITION",
+        status: fixture.jobStatus,
+        progress: 100,
+        message: fixture.jobStatus === "SUCCEEDED" ? "완료" : "작업에 실패했습니다.",
+        input: { sourceId: fixture.sourceId, url: fixture.externalUrl },
+        result: fixture.jobStatus === "SUCCEEDED" ? { sourceId: fixture.sourceId, textScope: fixture.textScope, charCount: fixture.charCount } : null,
+        resultRef: fixture.jobStatus === "SUCCEEDED" ? { view: "RESERVOIR", sourceId: fixture.sourceId, acquisition: true } : null,
+        errorCode: fixture.errorCode ?? null,
+        error: fixture.error ?? null,
+        retryOf: null,
+        requestedBy: "fixture",
+        dedupeKey: `source-acquisition:${fixture.sourceId}:${fixture.externalUrl}`,
+        dismissedAt: null,
+        createdAt: "2026-08-24T00:00:00.000Z",
+        startedAt: "2026-08-24T00:00:01.000Z",
+        finishedAt: "2026-08-24T00:00:02.000Z",
+        updatedAt: "2026-08-24T00:00:02.000Z",
+      }] } });
+    }
+    if (url.pathname === "/api/jobs") return route.fulfill({ json: { jobs: [] } });
+    if (url.pathname === `/api/discover/candidates/${fixture.candidateId}/keep` && method === "POST") {
+      kept = true;
+      return route.fulfill({ status: 202, json: { ok: true, status: "KEPT", sourceId: fixture.sourceId, jobId: fixture.jobId, acquisitionStatus: "QUEUED" } });
+    }
+    if (url.pathname === "/api/discover/candidates") {
+      const status = url.searchParams.get("status") ?? "CANDIDATE";
+      const visible = (!kept && status === "CANDIDATE") || (kept && status === "KEPT");
+      return route.fulfill({ json: { items: visible ? [candidate] : [] } });
+    }
+    if (url.pathname === "/api/discover/signals") return route.fulfill({ json: { items: [] } });
+    if (url.pathname === "/api/discover/profile") return route.fulfill({ json: { profile: { original: { keywords: [], strength: 70 }, counter: { keywords: [], strength: 30 }, updatedAt: "" } } });
+    if (url.pathname === "/api/discover/recommendations") return route.fulfill({ json: { recommendations: { original: [], counter: [] } } });
+    if (url.pathname === "/api/discover/queries") return route.fulfill({ json: { queries: [] } });
+    if (url.pathname === "/api/discover/feeds") return route.fulfill({ json: { feeds: [] } });
+    if (url.pathname === "/api/settings/homepage") return route.fulfill({ json: { projects: [] } });
+    if (url.pathname === "/api/reservoir/topics") return route.fulfill({ json: { topics: [] } });
+    if (url.pathname === "/api/reservoir") return route.fulfill({ json: { items: [reservoirItem], nextResearch: { markedCount: 0, lastResearchAt: null } } });
+    if (url.pathname === `/api/reservoir/${fixture.sourceId}`) {
+      return route.fulfill({ json: {
+        source: { ...reservoirItem, provenanceClass: "SOURCE", markedForNextResearch: 0 },
+        acquisition: {
+          textScope: fixture.textScope,
+          extractionMethod: fixture.extractionMethod,
+          qualityStatus: fixture.qualityStatus,
+          charCount: fixture.charCount,
+          acquisitionLabel: fixture.textScope === "FULLTEXT" ? `원문 저장됨 · ${fixture.charCount.toLocaleString("ko-KR")}자` : "메타데이터만 저장됨",
+          canDeepAnalyze: fixture.textScope === "FULLTEXT" && fixture.qualityStatus === "READY" && fixture.charCount >= 1_000,
+          originalTextUrl: fixture.originalText ? `/api/reservoir/${fixture.sourceId}/original-text` : null,
+          ...(fixture.error ? { acquisitionError: fixture.error } : {}),
+        },
+        analysis: null,
+        deepAnalysis: null,
+        deepAnalysisHistory: [],
+        keywords: [],
+        questions: [],
+        fragments: [],
+        versions: [],
+        signals: [],
+      } });
+    }
+    if (url.pathname === `/api/reservoir/${fixture.sourceId}/original-text` && fixture.originalText) {
+      return route.fulfill({ body: fixture.originalText, contentType: "text/plain; charset=utf-8" });
+    }
+    if (url.pathname === "/api/signals" && method === "POST") return route.fulfill({ json: { ok: true } });
+    return route.fulfill({ json: { items: [] } });
+  });
+}
+
+async function keepFixtureCandidate(page: Page, fixture: AcquisitionFixture) {
+  await page.goto("/");
+  await page.getByRole("button", { name: "발견", exact: true }).click();
+  await page.getByRole("option", { name: new RegExp(fixture.title) }).click();
+  await page.getByRole("button", { name: "보관하기" }).click();
+}
 
 test.beforeEach(async ({ page }) => {
   await page.route("**/api/**", async (route) => {
@@ -59,4 +194,86 @@ test("discover separates reading candidates from field signals", async ({ page }
   await expect(page.getByText("CAA News", { exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "읽을거리" }).click();
   await expect(page.getByRole("option", { name: /발견 후보/ })).toBeVisible();
+});
+
+test("Discovery Keep acquires an HTML fixture before enabling deep analysis", async ({ page }) => {
+  const fixture: AcquisitionFixture = {
+    candidateId: "candidate-html",
+    sourceId: "source-html",
+    jobId: "job-html",
+    title: "Static HTML acquisition fixture",
+    externalUrl: "https://fixtures.example/article",
+    textScope: "FULLTEXT",
+    extractionMethod: "HTML_STATIC",
+    qualityStatus: "READY",
+    charCount: 2_400,
+    originalText: "Fixture article body preserved as normalized plain text.",
+    jobStatus: "SUCCEEDED",
+  };
+  await installAcquisitionFixture(page, fixture);
+  await keepFixtureCandidate(page, fixture);
+
+  await expect(page.getByText("원문 수집 · 완료")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "저장소", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "닫기", exact: true }).click();
+  await expect(page.getByText("원문 저장됨 · 2,400자")).toBeVisible();
+  await expect(page.getByText("원문 범위 FULLTEXT · 수집 방식 HTML_STATIC · 품질 READY")).toBeVisible();
+  await expect(page.getByRole("button", { name: "심층 정리하기" })).toBeEnabled();
+  await page.getByText("저장된 원문 보기").click();
+  await expect(page.getByText("Fixture article body preserved as normalized plain text.")).toBeVisible();
+});
+
+test("Discovery Keep exposes remote PDF toMarkdown provenance", async ({ page }) => {
+  const fixture: AcquisitionFixture = {
+    candidateId: "candidate-pdf",
+    sourceId: "source-pdf",
+    jobId: "job-pdf",
+    title: "Remote PDF acquisition fixture",
+    externalUrl: "https://fixtures.example/paper.pdf",
+    textScope: "FULLTEXT",
+    extractionMethod: "PDF_REMOTE_TO_MARKDOWN",
+    qualityStatus: "READY",
+    charCount: 4_200,
+    originalText: "Fixture PDF converted to normalized Markdown text.",
+    jobStatus: "SUCCEEDED",
+  };
+  await installAcquisitionFixture(page, fixture);
+  await keepFixtureCandidate(page, fixture);
+
+  await expect(page.getByText("원문 수집 · 완료")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "저장소", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "닫기", exact: true }).click();
+  await expect(page.getByText("원문 범위 FULLTEXT · 수집 방식 PDF_REMOTE_TO_MARKDOWN · 품질 READY")).toBeVisible();
+  await expect(page.getByRole("button", { name: "심층 정리하기" })).toBeEnabled();
+  await page.getByText("저장된 원문 보기").click();
+  await expect(page.getByText("Fixture PDF converted to normalized Markdown text.")).toBeVisible();
+});
+
+test("a JS-shell acquisition failure keeps the source recoverable and blocks deep analysis", async ({ page }) => {
+  const fixture: AcquisitionFixture = {
+    candidateId: "candidate-shell",
+    sourceId: "source-shell",
+    jobId: "job-shell",
+    title: "JavaScript shell fixture",
+    externalUrl: "https://fixtures.example/js-shell",
+    textScope: "METADATA_ONLY",
+    extractionMethod: "DISCOVERY_METADATA",
+    qualityStatus: "REVIEW",
+    charCount: 0,
+    originalText: null,
+    jobStatus: "FAILED",
+    errorCode: "workflow_runtime_failed",
+    error: "EXTRACTION_EMPTY",
+  };
+  await installAcquisitionFixture(page, fixture);
+  await keepFixtureCandidate(page, fixture);
+
+  await expect(page.getByText("원문 수집 · 실패")).toBeVisible();
+  await expect(page.getByText("EXTRACTION_EMPTY")).toBeVisible();
+  await page.getByRole("button", { name: "저장소", exact: true }).click();
+  await page.getByRole("option", { name: new RegExp(fixture.title) }).click();
+  await expect(page.getByRole("button", { name: "다시 가져오기" })).toBeEnabled();
+  await page.getByRole("button", { name: "닫기", exact: true }).click();
+  await expect(page.getByRole("button", { name: "원문 수집 필요" })).toBeDisabled();
+  await expect(page.getByText(/메타데이터만 저장되어 심층 정리를 시작할 수 없습니다/)).toBeVisible();
 });

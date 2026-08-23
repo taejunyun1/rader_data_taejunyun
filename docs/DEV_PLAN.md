@@ -11,10 +11,10 @@
 
 - **Worker 단일 앱 + Static Assets**: API(Hono)와 SPA를 한 Worker에서. 별도 Pages 불필요 (D7)
 - **D1 텍스트 검색**: FTS 없이 인덱스 컬럼 + LIKE. 개인 규모(수천 건)에서 충분. 병목 시 Vectorize 검토(스펙 명시)
-- **원본 항상 R2 보존 후 처리**: extraction 실패해도 원본은 남음(provenance 원칙)
+- **원격 원본은 R2 보존 후 처리**: Discovery Keep 원격 응답은 raw HTML/PDF를 R2에 먼저 저장한 뒤 추출하며 extraction 실패 후에도 저장된 raw object를 유지(원격 fetch 자체가 실패한 경우 제외)
 - **모델 2계층**: Workers AI(무료할당) = 분류/요약/키워드, AI Gateway→OpenAI = Distill/Critic/Counter/Radar synthesis (D10)
-- **PDF는 브라우저에서 pdf.js 추출** (D5), **Obsidian은 .md 업로드** (D3), **홈페이지는 소스 데이터 import** (D2)
-- **Discovery = 홈페이지 키워드 시드 + 홈페이지 읽을거리 R2 sync + OpenAlex/arXiv/공개 RSS, 주간 cron, 자동 수집 상한** (D6)
+- **PDF는 업로드 시 브라우저 pdf.js, 발견 원격 PDF는 R2 보존 후 Workers AI `toMarkdown`** (D5), **Obsidian은 .md 업로드** (D3), **홈페이지는 소스 데이터 import** (D2)
+- **Discovery = 홈페이지 키워드 시드 + 홈페이지 읽을거리 R2 sync + OpenAlex/arXiv/공개 RSS, 주간 후보 탐색 cron, 자동 수집 상한** (D6). 후보 Keep 원문 수집과 historical backfill은 사용자 동작이며 자동 cron이 아니다.
 
 ## D1 초기 스키마 (Phase 1 마이그레이션)
 
@@ -98,6 +98,11 @@ taejunyun.com 소스의 정적 생성 데이터(`scripts/extract-homepage.mjs`) 
 ### Task 1.6: Inbox UI + processing_jobs
 입력 대기열 화면. 상태 received→stored→extracted→analyzed→indexed / failed 표시, 실패 건 재처리 버튼.
 **AC**: 모든 입력 경로가 Inbox에 상태와 함께 표시. **Scope: M**
+
+### Task 1.7: 원격 원문 provenance migration + 품질 gate
+`0015_source_acquisition.sql`에서 `source_versions`에 `text_scope`, `extraction_method`, `extraction_error`, `content_type`, `final_url`, `acquired_at`을 추가하고 `research_jobs.kind`에 `SOURCE_ACQUISITION`을 허용한다. 원격 raw HTML/PDF는 최대 20 MiB로 제한해 R2에 먼저 저장하고, 정적 HTML은 `HTML_STATIC`, 발견 원격 PDF는 Workers AI `toMarkdown`을 사용한다. 기존 retry chain/self-reference와 active version은 보존한다.
+
+**AC**: development D1 migration 후 기존 source/version/active-version 수가 유지되고 `PRAGMA foreign_key_check`가 비어 있다. `SOURCE_ACQUISITION` CHECK가 존재하며 provenance group 조회가 가능하다. `FULLTEXT + READY + 1,000자 이상 + normalized text`만 심층 정리를 시작하고 나머지는 AI 호출 전에 HTTP 422 `deep_analysis_text_not_ready`로 차단한다. **Scope: M**
 
 **Checkpoint P1**: 텍스트/URL/MD/PDF/홈페이지 5경로 업로드 → R2 원본·dedup·상태 전이 전부 확인.
 
@@ -183,6 +188,13 @@ Read Next 후보 전건 OpenAlex 존재 검증(openalex_id 발급된 것만 제�
 출처 레지스트리는 `READING`과 `FIELD_SIGNAL`, 자동 수집 여부, 접근 정책, 주제 anchor를 구분한다. CAA News·Association for Art History·ICP 공식 RSS는 `discovery_field_signals`에 별도 수집하고 회당 최대 12개·출처당 최대 4개를 적용한다. 유형·관련성·게시일·행사일·마감일·종료 여부와 출처별 진단을 기록하며, Save는 Reservoir 승격이 아니라 `SAVED` 상태 변경이다. e-flux와 공식 채널이 확인되지 않은 미술관·사진기관은 검색 링크로 유지한다. RISS·KCI·Scopus·Web of Science는 공식 API 키와 이용 권한을 확보한 뒤 별도 provider adapter로 추가하고, Google Scholar 결과 페이지는 크롤링하지 않는다.
 
 **Checkpoint P5**: 주간 자동 실행 → 읽을거리 후보와 현장 신호가 별도 상한으로 유입 → 읽을거리 Keep 승격과 현장 신호 Save가 서로 다른 저장 동작임을 확인한다.
+
+### Task 5.4: Discovery Keep 원문 수집·Reservoir 복구 흐름
+사용자 Keep은 먼저 `DISCOVERY_METADATA/METADATA_ONLY` version을 만든 뒤 읽을 수 있는 URL에 대해서만 dedupe된 `SOURCE_ACQUISITION` background job을 등록한다. 성공하면 HTML/PDF raw R2 object와 provenance가 있는 새 version을 추가하고 품질이 좋아질 때만 active로 승격한다. Reservoir는 `TextScope`, 추출 방식, 품질, 글자 수, 수집 오류와 plain-text 원문 endpoint를 표시한다. `fetch=1`은 새 원문 수집, `analyze=1`은 현재 active version 분석으로 분리한다.
+
+상태는 `QUEUED/RUNNING/SUCCEEDED/FAILED/BLOCKED`이며 원격 오류는 `FETCH_TIMEOUT`, `HTTP_4XX`, `HTTP_5XX`, `UNSUPPORTED_CONTENT_TYPE`, `SIZE_LIMIT`, `REDIRECT_BLOCKED`, `EXTRACTION_EMPTY`, `PDF_CONVERSION_FAILED`를 보존한다. RSS CDATA/entity/HTML tag는 후보 판정 전에 정리한다. 기존 metadata-only discovery source는 설정의 bounded backfill endpoint로 최대 10건씩 수동 처리하며 자동 acquisition/backfill cron은 추가하지 않는다.
+
+**AC**: fixture E2E에서 HTML Keep → 원문 수집 job → Reservoir normalized plain text → 심층 정리 활성화가 이어지고, PDF는 `PDF_REMOTE_TO_MARKDOWN` provenance를 표시한다. JS shell은 source를 삭제하지 않고 실패/재수집 액션을 보이며 심층 정리를 비활성화한다. 기존 업로드 PDF의 `BROWSER_PDFJS` 경로와 분석 이력은 유지한다. **Scope: M**
 
 ## Phase 6 — Export / Backup / 마무리
 

@@ -14,7 +14,7 @@
 | D2 | 홈페이지(taejunyun.com) | 소스 코드 보유 → 정적 생성 데이터를 ingestion에 직접 사용 | HTML 크롤링 없음. PROJECT 단위 구조화 데이터 import |
 | D3 | Obsidian 입력 | UI 업로드(V0) — 브라우저에서 .md 파일/폴더 drag&drop | 로컬 싱크 CLI는 V1 후보 |
 | D4 | Google Drive | **V0 제외** — 수동 다운로드 후 업로드로 대체 | OAuth 개발 없음 |
-| D5 | PDF 텍스트 추출 | 브라우저 pdf.js로 업로드 시 추출 → 원본(PDF) R2 저장 + 추출 텍스트 전송 | 서버 측 PDF 파서 불필요 |
+| D5 | PDF 텍스트 추출 | 업로드 PDF는 브라우저 pdf.js로 추출하고, 발견 원격 PDF는 raw PDF를 R2에 먼저 보존한 뒤 Workers AI `toMarkdown`으로 변환 | 별도 서버 PDF 파서 없이 입력 경로별 provenance를 보존 |
 | D6 | Discovery 소스 | OpenAlex + arXiv + 검증된 읽을거리 RSS(Unthinking Photography, Aperture, Hyperallergic) + 별도 현장 신호 RSS(CAA News, Association for Art History, ICP) | 읽을거리와 현장 신호는 별도 quota·상태로 저장하며, 공개 피드 또는 공식 API가 확인된 경로만 자동 수집 |
 | D7 | 프론트엔드 | Vite + React SPA, Workers Static Assets 배포 | 동일 Worker에서 API + 정적 자산 서빙 |
 | D8 | 인증 | Cloudflare Access + Google IdP | Worker에서 Access JWT(Cf-Access-Jwt-Assertion) 검증 |
@@ -90,3 +90,14 @@ OpenAlex API — 학술 Discovery 기본 소스 + Reading Queue 존재 검증
 - 현장 신호 저장은 Reservoir 승격이 아니라 `SAVED` 상태 변경이다.
 - e-flux는 현재 공식 피드가 갱신되지 않아 검색 링크로 유지하며 HTML 페이지를 크롤링하지 않는다.
 - 미술관 작품·소장품 API는 별도 향후 설계 범위다.
+
+### Discovery Keep 원문 수집·심층 읽기 품질 규칙 (2026-08-24)
+
+- `CANDIDATE`를 사용자가 Keep할 때만 `METADATA_ONLY` source version을 만든다. 읽을 수 있는 HTTP(S) 주소가 있으면 `SOURCE_ACQUISITION` job을 등록하고, 없으면 `LINK_ONLY`로 남긴다. 자동 후보 생성만으로 원문 수집이나 Reservoir 분석을 시작하지 않는다.
+- 원격 응답은 URL/DNS·redirect·Content-Type·20 MiB 상한을 검증하고 raw HTML/PDF를 R2에 먼저 저장한 뒤 처리한다. 정적 HTML은 결정론적 본문 추출(`HTML_STATIC`), 원격 PDF는 Workers AI `env.AI.toMarkdown`(`PDF_REMOTE_TO_MARKDOWN`)을 사용한다. 브라우저 렌더링이 필요한 JS shell은 우회하지 않으며 본문이 없으면 `EXTRACTION_EMPTY`로 실패한다.
+- `TextScope`는 `FULLTEXT | PARTIAL | METADATA_ONLY | EMPTY | UNKNOWN`, 품질은 `UNREVIEWED | READY | REVIEW | EMPTY | FAILED`다. 의미 글자 0자는 `EMPTY`, discovery metadata 또는 200자 미만은 `METADATA_ONLY`, 1,000자 미만이나 경고가 있는 본문은 `PARTIAL`, 나머지는 `FULLTEXT + READY`로 판정한다.
+- 심층 정리는 active version이 `FULLTEXT + READY`, 1,000자 이상, 비어 있지 않은 normalized text일 때만 가능하다. 불충족 시 유료 AI job을 만들지 않고 HTTP 422 `deep_analysis_text_not_ready`와 `textScope`·`qualityStatus`·`charCount`를 반환한다.
+- Reservoir 상세는 active version의 `text_scope`·`extraction_method`·품질·글자 수·수집 오류를 provenance로 표시한다. `GET /api/reservoir/:sourceId/original-text`는 normalized text만 `text/plain; charset=utf-8`, `nosniff`, 최대 500,000자로 반환하며 raw HTML을 렌더링하지 않는다.
+- 재시도는 `POST /api/inbox/retry/:sourceId?fetch=1`(canonical URL 재수집, 새 version/job)과 `?analyze=1`(현재 active version 재분석)을 분리한다. RSS title/summary는 CDATA·XML entity·HTML 태그를 정리한 뒤 판정한다.
+- 기존 `discovery:*` 자료 재수집은 `POST /api/settings/backfill-discovery`의 수동·중복 방지 batch로만 수행한다. active version이 `FULLTEXT`가 아니거나 1,000자 미만인 자료를 오래된 순서로 최대 10건 선택하며 자동 backfill/acquisition cron은 없다. 기존 주간 Discovery 후보 탐색 cron은 별도 동작이다.
+- 원문 수집 job 상태는 `QUEUED | RUNNING | SUCCEEDED | FAILED | BLOCKED`다. 원격 수집 원인은 `FETCH_TIMEOUT`, `HTTP_4XX`, `HTTP_5XX`, `UNSUPPORTED_CONTENT_TYPE`, `SIZE_LIMIT`, `REDIRECT_BLOCKED`, `EXTRACTION_EMPTY`, `PDF_CONVERSION_FAILED`로 기록하고, version 저장 실패는 `source_version_store_failed`, 품질 미달은 `text_not_ready`로 남긴다. Workflow job의 런타임 실패 code는 `workflow_runtime_failed`이며 원래 수집 원인은 error/processing job에 보존한다.

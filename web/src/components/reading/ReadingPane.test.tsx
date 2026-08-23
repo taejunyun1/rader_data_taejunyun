@@ -54,6 +54,7 @@ describe("ReadingPane", () => {
     }} />);
 
     expect(screen.getByText("원문 저장됨 · 32,739자")).toBeInTheDocument();
+    expect(screen.getByText("원문 범위 FULLTEXT · 수집 방식 HTML_STATIC · 품질 READY")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /외부 원문 링크/ })).toHaveAttribute("href", "https://example.com/article");
     expect(fetchMock).not.toHaveBeenCalled();
 
