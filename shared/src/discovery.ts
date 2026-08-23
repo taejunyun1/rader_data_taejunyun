@@ -393,6 +393,7 @@ export function classifyDiscoveryAccess(
   if (sourcePolicy === "FREE_FULLTEXT") return "FREE_FULLTEXT";
   if (sourcePolicy === "PAYWALLED") return "PAYWALLED";
   if (sourcePolicy === "INSTITUTION") return "INSTITUTION";
+  if (sourcePolicy === "UNKNOWN") return "UNKNOWN";
   if (normalizedProvider === "riss" || normalizedHref.includes("riss.kr")) return "INSTITUTION";
   if (normalizedHref.includes("artforum.com") || normalizedHref.includes("artnews.com")) return "PAYWALLED";
   if (normalizedHref.includes("hyperallergic.com")) return "FREE_FULLTEXT";

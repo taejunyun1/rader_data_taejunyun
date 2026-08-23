@@ -121,9 +121,9 @@ describe("discovery access classification", () => {
     expect(classifyDiscoveryAccess("rss", "https://www.artforum.com/news/example/")).toBe("PAYWALLED");
   });
 
-  it("marks arXiv and Hyperallergic links as readable", () => {
+  it("marks arXiv and direct PDF links as readable before source policy checks", () => {
     expect(classifyDiscoveryAccess("arxiv", "https://arxiv.org/abs/2102.09000")).toBe("PDF");
-    expect(classifyDiscoveryAccess("rss", "https://hyperallergic.com/example/")).toBe("FREE_FULLTEXT");
+    expect(classifyDiscoveryAccess("rss", "https://example.com/archive/paper.pdf", "UNKNOWN")).toBe("PDF");
   });
 
   it("preserves stored OpenAlex free-fulltext evidence during re-evaluation", () => {
@@ -136,6 +136,11 @@ describe("discovery access classification", () => {
       "https://unthinking.photography/articles/machine-readable-photography",
       "FREE_FULLTEXT",
     )).toBe("FREE_FULLTEXT");
+    expect(classifyDiscoveryAccess(
+      "rss",
+      "https://hyperallergic.com/example/custom-feed-story/",
+      "UNKNOWN",
+    )).toBe("UNKNOWN");
     expect(classifyDiscoveryAccess(
       "rss",
       "https://unknown.example/articles/photography",

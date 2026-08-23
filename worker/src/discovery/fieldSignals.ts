@@ -42,6 +42,7 @@ export interface DiscoveryFieldSignalCollectionInput {
   profile: DiscoveryProfile;
   sources: DiscoveryFieldSignalSourceInput[];
   existingUrls: Set<string>;
+  existingTitleDateKeys?: Set<string>;
   now?: Date;
   rss: (url: string, limit: number) => Promise<DiscoveryProviderResult<FeedItem>>;
 }
@@ -74,7 +75,16 @@ function compareSignals(a: PendingDiscoveryFieldSignal, b: PendingDiscoveryField
 }
 
 function normalizedTitleDateKey(item: FeedItem, eventAt: string | null, deadlineAt: string | null): string {
-  return `${normalizeDiscoveryTitle(item.title)}|${deadlineAt ?? eventAt ?? item.publishedAt ?? ""}`;
+  return normalizedTitleDateKeyFromValues(item.title, item.publishedAt ?? null, eventAt, deadlineAt);
+}
+
+function normalizedTitleDateKeyFromValues(
+  title: string,
+  publishedAt: string | null,
+  eventAt: string | null,
+  deadlineAt: string | null,
+): string {
+  return `${normalizeDiscoveryTitle(title)}|${deadlineAt ?? eventAt ?? publishedAt ?? ""}`;
 }
 
 export async function collectDiscoveryFieldSignals(
@@ -133,6 +143,11 @@ export async function collectDiscoveryFieldSignals(
       }
 
       const titleDateKey = normalizedTitleDateKey(item, assessment.eventAt, assessment.deadlineAt);
+      if (input.existingTitleDateKeys?.has(titleDateKey)) {
+        stats.duplicate += 1;
+        countReason(diagnostics, "DUPLICATE");
+        continue;
+      }
       sourceAccepted.push({
         sourceId: source.id,
         sourceName: source.name,
@@ -211,16 +226,29 @@ export async function runDiscoveryFieldSignals(
   );
 
   const existing = await env.DB
-    .prepare("SELECT external_url FROM discovery_field_signals")
-    .all<{ external_url: string | null }>();
+    .prepare("SELECT external_url, title, published_at, event_at, deadline_at FROM discovery_field_signals")
+    .all<{
+      external_url: string | null;
+      title: string | null;
+      published_at: string | null;
+      event_at: string | null;
+      deadline_at: string | null;
+    }>();
+
+  const existingRows = existing.results ?? [];
 
   const collection = await collectDiscoveryFieldSignals({
     profile,
     sources,
     existingUrls: new Set(
-      (existing.results ?? [])
+      existingRows
         .map((row) => row.external_url)
         .filter((value): value is string => Boolean(value)),
+    ),
+    existingTitleDateKeys: new Set(
+      existingRows
+        .filter((row): row is typeof row & { title: string } => Boolean(row.title))
+        .map((row) => normalizedTitleDateKeyFromValues(row.title, row.published_at, row.event_at, row.deadline_at)),
     ),
     rss: fetchFeed,
   });

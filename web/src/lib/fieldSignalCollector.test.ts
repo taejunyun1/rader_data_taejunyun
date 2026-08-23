@@ -239,9 +239,53 @@ describe("field signal persistence", () => {
     });
     expect(result.diagnostics.rejectedByReason.DUPLICATE).toBe(1);
   });
+
+  it("rejects cross-run duplicates when the normalized title-date matches an existing row with a different URL", async () => {
+    mockedFetchFeed.mockImplementation(async (url: string) => {
+      if (!url.includes("collegeart")) return { status: "OK" as const, errorCode: null, elapsedMs: 1, items: [] };
+      return {
+        status: "OK" as const,
+        errorCode: null,
+        elapsedMs: 1,
+        items: [{
+          title: "Call for Papers - Photography and Visual Culture",
+          url: "https://caa.example/new-cfp-url",
+          year: 2026,
+          publishedAt: "2026-08-21T00:00:00.000Z",
+          summary: null,
+        }],
+      };
+    });
+
+    const env = createMockEnv([{ meta: { changes: 1 } }], [{
+      external_url: "https://caa.example/original-cfp-url",
+      title: "Call for Papers: Photography and Visual Culture",
+      published_at: "2026-08-21T00:00:00.000Z",
+      event_at: null,
+      deadline_at: null,
+    }]);
+
+    const result = await runDiscoveryFieldSignals(env, profile);
+
+    expect(result.collected).toBe(0);
+    expect(result.diagnostics.sources["caa-news"]).toMatchObject({
+      selected: 0,
+      duplicate: 1,
+    });
+    expect(result.diagnostics.rejectedByReason.DUPLICATE).toBe(1);
+  });
 });
 
-function createMockEnv(batchResults: Array<{ meta?: { changes?: number } }>): Env {
+function createMockEnv(
+  batchResults: Array<{ meta?: { changes?: number } }>,
+  existingRows: Array<{
+    external_url: string | null;
+    title?: string | null;
+    published_at?: string | null;
+    event_at?: string | null;
+    deadline_at?: string | null;
+  }> = [],
+): Env {
   return {
     DB: {
       prepare(query: string): D1PreparedStatement {
@@ -252,11 +296,11 @@ function createMockEnv(batchResults: Array<{ meta?: { changes?: number } }>): En
           async first() {
             return null;
           },
-          async all() {
-            if (query.includes("SELECT external_url FROM discovery_field_signals")) {
-              return { results: [] };
+          async all<T = unknown>() {
+            if (query.includes("FROM discovery_field_signals")) {
+              return { results: existingRows as T[] };
             }
-            return { results: [] };
+            return { results: [] as T[] };
           },
           async run() {
             return {};

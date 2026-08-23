@@ -87,6 +87,50 @@ describe("discovery pipeline accounting", () => {
     });
   });
 
+  it("rejects custom RSS HTML when the feed policy stays unknown even if the URL looks free", async () => {
+    const result = await collectDiscoveryCandidates({
+      profile: {
+        original: { keywords: ["photography"], strength: 70 },
+        counter: { keywords: [], strength: 0 },
+        updatedAt: "2026-08-23T00:00:00.000Z",
+      },
+      homepageKeywords: [],
+      momentumKeywords: [],
+      legacyQueries: [],
+      feeds: [{
+        sourceId: "custom:https://custom.example/feed.xml",
+        feedUrl: "https://custom.example/feed.xml",
+        accessPolicy: "UNKNOWN",
+      }],
+      existingExternalIds: new Set<string>(),
+      activeTitles: new Set<string>(),
+      divergence: 0,
+      clients: {
+        openalex: async () => ({ status: "OK" as const, items: [], errorCode: null, elapsedMs: 0 }),
+        arxiv: async () => ({ status: "OK" as const, items: [], errorCode: null, elapsedMs: 0 }),
+        rss: async () => ({
+          status: "OK" as const,
+          items: [{
+            title: "Machine Readable Photography and Visual Culture",
+            url: "https://hyperallergic.com/example/custom-feed-story/",
+            year: 2026,
+            publishedAt: "2026-08-18T00:00:00.000Z",
+            summary: "Photography, machine vision, authorship, and network culture.",
+          }],
+          errorCode: null,
+          elapsedMs: 0,
+        }),
+      },
+    });
+
+    expect(result.pending).toHaveLength(0);
+    expect(result.diagnostics.providers.rss).toMatchObject({
+      received: 1,
+      missingAccess: 1,
+      selected: 0,
+    });
+  });
+
   it("always merges current curated feeds and removes legacy curated KV values", () => {
     const feeds = resolveDiscoveryReadingFeeds([
       "https://www.artforum.com/feed",
