@@ -46,7 +46,7 @@ async function installAcquisitionFixture(page: Page, fixture: AcquisitionFixture
       origin: "discovery:rss",
       year: 2026,
       canonicalUrl: fixture.externalUrl,
-      createdAt: "2026-08-24T00:00:00.000Z",
+      createdAt: "2026-08-23T00:00:00.000Z",
       topics: "[]",
       keywordCount: 0,
       signalCount: 0,
@@ -73,10 +73,10 @@ async function installAcquisitionFixture(page: Page, fixture: AcquisitionFixture
         requestedBy: "fixture",
         dedupeKey: `source-acquisition:${fixture.sourceId}:${fixture.externalUrl}`,
         dismissedAt: null,
-        createdAt: "2026-08-24T00:00:00.000Z",
-        startedAt: "2026-08-24T00:00:01.000Z",
-        finishedAt: "2026-08-24T00:00:02.000Z",
-        updatedAt: "2026-08-24T00:00:02.000Z",
+        createdAt: "2026-08-23T00:00:00.000Z",
+        startedAt: "2026-08-23T00:00:01.000Z",
+        finishedAt: "2026-08-23T00:00:02.000Z",
+        updatedAt: "2026-08-23T00:00:02.000Z",
       }] } });
     }
     if (url.pathname === "/api/jobs") return route.fulfill({ json: { jobs: [] } });

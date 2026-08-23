@@ -53,3 +53,4 @@ Scope: Task 10 pre-deploy only. Deployment and protected-production mutation/smo
 - Aligned this report and the source-of-truth update stamps with the Task 10 plan date, `2026-08-23`. No schema or error-persistence feature was added.
 - RED/GREEN: the new Reservoir-badge assertion first failed with `title="EXTRACTION_EMPTY"`, then the corrected JS-shell fixture passed 1/1.
 - Review-fix verification: focused acquisition/Reservoir/Job Center Vitest passed 31/31; the full core Playwright fixture flow passed 5/5; the document date/contract scan and `git diff --check` passed.
+- Final review fix: aligned the mocked acquisition source and job lifecycle timestamps to `2026-08-23`; fixture behavior is unchanged, and the focused core Playwright flow passed 5/5.
