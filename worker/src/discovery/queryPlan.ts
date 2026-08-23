@@ -89,25 +89,40 @@ function originalProviderQuery(sourceQuery: string, ids: string[]): string | nul
   const hasData = /데이터|\bdata\b/i.test(lower);
   const hasRepresentation = ids.includes("REPRESENTATION");
   const parts: string[] = [];
+  const anchor = hasPhoto
+    ? "photography"
+    : hasNetwork
+      ? "network culture"
+      : hasData
+        ? "data epistemology"
+        : hasAi
+          ? "AI algorithm"
+          : hasVisualCulture
+            ? "visual culture"
+            : hasImage
+              ? "image theory"
+              : ids.includes("MATERIALITY")
+                ? "materiality tactility"
+                : ids.includes("REPRESENTATION")
+                  ? "photography"
+                  : ids.includes("TESTIMONY") || ids.includes("CONTEXT") || ids.includes("RECEPTION_FIELD")
+                    ? "visual culture"
+                    : null;
+  if (!anchor) return "visual culture";
+  parts.push(anchor);
 
-  if (hasPhoto) parts.push("photography");
-  if (hasNetwork) parts.push("network culture");
-  if (hasData) parts.push("data epistemology");
-  if (hasAi) parts.push("AI algorithm");
-  if (hasImage && !hasPhoto && !hasNetwork) parts.push("image theory");
-  if (ids.includes("MATERIALITY")) parts.push("materiality tactility");
-  if (hasRepresentation) parts.push("representation authorship");
-  if (ids.includes("TESTIMONY")) parts.push("testimony");
-  if (ids.includes("CONTEXT")) parts.push("memory archive context");
-  if (ids.includes("RECEPTION_FIELD")) parts.push("reception field practice");
+  if (hasPhoto && hasRepresentation) parts.push("representation authorship");
+  else if (hasNetwork && hasImage) parts.push("image theory");
+  else if (hasData && !hasPhoto && !hasImage && !hasNetwork) parts.push("photography");
+  else if (hasAi) parts.push("visual culture");
+  else if (hasImage && !hasPhoto && !hasNetwork && !hasVisualCulture) parts.push("visual culture");
+  else if (ids.includes("MATERIALITY") && !hasPhoto) parts.push("photography");
+  else if (ids.includes("REPRESENTATION") && !hasPhoto) parts.push("representation authorship");
+  else if (ids.includes("TESTIMONY")) parts.push("testimony");
+  else if (ids.includes("CONTEXT")) parts.push("memory archive context");
+  else if (ids.includes("RECEPTION_FIELD")) parts.push("reception field practice");
 
-  if (hasNetwork && hasImage) parts.push("image theory");
-  if (hasData && !hasPhoto && !hasImage && !hasNetwork) parts.push("photography");
-  if (hasAi || hasVisualCulture) parts.push("visual culture");
-  if (hasImage && !hasPhoto && !hasNetwork && !hasAi && !hasVisualCulture) parts.push("visual culture");
-  if (parts.length === 0) parts.push("visual culture");
-
-  return uniqueParts(parts);
+  return uniqueParts(parts.slice(0, 2));
 }
 
 function contextAnchor(sourceQueries: string[]): string {
