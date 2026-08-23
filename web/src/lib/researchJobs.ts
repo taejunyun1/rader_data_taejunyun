@@ -6,7 +6,13 @@ export function isActiveResearchJob(job: Pick<ResearchJob, "status">): boolean {
 }
 
 export function jobLabel(kind: ResearchJobKind): string {
-  return ({ DISCOVERY_RUN: "발견 수집", DISTILL_RUN: "착즙", RADAR_SYNTHESIS: "레이더 생성", DEEP_ANALYSIS: "심층 정리" })[kind];
+  return ({
+    DISCOVERY_RUN: "발견 수집",
+    DISTILL_RUN: "착즙",
+    RADAR_SYNTHESIS: "레이더 생성",
+    DEEP_ANALYSIS: "심층 정리",
+    SOURCE_ACQUISITION: "원문 수집",
+  })[kind];
 }
 
 export function normalizeResearchJob(value: unknown): ResearchJob | null {

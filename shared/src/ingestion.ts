@@ -11,6 +11,14 @@ export type InputFormat =
   | "DISCOVERY_LINK";
 
 export type QualityStatus = "UNREVIEWED" | "READY" | "REVIEW" | "EMPTY" | "FAILED";
+export type TextScope = "FULLTEXT" | "PARTIAL" | "METADATA_ONLY" | "EMPTY" | "UNKNOWN";
+export type ExtractionMethod =
+  | "MANUAL_TEXT"
+  | "BROWSER_PDFJS"
+  | "HTML_STATIC"
+  | "PDF_REMOTE_TO_MARKDOWN"
+  | "DISCOVERY_METADATA"
+  | "LEGACY";
 export type VersionOrigin = "INITIAL_INGEST" | "OBSIDIAN_SYNC" | "REEXTRACT" | "RENORMALIZE" | "MANUAL_EDIT";
 export type VersionReviewStatus = "ACTIVE" | "PENDING_REVIEW" | "SUPERSEDED" | "REJECTED";
 
@@ -36,6 +44,13 @@ export interface NormalizationResult {
 export interface IngestMeta {
   channel: IngestChannel;
   format: InputFormat;
+}
+
+export interface TextScopeInput {
+  format: InputFormat;
+  meaningfulChars: number;
+  warnings: string[];
+  extractionMethod: ExtractionMethod;
 }
 
 export function normalizeIngestText(text: string, format: InputFormat): NormalizationResult {
@@ -107,6 +122,22 @@ export function normalizeIngestText(text: string, format: InputFormat): Normaliz
         : "READY";
 
   return { normalizedText, report, qualityStatus, metadata };
+}
+
+export function classifyTextScope(input: TextScopeInput): { scope: TextScope; qualityStatus: QualityStatus } {
+  if (input.meaningfulChars === 0) {
+    return { scope: "EMPTY", qualityStatus: "EMPTY" };
+  }
+
+  if (input.extractionMethod === "DISCOVERY_METADATA" || input.meaningfulChars < 200) {
+    return { scope: "METADATA_ONLY", qualityStatus: "REVIEW" };
+  }
+
+  if (input.meaningfulChars < 1_000 || input.warnings.length > 0) {
+    return { scope: "PARTIAL", qualityStatus: "REVIEW" };
+  }
+
+  return { scope: "FULLTEXT", qualityStatus: "READY" };
 }
 
 export function deriveIngestMeta(origin: string | null | undefined, filename?: string, metadata?: Record<string, unknown>): IngestMeta {

@@ -21,7 +21,13 @@ function NavButton({ view, active, count, onNavigate }: { view: View; active: bo
   );
 }
 
-const JOB_VIEWS: Record<ResearchJob["kind"], View> = { DISCOVERY_RUN: "DISCOVER", DISTILL_RUN: "DISTILL", RADAR_SYNTHESIS: "RADAR", DEEP_ANALYSIS: "RESERVOIR" };
+const JOB_VIEWS: Record<ResearchJob["kind"], View> = {
+  DISCOVERY_RUN: "DISCOVER",
+  DISTILL_RUN: "DISTILL",
+  RADAR_SYNTHESIS: "RADAR",
+  DEEP_ANALYSIS: "RESERVOIR",
+  SOURCE_ACQUISITION: "RESERVOIR",
+};
 
 export default function SidebarNav({ view, onNavigate, usage, counts = {}, jobs = [] }: SidebarNavProps) {
   const activeJobs = jobs.filter(isActiveResearchJob).slice(0, 3);

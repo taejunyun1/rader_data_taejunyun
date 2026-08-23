@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  classifyTextScope,
   deriveIngestMeta,
   normalizeIngestText,
   type InputFormat,
@@ -33,4 +34,37 @@ describe("ingestion normalization", () => {
     ("derives %s as %s", (origin, filename, metadata, channel, format) => {
       expect(deriveIngestMeta(origin, filename, metadata)).toEqual({ channel, format });
     });
+
+  it("accepts a long clean remote HTML article as full text", () => {
+    const result = classifyTextScope({
+      format: "URL_HTML",
+      meaningfulChars: 2_400,
+      warnings: [],
+      extractionMethod: "HTML_STATIC",
+    });
+
+    expect(result).toEqual({ scope: "FULLTEXT", qualityStatus: "READY" });
+  });
+
+  it("does not treat a discovery title as analysable text", () => {
+    const result = classifyTextScope({
+      format: "DISCOVERY_LINK",
+      meaningfulChars: 92,
+      warnings: [],
+      extractionMethod: "DISCOVERY_METADATA",
+    });
+
+    expect(result).toEqual({ scope: "METADATA_ONLY", qualityStatus: "REVIEW" });
+  });
+
+  it("marks a PDF conversion with no text as empty", () => {
+    const result = classifyTextScope({
+      format: "PDF_TEXT",
+      meaningfulChars: 0,
+      warnings: ["empty_text"],
+      extractionMethod: "PDF_REMOTE_TO_MARKDOWN",
+    });
+
+    expect(result).toEqual({ scope: "EMPTY", qualityStatus: "EMPTY" });
+  });
 });
