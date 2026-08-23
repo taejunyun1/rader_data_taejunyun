@@ -13,7 +13,7 @@ interface AcquisitionFixture {
   originalText: string | null;
   jobStatus: "SUCCEEDED" | "FAILED";
   errorCode?: string;
-  error?: string;
+  jobError?: string;
 }
 
 async function installAcquisitionFixture(page: Page, fixture: AcquisitionFixture) {
@@ -68,7 +68,7 @@ async function installAcquisitionFixture(page: Page, fixture: AcquisitionFixture
         result: fixture.jobStatus === "SUCCEEDED" ? { sourceId: fixture.sourceId, textScope: fixture.textScope, charCount: fixture.charCount } : null,
         resultRef: fixture.jobStatus === "SUCCEEDED" ? { view: "RESERVOIR", sourceId: fixture.sourceId, acquisition: true } : null,
         errorCode: fixture.errorCode ?? null,
-        error: fixture.error ?? null,
+        error: fixture.jobError ?? null,
         retryOf: null,
         requestedBy: "fixture",
         dedupeKey: `source-acquisition:${fixture.sourceId}:${fixture.externalUrl}`,
@@ -108,7 +108,6 @@ async function installAcquisitionFixture(page: Page, fixture: AcquisitionFixture
           acquisitionLabel: fixture.textScope === "FULLTEXT" ? `원문 저장됨 · ${fixture.charCount.toLocaleString("ko-KR")}자` : "메타데이터만 저장됨",
           canDeepAnalyze: fixture.textScope === "FULLTEXT" && fixture.qualityStatus === "READY" && fixture.charCount >= 1_000,
           originalTextUrl: fixture.originalText ? `/api/reservoir/${fixture.sourceId}/original-text` : null,
-          ...(fixture.error ? { acquisitionError: fixture.error } : {}),
         },
         analysis: null,
         deepAnalysis: null,
@@ -249,7 +248,7 @@ test("Discovery Keep exposes remote PDF toMarkdown provenance", async ({ page })
   await expect(page.getByText("Fixture PDF converted to normalized Markdown text.")).toBeVisible();
 });
 
-test("a JS-shell acquisition failure keeps the source recoverable and blocks deep analysis", async ({ page }) => {
+test("a JS-shell acquisition failure leaves the metadata-only source blocked from deep analysis", async ({ page }) => {
   const fixture: AcquisitionFixture = {
     candidateId: "candidate-shell",
     sourceId: "source-shell",
@@ -263,15 +262,20 @@ test("a JS-shell acquisition failure keeps the source recoverable and blocks dee
     originalText: null,
     jobStatus: "FAILED",
     errorCode: "workflow_runtime_failed",
-    error: "EXTRACTION_EMPTY",
+    jobError: "EXTRACTION_EMPTY",
   };
   await installAcquisitionFixture(page, fixture);
   await keepFixtureCandidate(page, fixture);
 
-  await expect(page.getByText("원문 수집 · 실패")).toBeVisible();
-  await expect(page.getByText("EXTRACTION_EMPTY")).toBeVisible();
+  const jobCenter = page.getByLabel("백그라운드 작업");
+  await expect(jobCenter.getByText("원문 수집 · 실패")).toBeVisible();
+  await expect(jobCenter.getByText("EXTRACTION_EMPTY")).toBeVisible();
   await page.getByRole("button", { name: "저장소", exact: true }).click();
   await page.getByRole("option", { name: new RegExp(fixture.title) }).click();
+  const readingPane = page.locator("article.reading-pane");
+  await expect(readingPane.getByText("원문 범위 METADATA_ONLY · 수집 방식 DISCOVERY_METADATA · 품질 REVIEW")).toBeVisible();
+  await expect(readingPane.getByText("메타데이터만 저장됨", { exact: true })).not.toHaveAttribute("title", /.+/);
+  await expect(readingPane.getByText("저장된 원문 보기")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "다시 가져오기" })).toBeEnabled();
   await page.getByRole("button", { name: "닫기", exact: true }).click();
   await expect(page.getByRole("button", { name: "원문 수집 필요" })).toBeDisabled();

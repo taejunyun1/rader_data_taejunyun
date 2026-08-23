@@ -1,6 +1,6 @@
 # Research Radar — 내부 참조 가이드
 
-최종 정리: 2026-08-24
+최종 정리: 2026-08-23
 
 이 문서는 다음 작업자가 프로젝트의 기획 의도, 현재 구현, 운영 원칙을 빠르게 이어받기 위한 요약본이다. 요구사항을 새로 정의하지 않으며, 제품 결정은 아래 Source of Truth 문서를 따른다.
 
@@ -116,7 +116,7 @@ Discovery 현장 신호는 CAA News·Association for Art History·ICP 공식 RSS
 - 심층 정리 gate는 active version의 `FULLTEXT + READY`, `char_count >= 1000`, non-empty `normalized_text`를 모두 요구한다. 실패 응답은 HTTP 422 `deep_analysis_text_not_ready`와 `textScope`, `qualityStatus`, `charCount`다. 월 예산 차단은 별도로 HTTP 429 `monthly_budget_exhausted`다.
 - `GET /api/reservoir/:sourceId/original-text`는 active version의 `normalized_text`만 최대 500,000자까지 `text/plain; charset=utf-8`와 `X-Content-Type-Options: nosniff`로 반환한다. raw HTML/PDF는 R2 provenance이며 이 endpoint에서 렌더링하지 않는다.
 - 재처리 구분: `POST /api/inbox/retry/:sourceId?fetch=1`은 canonical URL을 새 `SOURCE_ACQUISITION` job/version으로 다시 가져오고, `?analyze=1`은 현재 active version만 다시 분석한다.
-- job 상태는 `QUEUED`, `RUNNING`, `SUCCEEDED`, `FAILED`, `BLOCKED`다. 원격 수집 오류는 `FETCH_TIMEOUT`, `HTTP_4XX`, `HTTP_5XX`, `UNSUPPORTED_CONTENT_TYPE`, `SIZE_LIMIT`, `REDIRECT_BLOCKED`, `EXTRACTION_EMPTY`, `PDF_CONVERSION_FAILED`; version 저장 오류는 `source_version_store_failed`; 품질 미달 processing 오류는 `text_not_ready`다. Workflow의 일반 실패 `error_code`는 `workflow_runtime_failed`이고 원래 원인은 job error와 `processing_jobs.error`에 남는다.
+- job 상태는 `QUEUED`, `RUNNING`, `SUCCEEDED`, `FAILED`, `BLOCKED`다. 원격 수집 오류는 `FETCH_TIMEOUT`, `HTTP_4XX`, `HTTP_5XX`, `UNSUPPORTED_CONTENT_TYPE`, `SIZE_LIMIT`, `REDIRECT_BLOCKED`, `EXTRACTION_EMPTY`, `PDF_CONVERSION_FAILED`; version 저장 오류는 `source_version_store_failed`; 품질 미달 processing 오류는 `text_not_ready`다. Workflow의 일반 실패 `error_code`는 `workflow_runtime_failed`이고 원래 원인은 job error와 `processing_jobs.error`에 남는다. fetch/extraction이 version 추가 전에 실패하면 실패용 `source_version`을 만들거나 active로 승격하지 않으므로, Reservoir는 기존 `DISCOVERY_METADATA/METADATA_ONLY` active version과 심층 정리 차단 상태를 그대로 표시한다.
 - RSS title/summary는 `cleanDiscoverySourceText`에서 CDATA wrapper, XML entity, HTML tag, 중복 공백을 정리한 뒤 관련성·중복 판정에 사용한다.
 - historical backfill은 `POST /api/settings/backfill-discovery`로만 실행한다. `origin LIKE 'discovery:%'`이고 active version이 `FULLTEXT`가 아니거나 1,000자 미만인 자료를 오래된 순으로 회당 최대 10건 선택하며, canonical URL이 없거나 active dedupe job이 있으면 skip한다. 이 backfill과 Keep acquisition에는 자동 cron이 없다. 기존 주간 Discovery 후보/현장 신호 수집 cron은 그대로 별도 운영한다.
 

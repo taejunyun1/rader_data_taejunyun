@@ -1,13 +1,13 @@
 # Task 10 Report — Acquisition pre-deploy verification
 
-Date: 2026-08-24
+Date: 2026-08-23
 Scope: Task 10 pre-deploy only. Deployment and protected-production mutation/smoke checks were intentionally not run.
 
 ## Implemented
 
 - Updated `docs/SPEC.md`, `docs/DEV_PLAN.md`, and `docs/PROJECT_CONTEXT.md` with the actual Discovery Keep acquisition contract: metadata-first source, raw R2 before extraction, static HTML/remote PDF paths, TextScope/quality gate, safe Reservoir plain-text endpoint, retry separation, RSS cleanup, bounded manual backfill, status/error codes, and no automatic Keep-acquisition/backfill cron.
 - Added visible active-version acquisition provenance to the reading panel, including `textScope`, `extractionMethod`, and `qualityStatus`.
-- Extended the existing core Playwright fixture flow for HTML `HTML_STATIC`, PDF `PDF_REMOTE_TO_MARKDOWN`, and failed JS-shell `EXTRACTION_EMPTY` recovery/deep-gate behavior. No unsupported live external fixture was introduced.
+- Extended the existing core Playwright fixture flow for HTML `HTML_STATIC`, PDF `PDF_REMOTE_TO_MARKDOWN`, and failed JS-shell Job Center recovery plus metadata-only deep-gate behavior. No unsupported live external fixture was introduced.
 - Excluded Vitest source files from the production Web TypeScript project so `pnpm -r typecheck` checks deployable source while Web Vitest remains the test-suite verifier.
 - Made `0015_source_acquisition.sql` compatible with Wrangler D1 migration execution by removing explicit `BEGIN/COMMIT`; added a regression assertion while preserving the existing retry-chain/FK migration test.
 
@@ -45,3 +45,11 @@ Scope: Task 10 pre-deploy only. Deployment and protected-production mutation/smo
 
 - No pre-deploy implementation or local-verification blocker remains.
 - Production-only checks remain intentionally deferred until deployment is explicitly authorized.
+
+## Review fix addendum
+
+- Corrected the JS-shell fixture so `EXTRACTION_EMPTY` belongs only to the failed `SOURCE_ACQUISITION` job shown in Job Center. The Reservoir fixture now keeps the real active `DISCOVERY_METADATA/METADATA_ONLY` version without inventing an `extraction_error` or failed active version.
+- Strengthened the E2E contract around the stable behavior: the metadata-only provenance remains visible, no stored original text is offered, retry remains available, and deep analysis stays disabled before any paid analysis request.
+- Aligned this report and the source-of-truth update stamps with the Task 10 plan date, `2026-08-23`. No schema or error-persistence feature was added.
+- RED/GREEN: the new Reservoir-badge assertion first failed with `title="EXTRACTION_EMPTY"`, then the corrected JS-shell fixture passed 1/1.
+- Review-fix verification: focused acquisition/Reservoir/Job Center Vitest passed 31/31; the full core Playwright fixture flow passed 5/5; the document date/contract scan and `git diff --check` passed.
