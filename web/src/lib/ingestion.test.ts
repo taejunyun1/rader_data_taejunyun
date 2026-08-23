@@ -294,7 +294,30 @@ describe("ingestion normalization", () => {
       { status: 200, headers: { "content-type": "text/html; charset=utf-8" } },
     );
     Object.defineProperty(response, "url", { value: "https://final.example/article", configurable: true });
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
+
+      if (url.startsWith("https://cloudflare-dns.com/dns-query")) {
+        const query = new URL(url);
+        const recordType = query.searchParams.get("type");
+        const answerType = recordType === "AAAA" ? 28 : 1;
+        const answerData = recordType === "AAAA" ? "2606:4700:4700::1111" : "1.1.1.1";
+
+        return new Response(
+          JSON.stringify({
+            Status: 0,
+            Answer: [{ name: "start.example", type: answerType, TTL: 300, data: answerData }],
+          }),
+          { status: 200, headers: { "content-type": "application/dns-json" } },
+        );
+      }
+
+      return response;
+    }));
 
     const page = await fetchAndExtract("https://start.example/article");
 
