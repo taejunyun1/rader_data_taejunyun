@@ -16,9 +16,11 @@ describe("field signal classification", () => {
     ["Call for Papers: Photography and Machine Vision", "CALL_FOR_PAPERS"],
     ["Annual Conference on Visual Culture", "CONFERENCE"],
     ["Open Call for a Photography Residency", "RESIDENCY"],
+    ["Open Call: Exhibition Proposals", "EXHIBITION"],
     ["Grant and Fellowship Opportunities", "GRANT"],
     ["New Exhibition: Networked Images", "EXHIBITION"],
     ["Photography Workshop", "WORKSHOP"],
+    ["Photography Residency", "RESIDENCY"],
   ] as const)("classifies %s", (title, expected) => {
     expect(classifyDiscoveryFieldSignalType(title)).toBe(expected);
   });
@@ -32,6 +34,16 @@ describe("field signal classification", () => {
       deadlineAt: "2026-08-31T00:00:00.000Z",
     });
     expect(extractDiscoveryFieldSignalDates("Join us next autumn", 2026)).toEqual({ eventAt: null, deadlineAt: null });
+  });
+
+  it("treats labeled month-name deadlines as deadlines and not events", () => {
+    expect(extractDiscoveryFieldSignalDates(
+      "Call for papers. Deadline September 12, 2026. Symposium on October 3, 2026.",
+      2026,
+    )).toEqual({
+      eventAt: "2026-10-03T00:00:00.000Z",
+      deadlineAt: "2026-09-12T00:00:00.000Z",
+    });
   });
 });
 
@@ -76,6 +88,17 @@ describe("field signal relevance", () => {
       publishedAt: "2026-08-20T00:00:00.000Z",
       profile,
       sourceAnchors: ["photography", "visual culture"],
+      now: new Date("2026-08-23T00:00:00.000Z"),
+    })).toMatchObject({ accepted: false, reason: "NO_RESEARCH_MATCH" });
+  });
+
+  it("does not match source anchors by split token substrings", () => {
+    expect(assessDiscoveryFieldSignal({
+      title: "Artificial Crop Monitoring Symposium",
+      summary: "A conference about artificial irrigation systems and export planning.",
+      publishedAt: "2026-08-20T00:00:00.000Z",
+      profile,
+      sourceAnchors: ["art"],
       now: new Date("2026-08-23T00:00:00.000Z"),
     })).toMatchObject({ accepted: false, reason: "NO_RESEARCH_MATCH" });
   });

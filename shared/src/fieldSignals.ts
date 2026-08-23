@@ -62,7 +62,7 @@ export interface DiscoveryFieldSignalAssessment {
 
 const TYPE_PATTERNS: Array<[DiscoveryFieldSignalType, RegExp]> = [
   ["CALL_FOR_PAPERS", /\b(call for papers?|cfp|call for proposals?|paper submissions?)\b/i],
-  ["RESIDENCY", /\b(residenc(?:y|ies)|artist in residence|open call)\b/i],
+  ["RESIDENCY", /\b(residenc(?:y|ies)|artist in residence)\b/i],
   ["GRANT", /\b(grants?|fellowships?|funding|award applications?)\b/i],
   ["CONFERENCE", /\b(conferences?|symposi(?:um|a)|congress|annual meeting)\b/i],
   ["EXHIBITION", /\b(exhibitions?|biennial|triennial|on view|opening)\b/i],
@@ -100,13 +100,25 @@ export function extractDiscoveryFieldSignalDates(
   text: string,
   defaultYear: number,
 ): { eventAt: string | null; deadlineAt: string | null } {
+  const monthPattern = `(${Object.keys(MONTHS).join("|")})\\s+(\\d{1,2})(?:,\\s*(\\d{4}))?`;
   const deadlineMatch = text.match(/(?:apply by|deadline|closes?|due)\D{0,12}(\d{4})-(\d{2})-(\d{2})/i);
+  const labeledMonthDeadlineMatch = text.match(new RegExp(`(?:apply by|deadline|closes?|due)\\D{0,12}${monthPattern}`, "i"));
   const deadlineAt = deadlineMatch
     ? isoDate(Number(deadlineMatch[1]), Number(deadlineMatch[2]) - 1, Number(deadlineMatch[3]))
-    : null;
-  const monthMatch = text.match(new RegExp(`\\b(${Object.keys(MONTHS).join("|")})\\s+(\\d{1,2})(?:,\\s*(\\d{4}))?`, "i"));
-  const eventAt = monthMatch
-    ? isoDate(Number(monthMatch[3] ?? defaultYear), MONTHS[monthMatch[1]!.toLowerCase()]!, Number(monthMatch[2]))
+    : labeledMonthDeadlineMatch
+      ? isoDate(
+        Number(labeledMonthDeadlineMatch[3] ?? defaultYear),
+        MONTHS[labeledMonthDeadlineMatch[1]!.toLowerCase()]!,
+        Number(labeledMonthDeadlineMatch[2]),
+      )
+      : null;
+  const monthMatches = [...text.matchAll(new RegExp(`\\b${monthPattern}`, "gi"))];
+  const eventMatch = monthMatches.find((match) => {
+    const candidate = isoDate(Number(match[3] ?? defaultYear), MONTHS[match[1]!.toLowerCase()]!, Number(match[2]));
+    return candidate !== deadlineAt;
+  });
+  const eventAt = eventMatch
+    ? isoDate(Number(eventMatch[3] ?? defaultYear), MONTHS[eventMatch[1]!.toLowerCase()]!, Number(eventMatch[2]))
     : null;
   return { eventAt, deadlineAt };
 }
@@ -117,6 +129,14 @@ function profileTerms(profile: DiscoveryProfile): string[] {
     .flatMap((value) => [value, discoveryProviderQuery(value)])
     .flatMap((value) => normalizeDiscoveryTitle(value).split(" ").filter((token) => token.length >= 3));
   return [...new Set(tokens)];
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function includesNormalizedTerm(text: string, term: string): boolean {
+  return new RegExp(`(?:^|\\s)${escapeRegExp(term)}(?:$|\\s)`, "u").test(text);
 }
 
 export function assessDiscoveryFieldSignal(
@@ -142,13 +162,15 @@ export function assessDiscoveryFieldSignal(
   }
 
   const terms = profileTerms(input.profile);
-  const sourceTerms = input.sourceAnchors.flatMap((value) =>
-    normalizeDiscoveryTitle(value).split(" ").filter((token) => token.length >= 3),
-  );
-  const titleMatches = terms.filter((term) => title.includes(term));
-  const summaryMatches = terms.filter((term) => summary.includes(term));
+  const sourceTerms = [...new Set(
+    input.sourceAnchors
+      .map((value) => normalizeDiscoveryTitle(value))
+      .filter((value) => value.length >= 3),
+  )];
+  const titleMatches = terms.filter((term) => includesNormalizedTerm(title, term));
+  const summaryMatches = terms.filter((term) => includesNormalizedTerm(summary, term));
   const matchedTerms = [...new Set([...titleMatches, ...summaryMatches])].slice(0, 8);
-  const sourceMatches = [...new Set(sourceTerms.filter((term) => fullText.includes(term)))];
+  const sourceMatches = [...new Set(sourceTerms.filter((term) => includesNormalizedTerm(fullText, term)))];
 
   if (sourceMatches.length === 0 && matchedTerms.length === 0) {
     return { accepted: false, reason: "NO_RESEARCH_MATCH", score: 0.1, signalType, matchedTerms, ...dates };
