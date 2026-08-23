@@ -389,9 +389,9 @@ export default function DiscoverView({
     <div className="view-stack">
       <PageHeader title="발견" description="새로운 후보를 읽고, 다음 연구 행동을 바로 결정합니다." primaryAction={<button className="ui-button" disabled={busy || profileDirty} onClick={() => void runDiscovery()}>{profileDirty ? "설정을 먼저 저장" : busy ? "수집 요청 중…" : "지금 새로 찾기"}</button>} />
       <DiscoveryDirectionPanel profile={profileDraft} recommendations={recommendations} dirty={profileDirty} onChange={(next) => { setProfileDraft(next); setProfileDirty(true); }} onSave={() => void saveProfile()} />
-      <div className="discovery-content-tabs" aria-label="발견 콘텐츠 종류">
-        <button className={contentMode === "READING" ? "is-active" : ""} onClick={() => setContentMode("READING")}>읽을거리</button>
-        <button className={contentMode === "FIELD_SIGNAL" ? "is-active" : ""} onClick={() => setContentMode("FIELD_SIGNAL")}>현장 신호</button>
+      <div className="discovery-content-tabs" role="tablist" aria-label="발견 콘텐츠 종류">
+        <button className={contentMode === "READING" ? "is-active" : ""} role="tab" aria-selected={contentMode === "READING"} onClick={() => setContentMode("READING")}>읽을거리</button>
+        <button className={contentMode === "FIELD_SIGNAL" ? "is-active" : ""} role="tab" aria-selected={contentMode === "FIELD_SIGNAL"} onClick={() => setContentMode("FIELD_SIGNAL")}>현장 신호</button>
       </div>
       {msg && <p className="reservoir-message" role="status">{msg}</p>}
       {contentMode === "READING" && (

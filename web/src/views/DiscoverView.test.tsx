@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DiscoveryRunDiagnostics } from "@radar/shared/discoveryRun";
 import DiscoveryRunSummary from "../components/discovery/DiscoveryRunSummary";
+import FieldSignalRunSummary from "../components/discovery/FieldSignalRunSummary";
 import DiscoverView from "./DiscoverView";
 
 const candidate = { id: "candidate-1", openalexId: "https://openalex.org/W1", title: "자료 후보", authors: "저자", year: 2026, relevanceScore: 0.82, status: "CANDIDATE", queryUsed: "사진 연구", provider: "openalex", externalUrl: "https://doi.org/10.0000/example" };
@@ -25,11 +26,28 @@ const fieldSignal = {
 };
 
 beforeEach(() => {
+  let fieldSignalStatus = "NEW";
   vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url === "/api/discover/candidates/candidate-1/keep" && init?.method === "POST") return Promise.resolve(new Response(JSON.stringify({ ok: true, status: "KEPT", sourceId: "source-1" })));
-    if (url.startsWith("/api/discover/signals?") && !init?.method) return Promise.resolve(new Response(JSON.stringify({ items: [fieldSignal] })));
-    if (url === "/api/discover/signals/signal-1/save" && init?.method === "POST") return Promise.resolve(new Response(JSON.stringify({ ok: true, status: "SAVED" })));
+    if (url.startsWith("/api/discover/signals?") && !init?.method) {
+      const requestedStatus = url.match(/status=([^&]+)/)?.[1] ?? "NEW";
+      return Promise.resolve(new Response(JSON.stringify({
+        items: requestedStatus === fieldSignalStatus ? [{ ...fieldSignal, status: fieldSignalStatus }] : [],
+      })));
+    }
+    if (url === "/api/discover/signals/signal-1/save" && init?.method === "POST") {
+      fieldSignalStatus = "SAVED";
+      return Promise.resolve(new Response(JSON.stringify({ ok: true, status: "SAVED" })));
+    }
+    if (url === "/api/discover/signals/signal-1/dismiss" && init?.method === "POST") {
+      fieldSignalStatus = "DISMISSED";
+      return Promise.resolve(new Response(JSON.stringify({ ok: true, status: "DISMISSED" })));
+    }
+    if (url === "/api/discover/signals/signal-1/restore" && init?.method === "POST") {
+      fieldSignalStatus = "NEW";
+      return Promise.resolve(new Response(JSON.stringify({ ok: true, status: "NEW" })));
+    }
     if (url.startsWith("/api/discover/candidates")) return Promise.resolve(new Response(JSON.stringify({ items: [candidate] })));
     if (url === "/api/discover/queries") return Promise.resolve(new Response(JSON.stringify({ queries: [] })));
     if (url === "/api/discover/feeds") return Promise.resolve(new Response(JSON.stringify({ feeds: [] })));
@@ -110,7 +128,7 @@ describe("DiscoverView", () => {
 
   it("shows field signals separately from reading candidates", async () => {
     render(<DiscoverView onNavigate={vi.fn()} />);
-    await userEvent.click(screen.getByRole("button", { name: "현장 신호" }));
+    await userEvent.click(screen.getByRole("tab", { name: "현장 신호" }));
 
     expect(await screen.findByRole("heading", { name: "Call for Papers: Photography and Visual Culture" })).toBeVisible();
     expect(screen.getByText("CAA News")).toBeVisible();
@@ -120,7 +138,7 @@ describe("DiscoverView", () => {
 
   it("saves a field signal without promoting it to Reservoir", async () => {
     render(<DiscoverView onNavigate={vi.fn()} />);
-    await userEvent.click(screen.getByRole("button", { name: "현장 신호" }));
+    await userEvent.click(screen.getByRole("tab", { name: "현장 신호" }));
     await userEvent.click(await screen.findByRole("button", { name: "신호 저장" }));
 
     await waitFor(() => expect(fetch).toHaveBeenCalledWith(
@@ -128,5 +146,115 @@ describe("DiscoverView", () => {
       { method: "POST" },
     ));
     expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/signals"), expect.anything());
+  });
+
+  it("dismisses and restores a field signal within field-signal status filters", async () => {
+    render(<DiscoverView onNavigate={vi.fn()} />);
+    await userEvent.click(screen.getByRole("tab", { name: "현장 신호" }));
+    await userEvent.click(await screen.findByRole("button", { name: "제외" }));
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+      "/api/discover/signals/signal-1/dismiss",
+      { method: "POST" },
+    ));
+    await userEvent.click(screen.getByRole("button", { name: "제외됨" }));
+    expect(await screen.findByRole("button", { name: "복구" })).toBeVisible();
+
+    await userEvent.click(screen.getByRole("button", { name: "복구" }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+      "/api/discover/signals/signal-1/restore",
+      { method: "POST" },
+    ));
+    await userEvent.click(screen.getByRole("button", { name: "새 신호" }));
+    expect(await screen.findByRole("button", { name: "신호 저장" })).toBeVisible();
+  });
+
+  it("renders field-signal diagnostic reasons when no new signals were collected", () => {
+    render(
+      <FieldSignalRunSummary
+        collected={0}
+        diagnostics={{
+          sources: {
+            "caa-news": {
+              requests: 2,
+              succeededRequests: 2,
+              failedRequests: 0,
+              received: 8,
+              rejected: 6,
+              stale: 1,
+              expired: 1,
+              missingUrl: 1,
+              duplicate: 1,
+              quotaExcluded: 1,
+              selected: 0,
+              errorCodes: [],
+            },
+          },
+          rejectedByReason: {
+            NO_RESEARCH_MATCH: 1,
+            STALE: 1,
+            EXPIRED: 1,
+            MISSING_URL: 1,
+            DUPLICATE: 1,
+            SOURCE_QUOTA: 1,
+          },
+          incomplete: false,
+        }}
+      />,
+    );
+
+    expect(screen.getByText("연구 일치 부족 1")).toBeVisible();
+    expect(screen.getByText("오래됨 1")).toBeVisible();
+    expect(screen.getByText("종료됨 1")).toBeVisible();
+    expect(screen.getByText("링크 없음 1")).toBeVisible();
+    expect(screen.getByText("중복 1")).toBeVisible();
+    expect(screen.getByText("출처 상한 1")).toBeVisible();
+  });
+
+  it("shows partial-failure details for field-signal diagnostics", () => {
+    render(
+      <FieldSignalRunSummary
+        collected={0}
+        diagnostics={{
+          sources: {
+            "caa-news": {
+              requests: 2,
+              succeededRequests: 1,
+              failedRequests: 1,
+              received: 4,
+              rejected: 2,
+              stale: 0,
+              expired: 0,
+              missingUrl: 1,
+              duplicate: 0,
+              quotaExcluded: 1,
+              selected: 1,
+              errorCodes: ["TIMEOUT", "HTTP_500", "PARSE_ERROR"],
+            },
+          },
+          rejectedByReason: {},
+          incomplete: true,
+        }}
+      />,
+    );
+
+    expect(screen.getByText("일부 출처 확인 실패")).toBeVisible();
+    expect(screen.getByText(/실패 1/)).toBeVisible();
+    expect(screen.getByText(/링크 없음 1/)).toBeVisible();
+    expect(screen.getByText(/상한 제외 1/)).toBeVisible();
+    expect(screen.getByText(/오류 TIMEOUT, HTTP_500 \+1/)).toBeVisible();
+  });
+
+  it("uses tab semantics for the reading and field-signal switch", async () => {
+    render(<DiscoverView onNavigate={vi.fn()} />);
+
+    const tablist = screen.getByRole("tablist", { name: "발견 콘텐츠 종류" });
+    expect(tablist).toBeVisible();
+    expect(screen.getByRole("tab", { name: "읽을거리" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "현장 신호" })).toHaveAttribute("aria-selected", "false");
+
+    await userEvent.click(screen.getByRole("tab", { name: "현장 신호" }));
+    expect(screen.getByRole("tab", { name: "읽을거리" })).toHaveAttribute("aria-selected", "false");
+    expect(screen.getByRole("tab", { name: "현장 신호" })).toHaveAttribute("aria-selected", "true");
   });
 });
