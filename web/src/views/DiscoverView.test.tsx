@@ -1,6 +1,8 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { DiscoveryRunDiagnostics } from "@radar/shared/discoveryRun";
+import DiscoveryRunSummary from "../components/discovery/DiscoveryRunSummary";
 import DiscoverView from "./DiscoverView";
 
 const candidate = { id: "candidate-1", openalexId: "https://openalex.org/W1", title: "자료 후보", authors: "저자", year: 2026, relevanceScore: 0.82, status: "CANDIDATE", queryUsed: "사진 연구", provider: "openalex", externalUrl: "https://doi.org/10.0000/example" };
@@ -35,5 +37,44 @@ describe("DiscoverView", () => {
     await userEvent.click(screen.getByRole("button", { name: "발전시키기" }));
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/signals", expect.objectContaining({ method: "POST", body: JSON.stringify({ sourceId: "source-1", action: "develop" }) })));
     expect(onNavigate).toHaveBeenCalledWith("RESERVOIR");
+  });
+
+  it("opens diagnostics automatically when the run collected zero candidates", () => {
+    const diagnostics: DiscoveryRunDiagnostics = {
+      plannedQueries: 5,
+      readyQueries: 5,
+      executedQueries: 5,
+      unsupportedQueries: 0,
+      providers: {
+        openalex: { requests: 5, succeededRequests: 5, failedRequests: 0, received: 20, missingAccess: 4, rejected: 12, duplicate: 2, quotaExcluded: 1, selected: 0, errorCodes: [] },
+        arxiv: { requests: 2, succeededRequests: 2, failedRequests: 0, received: 8, missingAccess: 0, rejected: 8, duplicate: 0, quotaExcluded: 0, selected: 0, errorCodes: [] },
+        rss: { requests: 3, succeededRequests: 3, failedRequests: 0, received: 24, missingAccess: 12, rejected: 12, duplicate: 0, quotaExcluded: 0, selected: 0, errorCodes: [] },
+      },
+      rejectedByReason: { NO_RESEARCH_ANCHOR: 20, ACCESS_UNKNOWN: 4 },
+      existingReclassified: 0,
+      incomplete: false,
+    };
+    render(<DiscoveryRunSummary collected={0} diagnostics={diagnostics} onAction={vi.fn()} />);
+    expect(screen.getByText("새 후보 0개")).toBeInTheDocument();
+    expect(screen.getByText("연구축 표현 부족")).toBeVisible();
+  });
+
+  it("labels a partial provider run without calling it a normal empty result", () => {
+    const diagnostics: DiscoveryRunDiagnostics = {
+      plannedQueries: 1,
+      readyQueries: 1,
+      executedQueries: 1,
+      unsupportedQueries: 0,
+      providers: {
+        openalex: { requests: 1, succeededRequests: 0, failedRequests: 1, received: 0, missingAccess: 0, rejected: 0, duplicate: 0, quotaExcluded: 0, selected: 0, errorCodes: ["TIMEOUT"] },
+        arxiv: { requests: 1, succeededRequests: 1, failedRequests: 0, received: 0, missingAccess: 0, rejected: 0, duplicate: 0, quotaExcluded: 0, selected: 0, errorCodes: [] },
+        rss: { requests: 0, succeededRequests: 0, failedRequests: 0, received: 0, missingAccess: 0, rejected: 0, duplicate: 0, quotaExcluded: 0, selected: 0, errorCodes: [] },
+      },
+      rejectedByReason: {},
+      existingReclassified: 0,
+      incomplete: true,
+    };
+    render(<DiscoveryRunSummary collected={0} diagnostics={diagnostics} onAction={vi.fn()} />);
+    expect(screen.getByText("일부 출처 확인 실패")).toBeInTheDocument();
   });
 });

@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { DiscoveryKeywordRecommendation, DiscoveryProfile, DiscoverySourcePreset, ResearchJob, View } from "@radar/shared";
+import type { DiscoveryRunDiagnostics } from "@radar/shared/discoveryRun";
 import { DISCOVERY_SOURCE_PRESETS } from "@radar/shared";
 import { deriveSourceAccess } from "../lib/sourceAccess";
 import { labelOf, PROVIDER_LABELS } from "../lib/labels";
 import DiscoveryDirectionPanel from "../components/discovery/DiscoveryDirectionPanel";
+import DiscoveryRunSummary from "../components/discovery/DiscoveryRunSummary";
 import PageHeader from "../components/layout/PageHeader";
 import DecisionBottomSheet from "../components/reading/DecisionBottomSheet";
 import ReadingPane from "../components/reading/ReadingPane";
@@ -100,6 +102,8 @@ export default function DiscoverView({ onNavigate, jobs = [], onJobCreated }: { 
   const [feedMsg, setFeedMsg] = useState("");
   const [homepageProjects, setHomepageProjects] = useState<HomepageProject[]>([]);
   const [homepageExtractedAt, setHomepageExtractedAt] = useState<string | null>(null);
+  const [runSummary, setRunSummary] = useState<DiscoveryRunDiagnostics | null>(null);
+  const [runCollected, setRunCollected] = useState(0);
 
   const load = useCallback(async () => {
     setListError("");
@@ -119,11 +123,14 @@ export default function DiscoverView({ onNavigate, jobs = [], onJobCreated }: { 
     const latest = jobs.find((job) => job.kind === "DISCOVERY_RUN");
     if (!latest) return;
     if (latest.status === "SUCCEEDED") {
-      const result = latest.result && typeof latest.result === "object" ? latest.result as { collected?: unknown } : {};
+      const result = latest.result && typeof latest.result === "object" ? latest.result as { collected?: unknown; diagnostics?: DiscoveryRunDiagnostics } : {};
       setMsg(`발견 수집 완료 · 새 후보 ${Number(result.collected ?? 0)}개`);
+      setRunCollected(Number(result.collected ?? 0));
+      setRunSummary(result.diagnostics ?? null);
       void load();
     } else if (latest.status === "FAILED" || latest.status === "BLOCKED") {
       setMsg(latest.error ?? "발견 수집에 실패했습니다.");
+      setRunSummary(null);
     }
   }, [jobs, load]);
 
@@ -136,6 +143,7 @@ export default function DiscoverView({ onNavigate, jobs = [], onJobCreated }: { 
 
   async function runDiscovery() {
     setBusy(true);
+    setRunSummary(null);
     try {
       const response = await fetch("/api/discover/run", { method: "POST" });
       const data = await response.json() as { job?: unknown; reused?: boolean; error?: string };
@@ -145,6 +153,20 @@ export default function DiscoverView({ onNavigate, jobs = [], onJobCreated }: { 
       setStatusFilter("CANDIDATE");
     } catch (error) { setMsg(error instanceof Error ? error.message : "발견 실행을 시작하지 못했습니다."); }
     finally { setBusy(false); }
+  }
+
+  function handleSummaryAction(action: "RETRY" | "EDIT_QUERY" | "OPEN_STATUS") {
+    if (action === "RETRY") {
+      void runDiscovery();
+      return;
+    }
+    if (action === "OPEN_STATUS") {
+      setStatusFilter("KEPT");
+      setMsg("보관됨 후보를 표시했습니다.");
+      return;
+    }
+    globalThis.document.querySelector<HTMLElement>(".discovery-settings")?.setAttribute("open", "");
+    setMsg("검색 설정에서 짧은 개념어를 확인하세요.");
   }
 
   async function act(id: string, action: DecisionAction["id"]) {
@@ -207,6 +229,7 @@ export default function DiscoverView({ onNavigate, jobs = [], onJobCreated }: { 
         <span className="table-note">저장 키워드 {profile.original.keywords.length + profile.counter.keywords.length}개 · 관련도 0.65 이상 · 무료 원문/PDF · 최대 8개/회</span>
       </div>
       {msg && <p className="reservoir-message" role="status">{msg}</p>}
+      {runSummary && <DiscoveryRunSummary collected={runCollected} diagnostics={runSummary} onAction={handleSummaryAction} />}
       {listError ? <StatusMessage kind="error" title={listError} action={<button className="ui-button-secondary" onClick={() => void load()}>다시 시도</button>} /> : <SplitWorkspace
         index={<SourceIndex title="발견 후보" items={candidates.map(toIndexItem)} selectedId={selectedId} onSelect={selectCandidate} />}
         reading={document ? <ReadingPane document={document} /> : <StatusMessage kind="empty" title="읽을 후보를 선택하세요" description="왼쪽 목록에서 후보를 고르면 실제 접근 링크와 함께 읽기 질문을 확인할 수 있습니다." />}
