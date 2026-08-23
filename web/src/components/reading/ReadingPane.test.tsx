@@ -1,6 +1,10 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import ReadingPane from "./ReadingPane";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("ReadingPane", () => {
   it("shows an original title only beneath a translated title", () => {
@@ -20,5 +24,82 @@ describe("ReadingPane", () => {
     render(<ReadingPane document={{ id: "2", title: "후보", byline: "출처 미상", provenance: "발견 후보 메타데이터", access: { kind: "UNKNOWN", label: "접근 경로 확인 필요", actionLabel: "출처 정보 보기", href: null }, summary: null, fragments: [], questions: [], keywords: [] }} />);
     expect(screen.queryByRole("link", { name: /원문/ })).not.toBeInTheDocument();
     expect(screen.getByText("분석 내용 없음")).toBeInTheDocument();
+  });
+
+  it("shows full-text acquisition provenance and loads stored plain text only when opened", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("<strong>저장된 원문</strong>", {
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ReadingPane document={{
+      id: "source-1",
+      title: "자료",
+      byline: "저자",
+      provenance: "저장소 원자료",
+      access: { kind: "DIRECT", label: "외부 원문 링크", actionLabel: "원문에서 읽기", href: "https://example.com/article" },
+      acquisition: {
+        textScope: "FULLTEXT",
+        extractionMethod: "HTML_STATIC",
+        qualityStatus: "READY",
+        charCount: 32_739,
+        acquisitionLabel: "원문 저장됨 · 32,739자",
+        canDeepAnalyze: true,
+        originalTextUrl: "/api/reservoir/source-1/original-text",
+      },
+      summary: null,
+      fragments: [],
+      questions: [],
+      keywords: [],
+    }} />);
+
+    expect(screen.getByText("원문 저장됨 · 32,739자")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /외부 원문 링크/ })).toHaveAttribute("href", "https://example.com/article");
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const summary = screen.getByText("저장된 원문 보기");
+    const details = summary.closest("details");
+    expect(details).not.toBeNull();
+    if (!details) throw new Error("details_not_found");
+    details.open = true;
+    fireEvent(details, new Event("toggle", { bubbles: true }));
+
+    expect(await screen.findByText("<strong>저장된 원문</strong>")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith("/api/reservoir/source-1/original-text");
+    expect(details.querySelector("strong")).toBeNull();
+    expect(screen.getByRole("link", { name: "텍스트 새 창에서 열기" }))
+      .toHaveAttribute("target", "_blank");
+  });
+
+  it("shows metadata-only acquisition without offering stored text", () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ReadingPane document={{
+      id: "source-metadata",
+      title: "후보",
+      byline: "출처",
+      provenance: "발견 후보 메타데이터",
+      access: { kind: "DIRECT", label: "외부 원문 링크", actionLabel: "원문에서 읽기", href: "https://example.com/metadata" },
+      acquisition: {
+        textScope: "METADATA_ONLY",
+        extractionMethod: "DISCOVERY_METADATA",
+        qualityStatus: "REVIEW",
+        charCount: 0,
+        acquisitionLabel: "메타데이터만 저장됨",
+        canDeepAnalyze: false,
+        originalTextUrl: null,
+      },
+      summary: null,
+      fragments: [],
+      questions: [],
+      keywords: [],
+    }} />);
+
+    expect(screen.getByText("메타데이터만 저장됨")).toBeInTheDocument();
+    expect(screen.queryByText("저장된 원문 보기")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /외부 원문 링크/ })).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

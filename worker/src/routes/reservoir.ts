@@ -6,6 +6,17 @@ import { monthSpendUsd } from "../lib/openai";
 import { enqueueResearchJob } from "../jobs/enqueue";
 
 const reservoir = new Hono<{ Bindings: Env }>();
+const MAX_SOURCE_TEXT_CHARS = 500_000;
+
+interface AcquisitionColumns {
+  acquisitionTextScope: TextScope | null;
+  acquisitionExtractionMethod: string | null;
+  acquisitionQualityStatus: QualityStatus | null;
+  acquisitionCharCount: number | null;
+  acquisitionError: string | null;
+  acquisitionHasNormalizedText: number | boolean | null;
+  acquisitionHasExtractedText: number | boolean | null;
+}
 
 interface ResearchCycleMeta {
   lastResearchAt: string | null;
@@ -17,6 +28,35 @@ async function researchCycleMeta(db: D1Database): Promise<ResearchCycleMeta> {
   return {
     lastResearchAt: latest?.created_at ?? null,
     markSince: latest?.created_at ?? new Date(Date.now() - 90 * 24 * 3600 * 1000).toISOString(),
+  };
+}
+
+function acquisitionLabel(textScope: TextScope, charCount: number): string {
+  if (textScope === "FULLTEXT") return `원문 저장됨 · ${charCount.toLocaleString("ko-KR")}자`;
+  if (textScope === "PARTIAL") return `원문 일부 저장됨 · ${charCount.toLocaleString("ko-KR")}자`;
+  if (textScope === "METADATA_ONLY") return "메타데이터만 저장됨";
+  if (textScope === "EMPTY") return "읽을 텍스트 없음";
+  return "원문 상태 확인 필요";
+}
+
+function sourceAcquisitionView(sourceId: string, row: AcquisitionColumns) {
+  const textScope = row.acquisitionTextScope ?? "UNKNOWN";
+  const extractionMethod = row.acquisitionExtractionMethod ?? "LEGACY";
+  const qualityStatus = row.acquisitionQualityStatus ?? "UNREVIEWED";
+  const charCount = Number(row.acquisitionCharCount ?? 0);
+  const hasNormalizedText = Boolean(row.acquisitionHasNormalizedText);
+  const hasStoredText = hasNormalizedText || Boolean(row.acquisitionHasExtractedText);
+  const readiness = isDeepAnalysisReady({ textScope, qualityStatus, charCount, normalizedText: hasNormalizedText ? "available" : null });
+
+  return {
+    textScope,
+    extractionMethod,
+    qualityStatus,
+    charCount,
+    acquisitionLabel: acquisitionLabel(textScope, charCount),
+    canDeepAnalyze: readiness.ok,
+    originalTextUrl: hasStoredText ? `/api/reservoir/${sourceId}/original-text` : null,
+    ...(row.acquisitionError ? { acquisitionError: row.acquisitionError } : {}),
   };
 }
 
@@ -177,25 +217,80 @@ reservoir.get("/:sourceId/deep-analysis/:analysisId", async (c) => {
   return c.json({ analysis, meta: { model: row.model, promptVersion: row.promptVersion, createdAt: row.createdAt } });
 });
 
+reservoir.get("/:sourceId/original-text", async (c) => {
+  const row = await c.env.DB.prepare(
+    `SELECT s.id AS source_id,
+            CASE
+              WHEN LENGTH(TRIM(COALESCE(v.normalized_text, ''))) > 0 THEN v.normalized_text
+              WHEN LENGTH(TRIM(COALESCE(v.extracted_text, ''))) > 0 THEN v.extracted_text
+              ELSE NULL
+            END AS active_text
+     FROM sources s LEFT JOIN source_versions v ON v.id = s.active_version_id
+     WHERE s.id = ?`
+  ).bind(c.req.param("sourceId")).first<{
+    source_id: string;
+    active_text: string | null;
+  }>();
+  if (!row) return c.json({ error: "not_found" }, 404);
+  const text = row.active_text;
+  if (!text?.trim()) return c.json({ error: "original_text_not_available" }, 404);
+  return new Response(text.slice(0, MAX_SOURCE_TEXT_CHARS), {
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+});
+
 reservoir.get("/:sourceId", async (c) => {
   const id = c.req.param("sourceId");
   const cycle = await researchCycleMeta(c.env.DB);
   const src = await c.env.DB
     .prepare(
-      `SELECT id, kind, title, authors, year, canonical_url AS canonicalUrl, doi, reliability,
-              provenance_class AS provenanceClass, status, origin, origins_json AS origins, r2_key AS r2Key,
-              topics, metadata_json AS metadata, created_at AS createdAt, updated_at AS updatedAt,
+      `SELECT sources.id, sources.kind, sources.title, sources.authors, sources.year,
+              sources.canonical_url AS canonicalUrl, sources.doi, sources.reliability,
+              sources.provenance_class AS provenanceClass, sources.status, sources.origin,
+              sources.origins_json AS origins, sources.r2_key AS r2Key, sources.topics,
+              sources.metadata_json AS metadata, sources.created_at AS createdAt, sources.updated_at AS updatedAt,
+              active.text_scope AS acquisitionTextScope,
+              active.extraction_method AS acquisitionExtractionMethod,
+              sources.quality_status AS acquisitionQualityStatus,
+              active.char_count AS acquisitionCharCount,
+              active.extraction_error AS acquisitionError,
+              CASE WHEN LENGTH(TRIM(COALESCE(active.normalized_text, ''))) > 0 THEN 1 ELSE 0 END AS acquisitionHasNormalizedText,
+              CASE WHEN LENGTH(TRIM(COALESCE(active.extracted_text, ''))) > 0 THEN 1 ELSE 0 END AS acquisitionHasExtractedText,
               CASE WHEN (SELECT us.action FROM user_signals us
                          WHERE us.source_id = sources.id AND us.action IN ('keep','develop','watch','ignore') AND us.created_at > ?
                          ORDER BY us.created_at DESC LIMIT 1) IN ('keep','develop') THEN 1 ELSE 0 END AS markedForNextResearch
               ,(SELECT us.action FROM user_signals us
                 WHERE us.source_id = sources.id AND us.action IN ('keep','develop','watch','ignore')
                 ORDER BY us.created_at DESC LIMIT 1) AS decisionStatus
-       FROM sources WHERE id = ?`
+       FROM sources LEFT JOIN source_versions active ON active.id = sources.active_version_id
+       WHERE sources.id = ?`
     )
     .bind(cycle.markSince, id)
-    .first<Record<string, unknown>>();
+    .first<Record<string, unknown> & AcquisitionColumns>();
   if (!src) return c.json({ error: "not_found" }, 404);
+
+  const {
+    acquisitionTextScope,
+    acquisitionExtractionMethod,
+    acquisitionQualityStatus,
+    acquisitionCharCount,
+    acquisitionError,
+    acquisitionHasNormalizedText,
+    acquisitionHasExtractedText,
+    ...source
+  } = src;
+  const acquisition = sourceAcquisitionView(id, {
+    acquisitionTextScope,
+    acquisitionExtractionMethod,
+    acquisitionQualityStatus,
+    acquisitionCharCount,
+    acquisitionError,
+    acquisitionHasNormalizedText,
+    acquisitionHasExtractedText,
+  });
 
   const [analysis, deepAnalysis, deepHistory, kws, qs, frags, versions, sigs] = await Promise.all([
     c.env.DB
@@ -242,7 +337,8 @@ reservoir.get("/:sourceId", async (c) => {
   }
 
   return c.json({
-    source: src,
+    source,
+    acquisition,
     analysis: analysisPayload,
     analysisMeta: analysis.results?.[0]
       ? { model: analysis.results[0].model, promptVersion: analysis.results[0].prompt_version, createdAt: analysis.results[0].created_at }

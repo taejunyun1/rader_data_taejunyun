@@ -11,7 +11,7 @@ import ReadingPane from "../components/reading/ReadingPane";
 import type { DeepAnalysisViewModel } from "../components/reading/DeepAnalysisPanel";
 import SourceIndex from "../components/reading/SourceIndex";
 import SplitWorkspace from "../components/reading/SplitWorkspace";
-import type { DecisionAction, ReadingDocument, SourceIndexItem } from "../components/reading/types";
+import type { DecisionAction, ReadingDocument, SourceAcquisitionView, SourceIndexItem } from "../components/reading/types";
 
 interface ReservoirItem {
   id: string;
@@ -34,6 +34,7 @@ interface ReservoirItem {
 
 interface SourceDetail {
   source: Record<string, unknown>;
+  acquisition?: SourceAcquisitionView | null;
   analysis: { summary?: string; keywords?: string[]; questions?: string[]; important_fragments?: string[] } | null;
   keywords: { keyword: string; weight: number }[];
   questions: { question: string; status: string }[];
@@ -136,6 +137,7 @@ function toReadingDocument(detail: SourceDetail): ReadingDocument {
     byline: [source.authors, source.year, labelOf(ORIGIN_LABELS, source.origin, "출처 정보 없음")].filter(Boolean).map(String).join(" · "),
     provenance: provenance.join(" · "),
     access: deriveSourceAccess({ href: source.canonicalUrl ? String(source.canonicalUrl) : null }),
+    acquisition: detail.acquisition,
     summary,
     fragments,
     questions,

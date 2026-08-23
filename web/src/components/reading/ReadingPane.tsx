@@ -1,7 +1,48 @@
-import SourceAccessBadge from "./SourceAccessBadge";
+import { useEffect, useRef, useState, type SyntheticEvent } from "react";
+import SourceAccessBadge, { SourceAcquisitionBadge } from "./SourceAccessBadge";
 import ProvenanceNotice from "./ProvenanceNotice";
 import type { ReadingDocument } from "./types";
 import DeepAnalysisPanel, { type DeepAnalysisViewModel } from "./DeepAnalysisPanel";
+
+function StoredOriginalText({ url, initialText }: { url: string; initialText?: string | null }) {
+  const [text, setText] = useState<string | null>(initialText ?? null);
+  const [status, setStatus] = useState<"idle" | "loading" | "loaded" | "error">(initialText !== undefined && initialText !== null ? "loaded" : "idle");
+  const currentUrl = useRef(url);
+
+  useEffect(() => {
+    currentUrl.current = url;
+    setText(initialText ?? null);
+    setStatus(initialText !== undefined && initialText !== null ? "loaded" : "idle");
+  }, [initialText, url]);
+
+  async function loadOnOpen(event: SyntheticEvent<HTMLDetailsElement>) {
+    if (!event.currentTarget.open || status !== "idle") return;
+    const requestedUrl = url;
+    setStatus("loading");
+    try {
+      const response = await fetch(requestedUrl);
+      if (!response.ok) throw new Error("original_text_failed");
+      const nextText = await response.text();
+      if (currentUrl.current !== requestedUrl) return;
+      setText(nextText);
+      setStatus("loaded");
+    } catch {
+      if (currentUrl.current === requestedUrl) setStatus("error");
+    }
+  }
+
+  return (
+    <details className="reading-pane__original-text" onToggle={(event) => void loadOnOpen(event)}>
+      <summary>저장된 원문 보기</summary>
+      <div className="reading-pane__original-text-body">
+        <a href={url} target="_blank" rel="noreferrer">텍스트 새 창에서 열기</a>
+        {status === "loading" ? <p role="status">저장된 원문을 불러오는 중입니다.</p> : null}
+        {status === "error" ? <p role="alert">저장된 원문을 불러오지 못했습니다.</p> : null}
+        {text !== null ? <pre>{text}</pre> : null}
+      </div>
+    </details>
+  );
+}
 
 export default function ReadingPane({ document, deepAnalysis, deepAnalysisHistory = [], onOpenDeepHistory }: { document: ReadingDocument; deepAnalysis?: DeepAnalysisViewModel | null; deepAnalysisHistory?: { id: string; model?: string; createdAt: string; costUsd?: number }[]; onOpenDeepHistory?: (id: string) => void }) {
   return (
@@ -11,10 +52,16 @@ export default function ReadingPane({ document, deepAnalysis, deepAnalysisHistor
         <h2 id="reading-pane-title">{document.title}</h2>
         {document.originalTitle && document.originalTitle !== document.title && <p className="reading-pane__original-title"><span>원문 제목</span>{document.originalTitle}</p>}
         <p className="reading-pane__byline">{document.byline || "저자·출처 정보 없음"}</p>
-        <div className="reading-pane__source"><SourceAccessBadge access={document.access} /></div>
+        <div className="reading-pane__source">
+          <SourceAccessBadge access={document.access} />
+          {document.acquisition ? <SourceAcquisitionBadge acquisition={document.acquisition} /> : null}
+        </div>
       </header>
       <ProvenanceNotice>{document.provenance}</ProvenanceNotice>
       <div className="reading-pane__body">
+        {document.acquisition?.originalTextUrl
+          ? <StoredOriginalText url={document.acquisition.originalTextUrl} initialText={document.originalText} />
+          : null}
         <section className="reading-section">
           <p className="reading-section__label">시스템 해석</p>
           {document.summary ? <p className="reading-section__summary">{document.summary}</p> : <p className="reading-section__empty"><strong>분석 내용 없음</strong><span>원문을 읽고 직접 판단해 주세요.</span></p>}
