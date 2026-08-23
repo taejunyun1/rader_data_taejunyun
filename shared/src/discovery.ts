@@ -380,15 +380,22 @@ export function assessDiscoveryCandidate(input: DiscoveryAssessmentInput): Disco
   return { accepted: true, score: rounded, matchedTerms, reason: "RELEVANT" };
 }
 
-export function classifyDiscoveryAccess(provider: string | null | undefined, href: string | null | undefined): DiscoveryAccessStatus {
+export function classifyDiscoveryAccess(
+  provider: string | null | undefined,
+  href: string | null | undefined,
+  sourcePolicy?: "FREE_FULLTEXT" | "PAYWALLED" | "INSTITUTION" | "UNKNOWN",
+): DiscoveryAccessStatus {
   const normalizedProvider = provider?.toLowerCase() ?? "";
   const normalizedHref = href?.toLowerCase() ?? "";
   if (!href) return "UNKNOWN";
   if (normalizedProvider === "arxiv" || normalizedHref.includes("arxiv.org/abs/") || normalizedHref.includes("arxiv.org/pdf/")) return "PDF";
+  if (normalizedHref.endsWith(".pdf")) return "PDF";
+  if (sourcePolicy === "FREE_FULLTEXT") return "FREE_FULLTEXT";
+  if (sourcePolicy === "PAYWALLED") return "PAYWALLED";
+  if (sourcePolicy === "INSTITUTION") return "INSTITUTION";
   if (normalizedProvider === "riss" || normalizedHref.includes("riss.kr")) return "INSTITUTION";
   if (normalizedHref.includes("artforum.com") || normalizedHref.includes("artnews.com")) return "PAYWALLED";
   if (normalizedHref.includes("hyperallergic.com")) return "FREE_FULLTEXT";
-  if (normalizedHref.endsWith(".pdf")) return "PDF";
   if (normalizedProvider === "openalex") return "UNKNOWN";
   return "UNKNOWN";
 }
@@ -397,9 +404,10 @@ export function resolveDiscoveryAccessForExisting(
   stored: DiscoveryAccessStatus | null | undefined,
   provider: string | null | undefined,
   href: string | null | undefined,
+  sourcePolicy?: "FREE_FULLTEXT" | "PAYWALLED" | "INSTITUTION" | "UNKNOWN",
 ): DiscoveryAccessStatus {
   if (stored === "PDF" || stored === "FREE_FULLTEXT") return stored;
-  return classifyDiscoveryAccess(provider, href);
+  return classifyDiscoveryAccess(provider, href, sourcePolicy);
 }
 
 export interface SelectableDiscoveryCandidate {

@@ -129,6 +129,26 @@ describe("discovery access classification", () => {
   it("preserves stored OpenAlex free-fulltext evidence during re-evaluation", () => {
     expect(resolveDiscoveryAccessForExisting("FREE_FULLTEXT", "openalex", "https://repository.example/item")).toBe("FREE_FULLTEXT");
   });
+
+  it("trusts free HTML only when the curated source policy verifies it", () => {
+    expect(classifyDiscoveryAccess(
+      "rss",
+      "https://unthinking.photography/articles/machine-readable-photography",
+      "FREE_FULLTEXT",
+    )).toBe("FREE_FULLTEXT");
+    expect(classifyDiscoveryAccess(
+      "rss",
+      "https://unknown.example/articles/photography",
+    )).toBe("UNKNOWN");
+  });
+
+  it("keeps a curated paywalled policy stronger than a generic RSS provider", () => {
+    expect(classifyDiscoveryAccess(
+      "rss",
+      "https://www.artforum.com/features/example",
+      "PAYWALLED",
+    )).toBe("PAYWALLED");
+  });
 });
 
 describe("discovery query seeds", () => {
