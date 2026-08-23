@@ -47,6 +47,12 @@ const LANE_FILTERS = [
   { value: "COUNTER", label: "카운터" },
 ];
 
+const SOURCE_COLLECTION_LABELS = {
+  RSS: "공개 RSS 자동 수집",
+  API: "공식 API 연결 필요",
+  SEARCH: "검색 링크로 확인",
+} as const;
+
 const DISCOVERY_ACTIONS: DecisionAction[] = [
   { id: "develop", label: "발전시키기", description: "저장소에 보관하고 연구 방향에 반영" },
   { id: "keep", label: "보관하기", description: "다음 리서치까지 표시해 두기" },
@@ -240,7 +246,7 @@ export default function DiscoverView({ onNavigate, jobs = [], onJobCreated }: { 
         <div className="discovery-settings__grid">
           <section><h2>RSS·Atom 피드</h2><p>공개 피드만 자동 수집합니다. 한 줄에 하나씩, 최대 6개입니다.</p><textarea value={feeds} onChange={(event) => setFeeds(event.target.value)} placeholder="https://some-journal.org/rss" /><button className="ui-button-secondary" onClick={() => void saveFeeds()}>피드 저장</button>{feedMsg && <span className="table-note">{feedMsg}</span>}</section>
         </div>
-        <section className="discovery-sources"><h2>추천 출처 · 직접 읽기</h2><p>자동 수집 여부와 관계없이, 아래 링크에서 실제 자료를 확인할 수 있습니다.</p>{DISCOVERY_SOURCE_PRESETS.map((source: DiscoverySourcePreset) => <div className="discovery-source__row" key={source.id}><a href={source.url} target="_blank" rel="noreferrer">{source.name} ↗</a><span>{source.description} · {source.feedUrl ? "자동 수집" : source.id === "riss" ? "기관·검색 확인" : "직접 읽기"}</span></div>)}</section>
+        <section className="discovery-sources"><h2>추천 출처 · 수집 상태</h2><p>공개 피드는 자동 수집하고, 기관형 데이터베이스는 공식 연동 상태를 구분해 표시합니다.</p>{DISCOVERY_SOURCE_PRESETS.map((source: DiscoverySourcePreset) => <div className="discovery-source__row" key={source.id}><a href={source.url} target="_blank" rel="noreferrer">{source.name} ↗</a><span>{source.description} · {SOURCE_COLLECTION_LABELS[source.collection]}</span></div>)}</section>
         {homepageProjects.length > 0 && <section className="discovery-sources"><h2>내 홈페이지 기반 출발점</h2><p>홈페이지에서 추출된 프로젝트가 발견 검색의 맥락으로 사용됩니다{homepageExtractedAt ? ` · 마지막 추출 ${new Date(homepageExtractedAt).toLocaleDateString("ko-KR")}` : ""}.</p>{homepageProjects.slice(0, 5).map((project) => <div className="discovery-source__row" key={project.slug}><a href={project.projectUrl} target="_blank" rel="noreferrer">{project.title} ↗</a><span>{project.year ?? "연도 미상"} · 이미지 {project.imageCount} · 영상 {project.videoCount}</span></div>)}</section>}
       </details>
     </div>
