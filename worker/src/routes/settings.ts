@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { PRESETS, type PresetName, type RadarParams } from "@radar/shared";
 import homepageProjects from "../data/homepage-projects.json";
 import { analyzeSource } from "../analysis/analyze";
+import { backfillDiscoverySources } from "../ingestion/backfillDiscovery";
 import { createSource } from "../ingestion/store";
 import { PARAMS_KEY, loadParams } from "../lib/params";
 import { callOpenAi } from "../lib/openai";
@@ -160,6 +161,21 @@ settings.post("/import-homepage", async (c) => {
   }
 
   return c.json({ imported, duplicates, total: projects.length, results });
+});
+
+settings.post("/backfill-discovery", async (c) => {
+  const requestedBy = c.req.header("CF-Access-Authenticated-User-Email") ?? "local";
+  try {
+    const result = await backfillDiscoverySources(c.env, requestedBy, 10);
+    return c.json(result, 202);
+  } catch (error) {
+    console.error(JSON.stringify({
+      level: "error",
+      scope: "settings:backfill-discovery",
+      message: error instanceof Error ? error.message : "backfill_failed",
+    }));
+    return c.json({ error: "backfill_failed" }, 500);
+  }
 });
 
 function stripHtml(html: string): string {
