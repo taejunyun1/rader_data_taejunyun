@@ -1,6 +1,6 @@
 # Research Radar — 내부 참조 가이드
 
-최종 정리: 2026-08-22
+최종 정리: 2026-08-23
 
 이 문서는 다음 작업자가 프로젝트의 기획 의도, 현재 구현, 운영 원칙을 빠르게 이어받기 위한 요약본이다. 요구사항을 새로 정의하지 않으며, 제품 결정은 아래 Source of Truth 문서를 따른다.
 
@@ -63,6 +63,8 @@ Research Radar는 사진작가 윤태준의 개인 연구 편집 도구다. 챗�
 | Export | JSON/Markdown/CSV 및 R2 원본 백업 | V0 필수 |
 
 Discovery 후보는 제목과 초록·RSS 요약에 연구 기준어가 실제로 포함되고 관련도 0.65 이상일 때만 등록한다. `data`·`theory`·`AI` 같은 일반어 단독 검색은 제외하며, 사진·이미지·시각문화 축이 없는 공학 중심 후보(벤치마크·데이터셋·캘리브레이션·인식·검색·파이프라인 등)는 차단한다. arXiv는 시각·이미지·컴퓨터비전 인접 카테고리로 제한하고, OpenAlex는 `open_access.oa_url`이 있는 자료만 받는다. ARTnews·Artforum 같은 구독 가능성 출처, 기관 인증만 필요한 RISS 링크, 접근 미확인 링크는 메인 후보에서 제외한다. 후보는 무료 원문 또는 PDF만 노출하며, 한 번의 실행에서 최대 8개(소스별 OpenAlex 4·arXiv 2·RSS 2), 제목 정규화 중복 제거를 적용한다. 기존 미검토 후보는 다음 Discovery 실행 시 새 기준으로 재평가하며, 탈락 자료는 삭제하지 않고 `IGNORED`로 남긴다.
+
+Discovery 실행 결과는 `research_jobs.result_json`에 `diagnostics`로 함께 보존한다. 정상 응답 후 0건과 provider HTTP/timeout/parse 실패를 구분하고, provider별 요청·수신·접근 불가·품질 탈락·중복·quota·선정 수를 기록한다. 한국어·혼합 저장 문장은 후보 provenance로 유지하되 provider에는 결정론적 영어 concept query를 전달하며, 변환 불가 문장은 실행하지 않고 진단에 남긴다. 기존 OpenAlex 후보의 저장된 `FREE_FULLTEXT`/`PDF` 증거는 URL 재분류만으로 낮추지 않는다. 따라서 후보 0건은 유효한 결과일 수 있으며, Discover 화면은 원인별 진단과 다음 행동을 함께 표시한다.
 
 ### 3-1. 현재 UI 읽기 흐름
 

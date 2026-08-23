@@ -173,6 +173,8 @@ Read Next 후보 전건 OpenAlex 존재 검증(openalex_id 발급된 것만 제�
 홈페이지 프로젝트·읽을거리에서 분석된 키워드(최대 2개)를 우선 시드로 사용하고, 최근 모멘텀 키워드를 결합 → OpenAlex 쿼리 생성 → 사진·이미지·시각문화 관련 arXiv 카테고리 보완 검색 → 큐레이션 RSS/Atom 수집 → 제목·초록·요약 관련성·접근성 필터 → discovery_candidates. 일반어 단독 검색(`data`, `theory`, `AI`)은 제외하고, 관련도 0.65 미만·공학 중심·구독 가능성·기관 인증만 필요한 자료는 메인 후보로 등록하지 않는다. OpenAlex는 OA URL이 있는 자료만, RSS는 무료 원문으로 판별되는 자료만, arXiv는 PDF 링크만 받는다. 실행 상한은 8건이며 OpenAlex 4·arXiv 2·RSS 2 쿼터와 정규화 제목 중복 제거를 적용한다. 읽을거리 원본 후보는 homepage_artist Action이 R2 스냅샷으로 전달하고, Radar 일일 cron이 Reservoir에 업서트한다.
 **AC**: cron 1회 실행 후 candidates 상한 이하 유입, 모든 CANDIDATE가 relevance_score 0.65 이상이며 `PDF` 또는 `FREE_FULLTEXT` 접근 상태를 가진다. 기존 미검토 후보는 다음 실행 때 재평가하고 탈락 자료는 삭제하지 않고 IGNORED로 보존한다. **Scope: M**
 
+운영 보강: Discovery Workflow는 `research_jobs.result_json`에 provider 결과 상태와 후보 terminal outcome 진단을 저장한다. 정상 응답 후 0건은 성공으로 유지하고, 일부 provider 실패는 `incomplete`로 표시하며, 전체 provider 실패와 변환 불가 검색어는 별도 job 상태·error code로 구분한다. 한국어·혼합 검색 문장은 원문 provenance를 보존하고 provider에는 결정론적 concept mapping 결과를 전달한다. 기존 OpenAlex 후보의 수집 시점 OA 증거(`FREE_FULLTEXT`/`PDF`)는 다음 실행의 URL 재평가로 강등하지 않는다.
+
 ### Task 5.2: Discover UI
 후보 풀 목록 + Keep/Watch/Ignore. Keep는 Reservoir로 승격(DISCOVERY reliability), 자동 수집은 핵심 Reservoir로 직행 금지(스펙 원칙).
 **AC**: 승격된 자료만 Reservoir 검색에 등장. **Scope: M**
