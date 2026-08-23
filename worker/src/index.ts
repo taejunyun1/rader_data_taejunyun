@@ -139,7 +139,13 @@ export default {
       const { loadParams } = await import("./lib/params");
       const params = await loadParams(env.DB);
       const result = await runDiscovery(env, params.divergence);
-      console.log(JSON.stringify({ level: "info", cron: event.cron, discovery: result.collected, queries: result.queries }));
+      console.log(JSON.stringify({
+        level: "info",
+        cron: event.cron,
+        discovery: result.collected,
+        fieldSignals: result.fieldSignalsCollected,
+        queries: result.queries,
+      }));
     } catch (err) {
       console.error(JSON.stringify({ level: "error", scope: "cron:discovery", message: (err as Error).message }));
     }

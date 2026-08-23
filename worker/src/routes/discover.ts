@@ -10,6 +10,22 @@ import { buildDiscoveryRecommendations } from "../discovery/recommendations";
 import { enqueueResearchJob } from "../jobs/enqueue";
 
 const discover = new Hono<{ Bindings: Env }>();
+const FIELD_SIGNAL_STATUSES = new Set(["NEW", "SAVED", "DISMISSED"]);
+const FIELD_SIGNAL_TYPES = new Set([
+  "CONFERENCE", "CALL_FOR_PAPERS", "EXHIBITION", "GRANT",
+  "RESIDENCY", "WORKSHOP", "INSTITUTION_NEWS", "OTHER",
+]);
+
+function parseMatchedTerms(value: unknown): string[] {
+  try {
+    const parsed = JSON.parse(String(value ?? "[]")) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((term): term is string => typeof term === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
 
 discover.get("/sources", (c) => c.json({ items: DISCOVERY_SOURCE_PRESETS }));
 
@@ -20,14 +36,14 @@ discover.get("/candidates", async (c) => {
   const query = status === "CANDIDATE"
     ? `SELECT id, openalex_id AS openalexId, title, authors, year, relevance_score AS relevanceScore,
               status, query_used AS queryUsed, created_at AS createdAt, provider, external_url AS externalUrl, access_status AS accessStatus,
-              discovery_lane AS discoveryLane, query_source AS querySource
+              discovery_lane AS discoveryLane, query_source AS querySource, source_id AS sourceId
        FROM discovery_candidates
        WHERE status = ? AND relevance_score >= ${DISCOVERY_MIN_SCORE}
          AND access_status IN ('PDF', 'FREE_FULLTEXT')${laneClause}
        ORDER BY relevance_score DESC, created_at DESC LIMIT 8`
     : `SELECT id, openalex_id AS openalexId, title, authors, year, relevance_score AS relevanceScore,
               status, query_used AS queryUsed, created_at AS createdAt, provider, external_url AS externalUrl, access_status AS accessStatus,
-              discovery_lane AS discoveryLane, query_source AS querySource
+              discovery_lane AS discoveryLane, query_source AS querySource, source_id AS sourceId
        FROM discovery_candidates WHERE status = ?${laneClause} ORDER BY relevance_score DESC, created_at DESC LIMIT 50`;
   const rows = await c.env.DB.prepare(query).bind(...(laneClause ? [status, lane] : [status])).all<Record<string, unknown>>();
   return c.json({ items: rows.results ?? [] });
@@ -102,6 +118,45 @@ discover.post("/candidates/:id/:action", async (c) => {
   }
 
   return c.json({ ok: true, status: newStatus, sourceId });
+});
+
+discover.get("/signals", async (c) => {
+  const status = FIELD_SIGNAL_STATUSES.has(c.req.query("status") ?? "") ? c.req.query("status")! : "NEW";
+  const type = c.req.query("type") ?? "";
+  const typeClause = FIELD_SIGNAL_TYPES.has(type) ? " AND signal_type = ?" : "";
+  const rows = await c.env.DB.prepare(
+    `SELECT id, source_id AS sourceId, external_url AS externalUrl, title, summary,
+            signal_type AS signalType, published_at AS publishedAt, event_at AS eventAt,
+            deadline_at AS deadlineAt, matched_terms_json AS matchedTermsJson,
+            relevance_score AS relevanceScore, status, created_at AS createdAt, updated_at AS updatedAt
+     FROM discovery_field_signals
+     WHERE status = ?${typeClause}
+     ORDER BY relevance_score DESC,
+              CASE WHEN deadline_at IS NOT NULL OR event_at IS NOT NULL THEN 0 ELSE 1 END ASC,
+              COALESCE(deadline_at, event_at) ASC,
+              COALESCE(published_at, created_at) DESC
+     LIMIT 50`,
+  ).bind(...(typeClause ? [status, type] : [status])).all<Record<string, unknown>>();
+  const sourceNames = new Map(DISCOVERY_SOURCE_PRESETS.map((source) => [source.id, source.name]));
+  const items = (rows.results ?? []).map((row) => ({
+    ...row,
+    sourceName: sourceNames.get(String(row.sourceId)) ?? String(row.sourceId),
+    matchedTerms: parseMatchedTerms(row.matchedTermsJson),
+    matchedTermsJson: undefined,
+  }));
+  return c.json({ items });
+});
+
+discover.post("/signals/:id/:action", async (c) => {
+  const action = c.req.param("action");
+  const nextStatus = action === "save" ? "SAVED" : action === "dismiss" ? "DISMISSED" : action === "restore" ? "NEW" : null;
+  if (!nextStatus) return c.json({ error: "invalid_action" }, 400);
+  const updatedAt = new Date().toISOString();
+  const result = await c.env.DB.prepare(
+    "UPDATE discovery_field_signals SET status = ?, updated_at = ? WHERE id = ?",
+  ).bind(nextStatus, updatedAt, c.req.param("id")).run();
+  if ((result.meta.changes ?? 0) === 0) return c.json({ error: "not_found" }, 404);
+  return c.json({ ok: true, status: nextStatus, updatedAt });
 });
 
 discover.get("/feeds", async (c) => {

@@ -1,5 +1,6 @@
 import type {
   DiscoveryDecisionReason,
+  DiscoveryFieldSignalRunDiagnostics,
   DiscoveryProviderName,
   DiscoveryProviderResult,
   DiscoveryRunDiagnostics,
@@ -81,4 +82,14 @@ export function discoveryJobOutcome(
   if (totals.requests > 0 && totals.failed === totals.requests) return "FAILED";
   diagnostics.incomplete = totals.failed > 0 && totals.succeeded > 0;
   return "SUCCEEDED";
+}
+
+export function discoveryCombinedJobOutcome(
+  readingOutcome: "SUCCEEDED" | "FAILED" | "BLOCKED",
+  fieldSignals: DiscoveryFieldSignalRunDiagnostics,
+): "SUCCEEDED" | "FAILED" | "BLOCKED" {
+  if (readingOutcome === "SUCCEEDED") return "SUCCEEDED";
+  const signalSucceeded = Object.values(fieldSignals.sources).some((source) => source.succeededRequests > 0);
+  if (signalSucceeded) return "SUCCEEDED";
+  return readingOutcome;
 }

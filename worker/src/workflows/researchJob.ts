@@ -1,9 +1,10 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import type { RadarPeriod } from "@radar/shared";
 import type { ResearchJob, ResearchJobResultRef } from "@radar/shared/discovery";
+import type { DiscoveryFieldSignalRunDiagnostics } from "@radar/shared/fieldSignals";
 import type { DiscoveryRunDiagnostics } from "@radar/shared/discoveryRun";
 import { runDiscovery } from "../discovery/run";
-import { discoveryJobOutcome } from "../discovery/diagnostics";
+import { discoveryCombinedJobOutcome, discoveryJobOutcome } from "../discovery/diagnostics";
 import { loadParams } from "../lib/params";
 import { monthSpendUsd } from "../lib/openai";
 import { runDistill, verifyQueueItems } from "../distill/run";
@@ -20,9 +21,11 @@ class JobBlockedError extends Error {
 type WorkflowStepResult = {
   result: {
     collected?: number;
+    fieldSignalsCollected?: number;
     keptExisting?: number;
     queries?: string[];
     diagnostics?: DiscoveryRunDiagnostics;
+    fieldSignalDiagnostics?: DiscoveryFieldSignalRunDiagnostics;
     sessionId?: string;
     costUsd?: number;
     snapshotId?: string;
@@ -68,15 +71,18 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
       await updateJobProgress(this.env.DB, job.id, 20, "발견 방향을 읽는 중");
       const input = job.input as { divergence: number; profile: Parameters<typeof runDiscovery>[1] extends number ? never : { original: { keywords: string[]; strength: number }; counter: { keywords: string[]; strength: number }; updatedAt: string } };
       const result = await runDiscovery(this.env, { divergence: input.divergence, profile: input.profile });
-      const outcome = discoveryJobOutcome(result.diagnostics, result.diagnostics.providers.rss.requests > 0);
+      const readingOutcome = discoveryJobOutcome(result.diagnostics, result.diagnostics.providers.rss.requests > 0);
+      const outcome = discoveryCombinedJobOutcome(readingOutcome, result.fieldSignalDiagnostics);
       if (outcome === "FAILED") throw new Error("discovery_providers_unavailable");
       if (outcome === "BLOCKED") throw new JobBlockedError("discovery_queries_unusable", "검색어를 짧은 개념어로 수정하세요.");
       return {
         result: {
           collected: result.collected,
+          fieldSignalsCollected: result.fieldSignalsCollected,
           keptExisting: result.keptExisting,
           queries: result.queries,
           diagnostics: result.diagnostics,
+          fieldSignalDiagnostics: result.fieldSignalDiagnostics,
         },
         resultRef: { view: "DISCOVER" },
       };

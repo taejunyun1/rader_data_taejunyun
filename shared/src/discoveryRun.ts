@@ -3,6 +3,7 @@ import type {
   DiscoveryLane,
   DiscoveryQuerySource,
 } from "./discovery";
+import type { DiscoveryFieldSignalRunDiagnostics } from "./fieldSignals";
 
 export type DiscoveryProviderName = "openalex" | "arxiv" | "rss";
 export type DiscoveryQueryPlanStatus = "READY" | "UNSUPPORTED";
@@ -53,9 +54,11 @@ export interface DiscoveryRunDiagnostics {
 
 export interface DiscoveryRunResult {
   collected: number;
+  fieldSignalsCollected: number;
   keptExisting: number;
   queries: string[];
   diagnostics: DiscoveryRunDiagnostics;
+  fieldSignalDiagnostics: DiscoveryFieldSignalRunDiagnostics;
 }
 
 function emptyProviderStats(): DiscoveryProviderStats {

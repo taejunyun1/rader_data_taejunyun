@@ -26,6 +26,7 @@ import { createEmptyDiscoveryDiagnostics } from "@radar/shared/discoveryRun";
 import { loadDiscoveryProfile } from "./profile";
 import { buildDiscoveryQueryPlan } from "./queryPlan";
 import { recordCandidateOutcome, recordProviderResult } from "./diagnostics";
+import { runDiscoveryFieldSignals } from "./fieldSignals";
 
 const MAX_CANDIDATES_PER_RUN = 8;
 const MAX_OPENALEX_CANDIDATES = 10;
@@ -465,10 +466,13 @@ export async function runDiscovery(env: Env, input: number | { divergence: numbe
   }
 
   if (maintenance.length || stmts.length) await env.DB.batch([...maintenance, ...stmts]);
+  const fieldSignals = await runDiscoveryFieldSignals(env, profile);
   return {
     collected: collection.pending.length,
+    fieldSignalsCollected: fieldSignals.collected,
     keptExisting: existingRows.filter((row) => row.status === "KEPT" || row.status === "WATCHED" || row.status === "CANDIDATE").length,
     queries: collection.queries,
     diagnostics: collection.diagnostics,
+    fieldSignalDiagnostics: fieldSignals.diagnostics,
   };
 }
