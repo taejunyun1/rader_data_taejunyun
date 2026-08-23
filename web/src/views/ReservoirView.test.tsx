@@ -3,13 +3,34 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import ReservoirView from "./ReservoirView";
 
-const sourceDetail = { source: { id: "source-1", title: "자료 A", authors: "저자", kind: "PAPER_ACADEMIC", reliability: "PRIMARY", origin: "upload", year: 2025, canonicalUrl: "https://example.com/paper", provenanceClass: "SOURCE", createdAt: "2026-08-21", markedForNextResearch: 1 }, analysis: { summary: "시스템이 정리한 내용", keywords: ["사진"], questions: ["어떻게 읽을까"], important_fragments: ["원문 문장"] }, deepAnalysis: null, deepAnalysisHistory: [], keywords: [], questions: [], fragments: [], versions: [], signals: [] };
+const sourceDetail = {
+  source: { id: "source-1", title: "자료 A", authors: "저자", kind: "PAPER_ACADEMIC", reliability: "PRIMARY", origin: "upload", year: 2025, canonicalUrl: "https://example.com/paper" as string | null, provenanceClass: "SOURCE", createdAt: "2026-08-21", markedForNextResearch: 1 },
+  acquisition: { textScope: "FULLTEXT" as const, extractionMethod: "HTML_STATIC", qualityStatus: "READY", charCount: 2_400, acquisitionLabel: "원문 수집 완료", canDeepAnalyze: true, originalTextUrl: "/api/reservoir/source-1/original-text" as string | null },
+  analysis: { summary: "시스템이 정리한 내용", keywords: ["사진"], questions: ["어떻게 읽을까"], important_fragments: ["원문 문장"] },
+  deepAnalysis: null,
+  deepAnalysisHistory: [],
+  keywords: [],
+  questions: [],
+  fragments: [],
+  versions: [],
+  signals: [],
+};
 
 let deepAnalysisResult: { status: number; body: Record<string, unknown> };
+type TestSourceDetail = Omit<typeof sourceDetail, "source" | "acquisition"> & {
+  source: Omit<typeof sourceDetail.source, "canonicalUrl"> & { canonicalUrl: string | null };
+  acquisition: Omit<typeof sourceDetail.acquisition, "textScope" | "originalTextUrl"> & {
+    textScope: "FULLTEXT" | "PARTIAL" | "METADATA_ONLY" | "EMPTY" | "UNKNOWN";
+    originalTextUrl: string | null;
+  };
+};
+
+let currentSourceDetail: TestSourceDetail;
 
 beforeEach(() => {
   let requestedWatching = false;
   deepAnalysisResult = { status: 202, body: { job: { id: "deep-job" }, reused: false } };
+  currentSourceDetail = sourceDetail;
   vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url === "/api/reservoir" || url.startsWith("/api/reservoir?")) {
@@ -18,7 +39,7 @@ beforeEach(() => {
       return Promise.resolve(new Response(JSON.stringify({ items: [{ id: "source-1", title: "자료 A", kind: "PAPER_ACADEMIC", reliability: "PRIMARY", status: "indexed", origin: "upload", year: 2025, canonicalUrl: "https://example.com/paper", createdAt: "2026-08-21", topics: "[\"사진\"]", keywordCount: 1, signalCount: 0, markedForNextResearch: 1, decisionStatus }] })));
     }
     if (url === "/api/reservoir/topics") return Promise.resolve(new Response(JSON.stringify({ topics: [] })));
-    if (url === "/api/reservoir/source-1") return Promise.resolve(new Response(JSON.stringify(requestedWatching ? { ...sourceDetail, source: { ...sourceDetail.source, decisionStatus: "watch" } } : sourceDetail)));
+    if (url === "/api/reservoir/source-1") return Promise.resolve(new Response(JSON.stringify(requestedWatching ? { ...currentSourceDetail, source: { ...currentSourceDetail.source, decisionStatus: "watch" } } : currentSourceDetail)));
     if (url === "/api/reservoir/source-1/deep-analysis" && init?.method === "POST") {
       return Promise.resolve(new Response(JSON.stringify(deepAnalysisResult.body), { status: deepAnalysisResult.status }));
     }
@@ -82,6 +103,46 @@ describe("ReservoirView", () => {
 
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/inbox/retry/source-1?analyze=1", { method: "POST" }));
     expect(fetch).not.toHaveBeenCalledWith("/api/inbox/retry/source-1?fetch=1", { method: "POST" });
+  });
+
+  it("refetches the canonical source without reanalyzing the current version", async () => {
+    const onJobCreated = vi.fn().mockResolvedValue(undefined);
+    render(<ReservoirView onJobCreated={onJobCreated} />);
+    await userEvent.click(await screen.findByRole("option", { name: /자료 A/ }));
+    await userEvent.click(screen.getByRole("button", { name: "다시 가져오기" }));
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/inbox/retry/source-1?fetch=1", { method: "POST" }));
+    expect(fetch).not.toHaveBeenCalledWith("/api/inbox/retry/source-1?analyze=1", { method: "POST" });
+    expect(onJobCreated).toHaveBeenCalledOnce();
+  });
+
+  it("disables refetch when the source has no canonical URL", async () => {
+    currentSourceDetail = { ...sourceDetail, source: { ...sourceDetail.source, canonicalUrl: null } };
+    render(<ReservoirView />);
+    await userEvent.click(await screen.findByRole("option", { name: /자료 A/ }));
+
+    expect(screen.getByRole("button", { name: "다시 가져오기" })).toBeDisabled();
+  });
+
+  it("preserves the acquisition deep-analysis block before a paid request", async () => {
+    currentSourceDetail = {
+      ...sourceDetail,
+      acquisition: {
+        ...sourceDetail.acquisition,
+        textScope: "METADATA_ONLY",
+        qualityStatus: "REVIEW",
+        charCount: 92,
+        acquisitionLabel: "메타데이터만 저장됨",
+        canDeepAnalyze: false,
+        originalTextUrl: null,
+      },
+    };
+    render(<ReservoirView />);
+    await userEvent.click(await screen.findByRole("option", { name: /자료 A/ }));
+
+    expect(screen.getByRole("button", { name: "원문 수집 필요" })).toBeDisabled();
+    expect(screen.getByText(/METADATA_ONLY.*REVIEW.*92자/)).toBeInTheDocument();
+    expect(fetch).not.toHaveBeenCalledWith("/api/reservoir/source-1/deep-analysis", expect.anything());
   });
 
   it("replaces decision buttons with the current status badge", async () => {

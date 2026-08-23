@@ -24,6 +24,11 @@ export default function App() {
     if (result.view === "RESERVOIR") setFocus({ reservoirSourceId: result.sourceId });
   }
 
+  const openReservoirSource = useCallback((sourceId: string) => {
+    setFocus({ reservoirSourceId: sourceId });
+    setView("RESERVOIR");
+  }, []);
+
   const consumeFocus = useCallback((key: "distillSessionId" | "radarPeriod" | "reservoirSourceId") => {
     setFocus((current) => ({ ...current, [key]: undefined }));
   }, []);
@@ -41,7 +46,7 @@ export default function App() {
       {view === "INBOX" && <InboxView />}
       {view === "DISTILL" && <DistillView onJobCreated={refresh} focusSessionId={focus.distillSessionId} onFocusConsumed={() => consumeFocus("distillSessionId")} />}
       {view === "RESERVOIR" && <ReservoirView onJobCreated={refresh} focusSourceId={focus.reservoirSourceId} onFocusConsumed={() => consumeFocus("reservoirSourceId")} />}
-      {view === "DISCOVER" && <DiscoverView onNavigate={setView} jobs={jobs} onJobCreated={refresh} />}
+      {view === "DISCOVER" && <DiscoverView onNavigate={setView} onOpenReservoir={openReservoirSource} jobs={jobs} onJobCreated={refresh} />}
       {view === "USAGE" && <UsageView />}
       {view === "SETTINGS" && <SettingsView />}
     </AppShell>

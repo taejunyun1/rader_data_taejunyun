@@ -47,4 +47,19 @@ describe("JobCenter", () => {
     await userEvent.click(screen.getByRole("button", { name: "다시 실행" }));
     expect(onRetry).toHaveBeenCalledWith("job-1");
   });
+
+  it("opens an acquisition result by source id without an analysis id", async () => {
+    const onResult = vi.fn();
+    const resultRef = { view: "RESERVOIR", sourceId: "source-1", acquisition: true } as const;
+    render(<JobCenter
+      jobs={[job({ kind: "SOURCE_ACQUISITION", status: "SUCCEEDED", resultRef })]}
+      onDismiss={vi.fn()}
+      onRetry={vi.fn()}
+      onResult={onResult}
+    />);
+
+    expect(screen.getByText("원문 수집 · 완료")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "결과 보기" }));
+    expect(onResult).toHaveBeenCalledWith(resultRef);
+  });
 });

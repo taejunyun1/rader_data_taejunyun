@@ -7,7 +7,8 @@ import DiscoveryRunSummary from "../components/discovery/DiscoveryRunSummary";
 import FieldSignalRunSummary from "../components/discovery/FieldSignalRunSummary";
 import DiscoverView from "./DiscoverView";
 
-const candidate = { id: "candidate-1", openalexId: "https://openalex.org/W1", title: "자료 후보", authors: "저자", year: 2026, relevanceScore: 0.82, status: "CANDIDATE", queryUsed: "사진 연구", provider: "openalex", externalUrl: "https://doi.org/10.0000/example" };
+const candidate = { id: "candidate-1", openalexId: "https://openalex.org/W1", title: "자료 후보", authors: "저자", year: 2026, relevanceScore: 0.82, status: "CANDIDATE", queryUsed: "사진 연구", provider: "openalex", externalUrl: "https://doi.org/10.0000/example", sourceId: null as string | null };
+let currentCandidate = candidate;
 function acquisitionJob(id: string, status: ResearchJobStatus): ResearchJob {
   return {
     id,
@@ -53,6 +54,7 @@ const fieldSignal = {
 
 beforeEach(() => {
   let fieldSignalStatus = "NEW";
+  currentCandidate = candidate;
   vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url === "/api/discover/candidates/candidate-1/keep" && init?.method === "POST") return Promise.resolve(new Response(JSON.stringify({ ok: true, status: "KEPT", sourceId: "source-1", jobId: "job-acquisition-1" })));
@@ -74,7 +76,7 @@ beforeEach(() => {
       fieldSignalStatus = "NEW";
       return Promise.resolve(new Response(JSON.stringify({ ok: true, status: "NEW" })));
     }
-    if (url.startsWith("/api/discover/candidates")) return Promise.resolve(new Response(JSON.stringify({ items: [candidate] })));
+    if (url.startsWith("/api/discover/candidates")) return Promise.resolve(new Response(JSON.stringify({ items: [currentCandidate] })));
     if (url === "/api/discover/queries") return Promise.resolve(new Response(JSON.stringify({ queries: [] })));
     if (url === "/api/discover/feeds") return Promise.resolve(new Response(JSON.stringify({ feeds: [] })));
     if (url === "/api/settings/homepage") return Promise.resolve(new Response(JSON.stringify({ projects: [] })));
@@ -158,6 +160,22 @@ describe("DiscoverView", () => {
 
     finishJobRefresh();
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).startsWith("/api/discover/candidates?"))).toBe(true));
+  });
+
+  it("opens a kept candidate with a source id in Reservoir while keeping its external link", async () => {
+    currentCandidate = { ...candidate, status: "KEPT", sourceId: "source-1" };
+    const onNavigate = vi.fn();
+    const onOpenReservoir = vi.fn();
+    render(<DiscoverView onNavigate={onNavigate} onOpenReservoir={onOpenReservoir} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "보관됨" }));
+    const keptCandidate = await screen.findByRole("option", { name: /자료 후보/ });
+    expect(screen.getAllByRole("link", { name: /서지·접근 정보/ })[0]).toHaveAttribute("href", "https://doi.org/10.0000/example");
+    await userEvent.click(keptCandidate);
+
+    expect(onOpenReservoir).toHaveBeenCalledWith("source-1");
+    expect(onNavigate).not.toHaveBeenCalled();
+    expect(screen.queryByText("시스템 해석")).not.toBeInTheDocument();
   });
 
   it("opens diagnostics automatically when the run collected zero candidates", () => {

@@ -110,6 +110,15 @@ function deepAnalysisBlockReason(block: DeepAnalysisBlock): string {
   return `본문이 ${block.charCount.toLocaleString("ko-KR")}자로 짧아 심층 정리를 시작할 수 없습니다. 1,000자 이상의 원문이 필요합니다.`;
 }
 
+function acquisitionBlockReason(acquisition: SourceAcquisitionView): string {
+  const status = `원문 상태 ${acquisition.textScope} · 품질 ${acquisition.qualityStatus} · ${acquisition.charCount.toLocaleString("ko-KR")}자`;
+  if (acquisition.textScope === "METADATA_ONLY") return `${status} — 메타데이터만 저장되어 심층 정리를 시작할 수 없습니다.`;
+  if (acquisition.textScope === "PARTIAL") return `${status} — 본문이 일부만 수집되어 심층 정리를 시작할 수 없습니다.`;
+  if (acquisition.textScope === "EMPTY" || acquisition.textScope === "UNKNOWN") return `${status} — 분석할 원문이 없어 심층 정리를 시작할 수 없습니다.`;
+  if (acquisition.qualityStatus !== "READY") return `${status} — 원문 품질 확인이 필요해 심층 정리를 시작할 수 없습니다.`;
+  return `${status} — 1,000자 이상의 정제 원문이 필요합니다.`;
+}
+
 function toIndexItem(item: ReservoirItem): SourceIndexItem {
   const status = decisionLabel(item.decisionStatus);
   const nextResearchTag = isMarkedForNextResearch(item.markedForNextResearch) ? "다음 리서치" : null;
@@ -255,8 +264,23 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
     finally { setActionPending(false); }
   }
 
+  async function refetch() {
+    if (!detail || typeof detail.source.canonicalUrl !== "string" || !detail.source.canonicalUrl.trim()) return;
+    setActionPending(true);
+    setMsg("원문 수집을 요청하는 중입니다.");
+    try {
+      const response = await fetch(`/api/inbox/retry/${String(detail.source.id)}?fetch=1`, { method: "POST" });
+      const data = await response.json() as { reused?: boolean; error?: string };
+      if (!response.ok) throw new Error(data.error ?? "원문 수집을 시작하지 못했습니다.");
+      await onJobCreated?.();
+      setMsg(data.reused ? "이미 진행 중인 원문 수집을 계속합니다." : "원문 수집을 시작했습니다. 작업센터에서 진행 상태를 확인하세요.");
+    } catch (error) {
+      setMsg(error instanceof Error ? error.message : "원문 수집을 시작하지 못했습니다.");
+    } finally { setActionPending(false); }
+  }
+
   async function runDeepAnalysis() {
-    if (!detail) return;
+    if (!detail || detail.acquisition?.canDeepAnalyze === false) return;
     setDeepPending(true);
     setMsg("심층 정리를 시작했습니다. 완료되면 상단 작업센터에서 결과를 확인할 수 있습니다.");
     try {
@@ -287,7 +311,16 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
     ? searchHits.map((hit) => ({ id: hit.sourceId, title: hit.title, meta: hit.matched, tags: hit.snippet ? [hit.snippet] : [], access: deriveSourceAccess({ href: null }) }))
     : items.map(toIndexItem), [items, searchHits]);
   const document = detail ? toReadingDocument(detail) : null;
-  const deepBlockReason = deepBlock ? deepAnalysisBlockReason(deepBlock) : null;
+  const acquisitionDeepBlocked = detail?.acquisition?.canDeepAnalyze === false;
+  const deepBlockReason = acquisitionDeepBlocked && detail?.acquisition
+    ? acquisitionBlockReason(detail.acquisition)
+    : deepBlock
+      ? deepAnalysisBlockReason(deepBlock)
+      : null;
+  const canonicalUrl = typeof detail?.source.canonicalUrl === "string" && detail.source.canonicalUrl.trim()
+    ? detail.source.canonicalUrl
+    : null;
+  const deepDisabled = acquisitionDeepBlocked || Boolean(deepBlock);
 
   return (
     <div className="view-stack">
@@ -306,9 +339,9 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
       {msg && <p className="reservoir-message" role="status">{msg}</p>}
       {listError ? <StatusMessage kind="error" title={listError} action={<button className="ui-button-secondary" onClick={() => void load()}>다시 시도</button>} /> : <SplitWorkspace
         index={<SourceIndex title="저장소 자료" items={indexItems} selectedId={selectedId} onSelect={(id) => void openDetail(id)} />}
-      reading={detailError ? <StatusMessage kind="error" title={detailError} action={<button className="ui-button-secondary" onClick={() => selectedId && void openDetail(selectedId)}>다시 시도</button>} /> : document ? <><div className="deep-analysis-controls" aria-label="심층 정리 실행"><label htmlFor="deep-analysis-profile">심층 정리 품질</label><select id="deep-analysis-profile" value={deepProfile} onChange={(event) => setDeepProfile(event.target.value as "precision" | "maximum")} disabled={deepPending || Boolean(deepBlock)}><option value="precision">정밀 · 긴 본문 구조화</option><option value="maximum">최고 정밀 · 논거와 연결 검토</option></select><button type="button" className="ui-button" onClick={() => void runDeepAnalysis()} disabled={deepPending || Boolean(deepBlock)}>{deepBlock ? "원문 수집 필요" : deepPending ? "심층 정리 중…" : "심층 정리하기"}</button></div>{deepBlockReason && <p className="deep-analysis-blocked" role="status">{deepBlockReason}</p>}<ReadingPane document={document} deepAnalysis={detail?.deepAnalysis} deepAnalysisHistory={detail?.deepAnalysisHistory} onOpenDeepHistory={(id) => void openDeepHistory(id)} /></> : <StatusMessage kind="empty" title="읽을 자료를 선택하세요" description="왼쪽 목록에서 자료를 고르면 원문과 분석 내용을 함께 읽을 수 있습니다." />}
+      reading={detailError ? <StatusMessage kind="error" title={detailError} action={<button className="ui-button-secondary" onClick={() => selectedId && void openDetail(selectedId)}>다시 시도</button>} /> : document ? <><div className="deep-analysis-controls" aria-label="심층 정리 실행"><label htmlFor="deep-analysis-profile">심층 정리 품질</label><select id="deep-analysis-profile" value={deepProfile} onChange={(event) => setDeepProfile(event.target.value as "precision" | "maximum")} disabled={deepPending || deepDisabled}><option value="precision">정밀 · 긴 본문 구조화</option><option value="maximum">최고 정밀 · 논거와 연결 검토</option></select><button type="button" className="ui-button" onClick={() => void runDeepAnalysis()} disabled={deepPending || deepDisabled}>{deepDisabled ? "원문 수집 필요" : deepPending ? "심층 정리 중…" : "심층 정리하기"}</button></div>{deepBlockReason && <p className="deep-analysis-blocked" role="status">{deepBlockReason}</p>}<ReadingPane document={document} deepAnalysis={detail?.deepAnalysis} deepAnalysisHistory={detail?.deepAnalysisHistory} onOpenDeepHistory={(id) => void openDeepHistory(id)} /></> : <StatusMessage kind="empty" title="읽을 자료를 선택하세요" description="왼쪽 목록에서 자료를 고르면 원문과 분석 내용을 함께 읽을 수 있습니다." />}
       />}
-      {document && <DecisionBottomSheet document={document} decisionStatus={detail?.source.decisionStatus as DecisionAction["id"] | null} open={decisionOpen} pending={actionPending} pendingAction={pendingAction} error={decisionError} onClose={() => setDecisionOpen(false)} onAction={(action) => void signal(action)} secondaryAction={{ label: "다시 분석하기", onClick: reanalyze }}><div className="source-detail-extra"><h3>자료 기록</h3><p>{detail?.versions.length ?? 0}개 버전 · {detail?.signals.length ?? 0}개 판단 기록</p></div></DecisionBottomSheet>}
+      {document && <DecisionBottomSheet document={document} decisionStatus={detail?.source.decisionStatus as DecisionAction["id"] | null} open={decisionOpen} pending={actionPending} pendingAction={pendingAction} error={decisionError} onClose={() => setDecisionOpen(false)} onAction={(action) => void signal(action)} secondaryAction={{ label: "다시 분석하기", onClick: reanalyze }}><div className="source-detail-extra"><div className="source-detail-extra__heading"><h3>자료 기록</h3><button className="ui-button-secondary" type="button" disabled={actionPending || !canonicalUrl} onClick={() => void refetch()}>다시 가져오기</button></div><p>{detail?.versions.length ?? 0}개 버전 · {detail?.signals.length ?? 0}개 판단 기록</p>{!canonicalUrl && <p>원문 주소가 없어 다시 가져올 수 없습니다.</p>}</div></DecisionBottomSheet>}
       {searchHits && <p className="table-note">검색 결과 {searchHits.length}개 · 검색 결과를 선택하면 같은 읽기 화면에서 확인합니다.</p>}
       {detail && <p className="table-note">마지막 확인: {formatDateKo(String(detail.source.createdAt ?? ""))}</p>}
     </div>

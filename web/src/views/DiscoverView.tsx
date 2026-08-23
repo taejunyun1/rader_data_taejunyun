@@ -38,6 +38,7 @@ interface Candidate {
   accessStatus?: "FREE_FULLTEXT" | "PDF" | "INSTITUTION" | "PAYWALLED" | "UNKNOWN" | null;
   discoveryLane?: "ORIGINAL" | "COUNTER";
   querySource?: string;
+  sourceId?: string | null;
 }
 
 interface HomepageProject {
@@ -136,10 +137,12 @@ function toReadingDocument(candidate: Candidate): ReadingDocument {
 
 export default function DiscoverView({
   onNavigate,
+  onOpenReservoir,
   jobs = [],
   onJobCreated,
 }: {
   onNavigate: (view: View) => void;
+  onOpenReservoir?: (sourceId: string) => void;
   jobs?: ResearchJob[];
   onJobCreated?: () => Promise<void>;
 }) {
@@ -179,6 +182,14 @@ export default function DiscoverView({
   const [fieldSignalRunSummary, setFieldSignalRunSummary] = useState<DiscoveryFieldSignalRunDiagnostics | null>(null);
   const [fieldSignalsCollected, setFieldSignalsCollected] = useState(0);
   const [keptAcquisitionJobId, setKeptAcquisitionJobId] = useState<string | null>(null);
+
+  const openReservoir = useCallback((sourceId: string) => {
+    if (onOpenReservoir) {
+      onOpenReservoir(sourceId);
+      return;
+    }
+    onNavigate("RESERVOIR");
+  }, [onNavigate, onOpenReservoir]);
 
   const load = useCallback(async () => {
     setListError("");
@@ -223,9 +234,9 @@ export default function DiscoverView({
     if (keptAcquisition?.status === "SUCCEEDED" && resultRef?.view === "RESERVOIR" && "acquisition" in resultRef && resultRef.acquisition) {
       setKeptAcquisitionJobId(null);
       setMsg("원문 수집이 완료되었습니다. 저장소에서 확인하세요.");
-      onNavigate("RESERVOIR");
+      openReservoir(resultRef.sourceId);
     }
-  }, [jobs, keptAcquisitionJobId, onNavigate]);
+  }, [jobs, keptAcquisitionJobId, openReservoir]);
 
   useEffect(() => {
     const latest = jobs.find((job) => job.kind === "DISCOVERY_RUN");
@@ -334,7 +345,7 @@ export default function DiscoverView({
         });
         setMsg("발전시키기로 기록했습니다. 저장소에서 이어 읽습니다.");
         setDecisionOpen(false);
-        onNavigate("RESERVOIR");
+        openReservoir(data.sourceId);
       } else {
         setMsg(action === "keep"
           ? data.acquisitionStatus === "LINK_ONLY"
@@ -369,8 +380,14 @@ export default function DiscoverView({
   }
 
   function selectCandidate(id: string) {
+    const candidate = candidates.find((item) => item.id === id);
     setSelectedId(id);
     setDecisionError("");
+    if (candidate?.status === "KEPT" && candidate.sourceId) {
+      setDecisionOpen(false);
+      openReservoir(candidate.sourceId);
+      return;
+    }
     setDecisionOpen(true);
   }
 
@@ -405,7 +422,7 @@ export default function DiscoverView({
   }
 
   const selected = useMemo(() => candidates.find((candidate) => candidate.id === selectedId) ?? null, [candidates, selectedId]);
-  const document = selected ? toReadingDocument(selected) : null;
+  const document = selected && !(selected.status === "KEPT" && selected.sourceId) ? toReadingDocument(selected) : null;
 
   return (
     <div className="view-stack">
