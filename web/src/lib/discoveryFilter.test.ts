@@ -5,6 +5,7 @@ import {
   cleanDiscoverySourceText,
   isUsableDiscoveryQuery,
   normalizeDiscoveryTitle,
+  resolveDiscoveryAccessForExisting,
   selectDiscoveryCandidates,
 } from "@radar/shared/discovery";
 
@@ -123,6 +124,10 @@ describe("discovery access classification", () => {
   it("marks arXiv and Hyperallergic links as readable", () => {
     expect(classifyDiscoveryAccess("arxiv", "https://arxiv.org/abs/2102.09000")).toBe("PDF");
     expect(classifyDiscoveryAccess("rss", "https://hyperallergic.com/example/")).toBe("FREE_FULLTEXT");
+  });
+
+  it("preserves stored OpenAlex free-fulltext evidence during re-evaluation", () => {
+    expect(resolveDiscoveryAccessForExisting("FREE_FULLTEXT", "openalex", "https://repository.example/item")).toBe("FREE_FULLTEXT");
   });
 });
 

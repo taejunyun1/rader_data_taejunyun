@@ -393,6 +393,15 @@ export function classifyDiscoveryAccess(provider: string | null | undefined, hre
   return "UNKNOWN";
 }
 
+export function resolveDiscoveryAccessForExisting(
+  stored: DiscoveryAccessStatus | null | undefined,
+  provider: string | null | undefined,
+  href: string | null | undefined,
+): DiscoveryAccessStatus {
+  if (stored === "PDF" || stored === "FREE_FULLTEXT") return stored;
+  return classifyDiscoveryAccess(provider, href);
+}
+
 export interface SelectableDiscoveryCandidate {
   externalId: string;
   provider: string;
