@@ -43,7 +43,7 @@ Research Radar는 사진작가 윤태준의 개인 연구 편집 도구다. 챗�
 - `worker/`: Hono API, cron, D1/R2/Workers AI/AI Gateway
 - `web/`: Vite + React SPA
 - `shared/`: Worker와 Web의 공통 타입
-- `worker/migrations/0001~0010`: 초기 스키마, Queue 검증, V1 기능, topic, snapshot synthesis, 수신 자료 버전·정규화 검수
+- `worker/migrations/0001~0014`: 초기 스키마, Queue 검증, V1 기능, topic, snapshot synthesis, 수신 자료 버전·정규화 검수, inbox exclusions, distill counter 옵션, research jobs/discovery lanes, `discovery_candidates.source_id` + `discovery_field_signals`
 - 배포 대상: `radar.taejunyun.com`
 - 패키지 매니저: `pnpm@11.21.0`
 

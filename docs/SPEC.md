@@ -69,7 +69,7 @@ OpenAlex API — 학술 Discovery 기본 소스 + Reading Queue 존재 검증
 
 ## 3. V0 스코프 (재확인)
 
-**포함**: Inbox / Reservoir / Reservoir 심층 정리 / Radar / Distill / Reading Queue / Research Gap / Critic / Counter(기본 켜짐 토글) / 기본 검색(D1 텍스트·metadata) / 사용자 선택 기록(user_signals) / Settings(5 파라미터 + presets) / Discovery(OpenAlex, 강한 상한) / Export·Backup
+**포함**: Inbox / Reservoir / Reservoir 심층 정리 / Radar / Distill / Reading Queue / Research Gap / Critic / Counter(기본 켜짐 토글) / 기본 검색(D1 텍스트·metadata) / 사용자 선택 기록(user_signals) / Settings(5 파라미터 + presets) / Discovery(OpenAlex + arXiv + 검증된 읽을거리 RSS + 별도 현장 신호 RSS, 강한 상한) / Export·Backup
 
 **제외** (v0.1 그대로): 일반 챗봇 / Multi-agent UI / Knowledge Graph 시각화 / 다중 사용자 / Admin Panel / Fine-tuning / 복잡한 권한관리 / 과도한 대시보드 / 불필요한 외부 SaaS / **Google Drive 연동** / **로컬 Obsidian 싱크 CLI** / **시맨틱 검색(Vectorize)** — 검색이 실제 병목일 때 재검토
 
@@ -78,7 +78,7 @@ OpenAlex API — 학술 Discovery 기본 소스 + Reading Queue 존재 검증
 1. Input Sources 중 Google Drive 제외(D4), Local File/Folder는 브라우저 업로드로 해석(D3)
 2. PDF 텍스트 추출 경로를 클라이언트로 확정(D5) — 스펙의 "Text/metadata extraction" 단계 구현 방식 확정
 3. 홈페이지 ingestion을 "소스 데이터 직접 import"로 확정(D2) — authoritative personal source 원칙 유지
-4. "System Discovery"의 소스를 OpenAlex로 확정(D6)
+4. "System Discovery"의 소스를 OpenAlex + arXiv + 검증된 읽을거리 RSS + 별도 현장 신호 RSS로 확정(D6)
 5. 비용 정책의 "월 AI 사용량 guardrail"을 $10로 구체화(D10)
 
 ### Discovery 읽을거리·현장 신호 분리 (2026-08-23)
