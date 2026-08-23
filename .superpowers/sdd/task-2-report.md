@@ -128,7 +128,7 @@ Result:
 - `.superpowers/sdd/task-2-report.md`
 
 ### Commit
-- Pending at report write time. This follow-up should be committed with prefix `260824:`.
+- `9a38d96` (`260824: fix Task 2 important review regression`)
 
 ### Exact Test Outcomes
 - Red verification before the fixture change:
