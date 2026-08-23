@@ -164,3 +164,46 @@ Test Files  1 passed (1)
 Tests       11 passed (11)
 tsc --noEmit  -> exit 0
 ```
+
+## Timeout Fix Follow-up (2026-08-23)
+
+Addressed the remaining Task 3 timeout finding against head `0a7832b`.
+
+### Problem
+
+- The 20-second `AbortController` only covered the content fetch.
+- Cloudflare DNS-over-HTTPS lookups inside `createDnsResolver()` ran without the acquisition signal, so a stalled DNS lookup could outlive the intended acquisition boundary.
+- Because DNS failures were normalized into hostname-validation outcomes, an abort risked surfacing as `REDIRECT_BLOCKED` instead of deterministic `FETCH_TIMEOUT`.
+
+### Fix
+
+- Threaded the acquisition `AbortSignal` through:
+  - `fetchWithRedirects()`
+  - `validateRemoteUrl()`
+  - `hostnameResolvesPublicly()`
+  - `resolveDnsSafely()`
+  - `createDnsResolver()` and each Cloudflare DoH fetch
+- Applied the same signal on every hostname validation, including redirect hops.
+- Preserved abort semantics by rethrowing abort-shaped DNS failures and converting them at the top level into `FETCH_TIMEOUT`.
+
+### Regression Coverage
+
+- Added a focused test proving a DNS resolver that only settles on abort is cut off by the 20-second acquisition timer.
+- The test also confirms no content fetch is attempted before the timeout resolves to `FETCH_TIMEOUT`.
+
+### Verification
+
+Ran after the fix:
+
+```bash
+pnpm --dir web exec vitest run src/lib/remoteAcquisition.test.ts
+pnpm --filter @radar/worker typecheck
+```
+
+Observed final result:
+
+```text
+Test Files  1 passed (1)
+Tests       12 passed (12)
+tsc --noEmit  -> exit 0
+```

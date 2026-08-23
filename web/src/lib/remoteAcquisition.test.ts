@@ -82,6 +82,42 @@ describe("static HTML extraction", () => {
 });
 
 describe("remote acquisition", () => {
+  it("converts DNS resolution timeout into FETCH_TIMEOUT within the 20-second acquisition boundary", async () => {
+    vi.useFakeTimers();
+    const { acquireRemoteSource } = await import("../../../worker/src/ingestion/acquireRemoteSource");
+    const env = makeAcquisitionEnv();
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const acquisitionPromise = acquireRemoteSource(
+      env,
+      { sourceId: "source-1", url: "https://slow.example/article", version: 2 },
+      {
+        resolveDns: async (_hostname, _recordType, signal?: AbortSignal) => new Promise<string[]>((_, reject) => {
+          signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("The operation was aborted.", "AbortError")),
+            { once: true },
+          );
+        }),
+      },
+    );
+    let settled = false;
+    const outcomePromise = acquisitionPromise.then(
+      () => "resolved",
+      (error: unknown) => error instanceof Error ? error.message : String(error),
+    ).finally(() => {
+      settled = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    await Promise.resolve();
+
+    expect(settled).toBe(true);
+    await expect(outcomePromise).resolves.toBe("FETCH_TIMEOUT");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("fetches HTML, stores the raw response, and returns extracted provenance", async () => {
     const { acquireRemoteSource } = await import("../../../worker/src/ingestion/acquireRemoteSource");
     const env = makeAcquisitionEnv();

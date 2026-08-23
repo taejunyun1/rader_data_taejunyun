@@ -25,7 +25,11 @@ export interface RemoteAcquisitionResult {
 }
 
 export type DnsRecordType = "A" | "AAAA";
-export type DnsResolver = (hostname: string, recordType: DnsRecordType) => Promise<string[]>;
+export type DnsResolver = (
+  hostname: string,
+  recordType: DnsRecordType,
+  signal: AbortSignal,
+) => Promise<string[]>;
 
 interface RemoteAcquisitionOptions {
   resolveDns?: DnsResolver;
@@ -88,7 +92,7 @@ export async function acquireRemoteSource(
     };
   } catch (error) {
     if (error instanceof RemoteAcquisitionError) throw error;
-    if (error instanceof Error && error.name === "AbortError") throw new RemoteAcquisitionError("FETCH_TIMEOUT");
+    if (isAbortError(error)) throw new RemoteAcquisitionError("FETCH_TIMEOUT");
     throw new RemoteAcquisitionError("HTTP_5XX");
   } finally {
     clearTimeout(timer);
@@ -100,7 +104,7 @@ async function fetchWithRedirects(
   signal: AbortSignal,
   resolveDns: DnsResolver,
 ): Promise<{ response: Response; finalUrl: string }> {
-  let currentUrl = await validateRemoteUrl(url, resolveDns);
+  let currentUrl = await validateRemoteUrl(url, resolveDns, signal);
 
   for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount++) {
     const response = await fetch(currentUrl, {
@@ -116,7 +120,7 @@ async function fetchWithRedirects(
       if (redirectCount === MAX_REDIRECTS) throw new RemoteAcquisitionError("REDIRECT_BLOCKED");
       const location = response.headers.get("location");
       if (!location) throw new RemoteAcquisitionError("REDIRECT_BLOCKED");
-      currentUrl = await validateRemoteUrl(new URL(location, currentUrl).toString(), resolveDns);
+      currentUrl = await validateRemoteUrl(new URL(location, currentUrl).toString(), resolveDns, signal);
       continue;
     }
 
@@ -130,7 +134,7 @@ async function fetchWithRedirects(
   throw new RemoteAcquisitionError("REDIRECT_BLOCKED");
 }
 
-async function validateRemoteUrl(url: string, resolveDns: DnsResolver): Promise<string> {
+async function validateRemoteUrl(url: string, resolveDns: DnsResolver, signal: AbortSignal): Promise<string> {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -146,7 +150,7 @@ async function validateRemoteUrl(url: string, resolveDns: DnsResolver): Promise<
     throw new RemoteAcquisitionError("REDIRECT_BLOCKED");
   }
 
-  if (!(await hostnameResolvesPublicly(parsed.hostname, resolveDns))) {
+  if (!(await hostnameResolvesPublicly(parsed.hostname, resolveDns, signal))) {
     throw new RemoteAcquisitionError("REDIRECT_BLOCKED");
   }
 
@@ -161,13 +165,17 @@ function isBlockedHostname(hostname: string): boolean {
   return address ? isBlockedIpAddress(address) : false;
 }
 
-async function hostnameResolvesPublicly(hostname: string, resolveDns: DnsResolver): Promise<boolean> {
+async function hostnameResolvesPublicly(
+  hostname: string,
+  resolveDns: DnsResolver,
+  signal: AbortSignal,
+): Promise<boolean> {
   const normalized = normalizeHostname(hostname);
   if (parseIpAddress(normalized)) return true;
 
   const results = await Promise.all([
-    resolveDnsSafely(resolveDns, normalized, "A"),
-    resolveDnsSafely(resolveDns, normalized, "AAAA"),
+    resolveDnsSafely(resolveDns, normalized, "A", signal),
+    resolveDnsSafely(resolveDns, normalized, "AAAA", signal),
   ]);
 
   if (results.some((result) => result.failed)) return false;
@@ -235,26 +243,29 @@ async function resolveDnsSafely(
   resolveDns: DnsResolver,
   hostname: string,
   recordType: DnsRecordType,
+  signal: AbortSignal,
 ): Promise<{ answers: string[]; failed: boolean }> {
   try {
-    const answers = await resolveDns(hostname, recordType);
+    const answers = await resolveDns(hostname, recordType, signal);
     return {
       answers: answers.filter(Boolean),
       failed: false,
     };
-  } catch {
+  } catch (error) {
+    if (isAbortError(error)) throw error;
     return { answers: [], failed: true };
   }
 }
 
 function createDnsResolver(): DnsResolver {
-  return async (hostname, recordType) => {
+  return async (hostname, recordType, signal) => {
     const response = await fetch(
       `${CLOUDFLARE_DOH_ENDPOINT}?name=${encodeURIComponent(hostname)}&type=${recordType}`,
       {
         headers: {
           Accept: "application/dns-json",
         },
+        signal,
       },
     );
     if (!response.ok) throw new Error("dns_lookup_failed");
@@ -376,6 +387,13 @@ function isIpv4MappedIpv6(address: Uint8Array): boolean {
   return address.slice(0, 10).every((octet) => octet === 0)
     && address[10] === 0xff
     && address[11] === 0xff;
+}
+
+function isAbortError(error: unknown): boolean {
+  return typeof error === "object"
+    && error !== null
+    && "name" in error
+    && error.name === "AbortError";
 }
 
 interface DnsJsonResponse {
