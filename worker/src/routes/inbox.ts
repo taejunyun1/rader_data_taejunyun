@@ -17,6 +17,7 @@ import { sha256Hex, uuid } from "../ingestion/ids";
 import { normalizeDoi, normalizeUrl, titleNorm } from "../ingestion/normalize";
 import { createSource } from "../ingestion/store";
 import { activateVersion, appendAcquisitionVersion, decideIncomingVersion, getActiveVersion, rejectVersion } from "../ingestion/versioning";
+import { enqueueResearchJob } from "../jobs/enqueue";
 
 const inbox = new Hono<{ Bindings: Env }>();
 
@@ -454,6 +455,15 @@ inbox.post("/retry/:sourceId", async (c) => {
     .first<{ id: string; canonical_url: string | null }>();
   if (!src) return c.json({ error: "not_found" }, 404);
   if (!src.canonical_url) return c.json({ error: "not_retryable" }, 400);
+
+  if (c.req.query("fetch") === "1") {
+    const requestedBy = c.req.header("CF-Access-Authenticated-User-Email") ?? "local";
+    const result = await enqueueResearchJob(c.env, {
+      kind: "SOURCE_ACQUISITION",
+      input: { sourceId, url: src.canonical_url },
+    }, requestedBy);
+    return c.json(result, 202);
+  }
 
   await setJobStatus(c.env.DB, sourceId, "received", null);
   try {

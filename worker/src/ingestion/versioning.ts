@@ -15,6 +15,7 @@ export interface ActiveVersion {
   version: number;
   r2_key: string | null;
   extracted_text: string | null;
+  char_count: number;
   normalized_text: string | null;
   normalization_status: string;
   normalization_report_json: string | null;
@@ -105,7 +106,7 @@ function shouldActivateAcquisitionVersion(input: {
 export async function getActiveVersion(db: D1Database, sourceId: string): Promise<ActiveVersion | null> {
   return db
     .prepare(
-      `SELECT v.id, v.source_id, v.version, v.r2_key, v.extracted_text, v.normalized_text,
+      `SELECT v.id, v.source_id, v.version, v.r2_key, v.extracted_text, v.char_count, v.normalized_text,
               v.normalization_status, v.normalization_report_json, v.version_origin,
               v.parent_version_id, v.review_status, v.created_at, v.text_scope,
               v.extraction_method, v.extraction_error, v.content_type, v.final_url, v.acquired_at

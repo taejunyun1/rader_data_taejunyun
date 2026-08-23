@@ -1,18 +1,78 @@
+import type { QualityStatus, TextScope } from "@radar/shared/ingestion";
 import { uuid } from "../ingestion/ids";
 import { callOpenAi } from "../lib/openai";
 import { chunkText, extractJson, deepChunkPrompt, deepSynthesisPrompt, keepVerbatimQuotes, type DeepAnalysisPayload, type DeepChunkResult, validateDeepPayload } from "./deepPrompt";
 import { modelTierForDeepStage, profileFor } from "./deepProfiles";
 
-export async function analyzeDeepSource(env: Env, sourceId: string, requestedProfile: unknown): Promise<{ analysisId: string; payload: DeepAnalysisPayload; model: string; costUsd: number }> {
+export interface DeepAnalysisReadinessInput {
+  textScope: TextScope;
+  qualityStatus: QualityStatus;
+  charCount: number;
+  normalizedText: string | null;
+}
+
+export type DeepAnalysisReadiness =
+  | { ok: true }
+  | {
+      ok: false;
+      error: "deep_analysis_text_not_ready";
+      textScope: TextScope;
+      qualityStatus: QualityStatus;
+      charCount: number;
+    };
+
+export type DeepAnalysisPayloadWithProvenance = Omit<DeepAnalysisPayload, "meta"> & {
+  meta: DeepAnalysisPayload["meta"] & {
+    textScope: TextScope;
+    versionId: string;
+  };
+};
+
+export function isDeepAnalysisReady(input: DeepAnalysisReadinessInput): DeepAnalysisReadiness {
+  if (
+    input.textScope === "FULLTEXT"
+    && input.qualityStatus === "READY"
+    && input.charCount >= 1_000
+    && Boolean(input.normalizedText?.trim())
+  ) {
+    return { ok: true };
+  }
+  return {
+    ok: false,
+    error: "deep_analysis_text_not_ready",
+    textScope: input.textScope,
+    qualityStatus: input.qualityStatus,
+    charCount: input.charCount,
+  };
+}
+
+export async function analyzeDeepSource(env: Env, sourceId: string, requestedProfile: unknown): Promise<{ analysisId: string; payload: DeepAnalysisPayloadWithProvenance; model: string; costUsd: number }> {
   const profile = profileFor(requestedProfile);
   const row = await env.DB.prepare(
-    `SELECT s.title, v.normalized_text, v.extracted_text
+    `SELECT s.title, s.quality_status, v.id AS version_id, v.text_scope, v.char_count,
+            v.normalized_text, v.extracted_text
      FROM sources s LEFT JOIN source_versions v ON v.id = s.active_version_id
      WHERE s.id = ?`
-  ).bind(sourceId).first<{ title: string; normalized_text: string | null; extracted_text: string | null }>();
+  ).bind(sourceId).first<{
+    title: string;
+    quality_status: QualityStatus;
+    version_id: string | null;
+    text_scope: TextScope | null;
+    char_count: number | null;
+    normalized_text: string | null;
+    extracted_text: string | null;
+  }>();
   if (!row) throw new Error("source_not_found");
-  const sourceText = (row.normalized_text ?? row.extracted_text ?? "").trim();
-  if (sourceText.length < 40) throw new Error("deep_analysis_text_missing");
+  const textScope = row.text_scope ?? "UNKNOWN";
+  const readiness = isDeepAnalysisReady({
+    textScope,
+    qualityStatus: row.quality_status,
+    charCount: Number(row.char_count ?? 0),
+    normalizedText: row.normalized_text,
+  });
+  if (!readiness.ok || !row.version_id) throw Object.assign(new Error("deep_analysis_text_not_ready"), readiness);
+  const sourceText = row.normalized_text!.trim();
+  const sourceCharCount = Number(row.char_count);
 
   const chunks = chunkText(sourceText, 24_000, Math.ceil(profile.maxChars / 24_000)).slice(0, 4);
   const chunkResults = await Promise.all(chunks.map(async (chunk, index) => {
@@ -31,6 +91,7 @@ export async function analyzeDeepSource(env: Env, sourceId: string, requestedPro
     return { parsed, costUsd: result.costUsd, model: result.model };
   }));
 
+  const analyzedCharCount = chunks.join("\n").length;
   const synthesis = await callOpenAi(env, {
     purpose: "deep_analysis",
     model: modelTierForDeepStage("synthesis"),
@@ -38,18 +99,27 @@ export async function analyzeDeepSource(env: Env, sourceId: string, requestedPro
     maxOutputTokens: 4200,
     messages: [
       { role: "system", content: "You are a precise long-form research editor. Output only valid JSON." },
-      { role: "user", content: deepSynthesisPrompt(chunkResults.map((item) => item.parsed), profile.id, sourceText.length, chunks.join("\n").length) },
+      { role: "user", content: deepSynthesisPrompt(chunkResults.map((item) => item.parsed), profile.id, sourceCharCount, analyzedCharCount) },
     ],
   });
-  const raw = validateDeepPayload(extractJson(synthesis.text), profile.id, sourceText.length, chunks.join("\n").length, chunks.length);
+  const raw = validateDeepPayload(extractJson(synthesis.text), profile.id, sourceCharCount, analyzedCharCount, chunks.length);
   if (!raw) throw new Error("deep_analysis_invalid_output");
-  const payload = keepVerbatimQuotes(raw, sourceText);
+  const verifiedPayload = keepVerbatimQuotes(raw, sourceText);
+  const payload: DeepAnalysisPayloadWithProvenance = {
+    ...verifiedPayload,
+    meta: {
+      ...verifiedPayload.meta,
+      sourceCharCount,
+      textScope,
+      versionId: row.version_id,
+    },
+  };
   const ts = new Date().toISOString();
   const analysisId = uuid();
   await env.DB.prepare(
     `INSERT INTO source_analysis (id, source_id, version_id, analysis_type, provenance, model, prompt_version, payload_json, cost_usd, created_at)
-     SELECT ?, ?, active_version_id, 'deep', 'INTERPRETATION', ?, 'deep-v1', ?, ?, ? FROM sources WHERE id = ?`
-  ).bind(analysisId, sourceId, synthesis.model, JSON.stringify(payload), chunkResults.reduce((sum, item) => sum + item.costUsd, 0) + synthesis.costUsd, ts, sourceId).run();
+     VALUES (?, ?, ?, 'deep', 'INTERPRETATION', ?, 'deep-v1', ?, ?, ?)`
+  ).bind(analysisId, sourceId, row.version_id, synthesis.model, JSON.stringify(payload), chunkResults.reduce((sum, item) => sum + item.costUsd, 0) + synthesis.costUsd, ts).run();
   return { analysisId, payload, model: synthesis.model, costUsd: chunkResults.reduce((sum, item) => sum + item.costUsd, 0) + synthesis.costUsd };
 }
 

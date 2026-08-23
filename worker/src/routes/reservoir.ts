@@ -1,5 +1,6 @@
 import { Hono } from "hono";
-import { analyzeDeepSource } from "../analysis/deepAnalyze";
+import { isDeepAnalysisReady } from "../analysis/deepAnalyze";
+import type { QualityStatus, TextScope } from "@radar/shared/ingestion";
 import { parseDeepProfile, DEEP_PROFILES } from "../analysis/deepProfiles";
 import { monthSpendUsd } from "../lib/openai";
 import { enqueueResearchJob } from "../jobs/enqueue";
@@ -133,6 +134,25 @@ reservoir.post("/:sourceId/deep-analysis", async (c) => {
   const sourceId = c.req.param("sourceId");
   const body: { profile?: unknown } = await c.req.json<{ profile?: unknown }>().catch(() => ({} as { profile?: unknown }));
   const profile = parseDeepProfile(body.profile);
+  const active = await c.env.DB.prepare(
+    `SELECT s.id AS source_id, s.quality_status, v.text_scope, v.char_count, v.normalized_text
+     FROM sources s LEFT JOIN source_versions v ON v.id = s.active_version_id
+     WHERE s.id = ?`
+  ).bind(sourceId).first<{
+    source_id: string;
+    quality_status: QualityStatus;
+    text_scope: TextScope | null;
+    char_count: number | null;
+    normalized_text: string | null;
+  }>();
+  if (!active) return c.json({ error: "source_not_found" }, 404);
+  const readiness = isDeepAnalysisReady({
+    textScope: active.text_scope ?? "UNKNOWN",
+    qualityStatus: active.quality_status,
+    charCount: Number(active.char_count ?? 0),
+    normalizedText: active.normalized_text,
+  });
+  if (!readiness.ok) return c.json(readiness, 422);
   const budget = parseFloat(c.env.MONTHLY_BUDGET_USD) || 10;
   if ((await monthSpendUsd(c.env)) >= budget) return c.json({ error: "monthly_budget_exhausted" }, 429);
   try {
@@ -141,7 +161,7 @@ reservoir.post("/:sourceId/deep-analysis", async (c) => {
     return c.json(result, 202);
   } catch (err) {
     const message = (err as Error).message.slice(0, 200);
-    const status = message === "source_not_found" ? 404 : message === "deep_analysis_text_missing" ? 422 : 500;
+    const status = message === "source_not_found" ? 404 : message === "deep_analysis_text_not_ready" || message === "deep_analysis_text_missing" ? 422 : 500;
     return c.json({ error: message }, status);
   }
 });

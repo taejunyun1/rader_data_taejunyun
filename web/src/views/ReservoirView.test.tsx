@@ -49,6 +49,15 @@ describe("ReservoirView", () => {
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/reservoir/source-1/deep-analysis", expect.objectContaining({ method: "POST", body: JSON.stringify({ profile: "maximum" }) })));
   });
 
+  it("reanalyzes the current version without starting source acquisition", async () => {
+    render(<ReservoirView />);
+    await userEvent.click(await screen.findByRole("option", { name: /자료 A/ }));
+    await userEvent.click(screen.getByRole("button", { name: "다시 분석하기" }));
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/inbox/retry/source-1?analyze=1", { method: "POST" }));
+    expect(fetch).not.toHaveBeenCalledWith("/api/inbox/retry/source-1?fetch=1", { method: "POST" });
+  });
+
   it("replaces decision buttons with the current status badge", async () => {
     render(<ReservoirView />);
     await userEvent.click(await screen.findByRole("button", { name: "관찰 중" }));
