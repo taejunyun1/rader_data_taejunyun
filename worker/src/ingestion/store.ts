@@ -1,5 +1,14 @@
 import type { Reliability, SourceKind } from "@radar/shared";
-import { deriveIngestMeta, normalizeIngestText, type IngestChannel, type InputFormat, type QualityStatus, type VersionOrigin } from "@radar/shared/ingestion";
+import {
+  deriveIngestMeta,
+  normalizeIngestText,
+  type ExtractionMethod,
+  type IngestChannel,
+  type InputFormat,
+  type QualityStatus,
+  type TextScope,
+  type VersionOrigin,
+} from "@radar/shared/ingestion";
 import { findDuplicate } from "./dedup";
 import { uuid, sha256Hex } from "./ids";
 import { titleNorm } from "./normalize";
@@ -21,6 +30,12 @@ export interface CreateSourceInput {
   ingestChannel?: IngestChannel;
   inputFormat?: InputFormat;
   versionOrigin?: VersionOrigin;
+  textScope?: TextScope;
+  extractionMethod?: ExtractionMethod;
+  extractionError?: string | null;
+  contentType?: string | null;
+  finalUrl?: string | null;
+  acquiredAt?: string | null;
 }
 
 export interface CreateSourceResult {
@@ -44,6 +59,12 @@ export const RELIABILITY_BY_KIND: Record<SourceKind, Reliability> = {
 };
 
 const nowIso = () => new Date().toISOString();
+
+function qualityStatusForTextScope(scope: TextScope, normalizedStatus: QualityStatus, meaningfulChars: number): QualityStatus {
+  if (scope === "EMPTY") return "EMPTY";
+  if (scope === "PARTIAL" || scope === "METADATA_ONLY") return meaningfulChars > 0 ? "REVIEW" : "EMPTY";
+  return normalizedStatus;
+}
 
 function sanitizeFilename(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 120);
@@ -92,11 +113,14 @@ export async function createSource(env: Env, input: CreateSourceInput): Promise<
   const previewKey = input.preview ? `previews/${id}/v1.jpg` : null;
   if (previewKey && input.preview) await env.ORIGINALS.put(previewKey, input.preview.data, { httpMetadata: { contentType: input.preview.contentType } });
 
-  const text = (input.extractedText ?? (typeof input.original === "string" ? input.original : "")).slice(0, 500_000);
+  const text = (input.extractedText ?? "").slice(0, 500_000);
   const derivedMeta = deriveIngestMeta(input.origin, input.filename, input.metadata);
   const ingestChannel = input.ingestChannel ?? derivedMeta.channel;
   const inputFormat = input.inputFormat ?? derivedMeta.format;
   const normalized = normalizeIngestText(text, inputFormat);
+  const textScope = input.textScope ?? (text ? "FULLTEXT" : "METADATA_ONLY");
+  const extractionMethod = input.extractionMethod ?? (text ? "MANUAL_TEXT" : "DISCOVERY_METADATA");
+  const qualityStatus = qualityStatusForTextScope(textScope, normalized.qualityStatus, normalized.report.meaningfulChars);
   const versionContentHash = await sha256Hex(text || input.original);
   const status = text ? "extracted" : "stored";
   const ts = nowIso();
@@ -129,7 +153,7 @@ export async function createSource(env: Env, input: CreateSourceInput): Promise<
         ingestChannel,
         inputFormat,
         versionId,
-        normalized.qualityStatus,
+        qualityStatus,
         ts,
         ts
       ),
@@ -137,10 +161,28 @@ export async function createSource(env: Env, input: CreateSourceInput): Promise<
       .prepare(
         `INSERT INTO source_versions
          (id, source_id, version, r2_key, extracted_text, char_count, content_hash, normalized_text,
-          normalization_status, normalization_report_json, version_origin, review_status, created_at)
-         VALUES (?, ?, 1, ?, ?, ?, ?, ?, 'READY', ?, ?, 'ACTIVE', ?)`
+          normalization_status, normalization_report_json, version_origin, review_status, created_at,
+          text_scope, extraction_method, extraction_error, content_type, final_url, acquired_at)
+         VALUES (?, ?, 1, ?, ?, ?, ?, ?, 'READY', ?, ?, 'ACTIVE', ?, ?, ?, ?, ?, ?, ?)`
       )
-      .bind(versionId, id, r2Key, text, text.length, versionContentHash, normalized.normalizedText, JSON.stringify(normalized.report), input.versionOrigin ?? "INITIAL_INGEST", ts),
+      .bind(
+        versionId,
+        id,
+        r2Key,
+        text,
+        text.length,
+        versionContentHash,
+        normalized.normalizedText,
+        JSON.stringify(normalized.report),
+        input.versionOrigin ?? "INITIAL_INGEST",
+        ts,
+        textScope,
+        extractionMethod,
+        input.extractionError ?? null,
+        input.contentType ?? null,
+        input.finalUrl ?? null,
+        input.acquiredAt ?? ts,
+      ),
     env.DB
       .prepare(
         `INSERT INTO processing_jobs (id, source_id, stage, status, error, retry_count, created_at, updated_at)
@@ -155,7 +197,7 @@ export async function createSource(env: Env, input: CreateSourceInput): Promise<
       .bind(uuid(), id, JSON.stringify({ origin: input.origin }), ts),
   ]);
 
-  return { sourceId: id, duplicateOf: null, title: input.title, qualityStatus: normalized.qualityStatus, activeVersionId: versionId };
+  return { sourceId: id, duplicateOf: null, title: input.title, qualityStatus, activeVersionId: versionId };
 }
 
 async function recordReimport(env: Env, sourceId: string, field: string, origin: string): Promise<void> {

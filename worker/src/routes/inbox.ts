@@ -1,12 +1,22 @@
 import { Hono } from "hono";
 import { SOURCE_KINDS, type InboxDetail, type InboxItem, type ProcessingStatus, type SourceKind } from "@radar/shared";
-import { normalizeIngestText, type InputFormat, type NormalizationReport, type QualityStatus, type VersionOrigin, type VersionReviewStatus } from "@radar/shared/ingestion";
+import {
+  classifyTextScope,
+  normalizeIngestText,
+  type ExtractionMethod,
+  type InputFormat,
+  type NormalizationReport,
+  type QualityStatus,
+  type TextScope,
+  type VersionOrigin,
+  type VersionReviewStatus,
+} from "@radar/shared/ingestion";
 import { analyzeSource } from "../analysis/analyze";
 import { fetchAndExtract } from "../ingestion/extractUrl";
 import { sha256Hex, uuid } from "../ingestion/ids";
 import { normalizeDoi, normalizeUrl, titleNorm } from "../ingestion/normalize";
 import { createSource } from "../ingestion/store";
-import { activateVersion, decideIncomingVersion, getActiveVersion, rejectVersion } from "../ingestion/versioning";
+import { activateVersion, appendAcquisitionVersion, decideIncomingVersion, getActiveVersion, rejectVersion } from "../ingestion/versioning";
 
 const inbox = new Hono<{ Bindings: Env }>();
 
@@ -159,6 +169,7 @@ inbox.post("/url", async (c) => {
 
   try {
     const page = await fetchAndExtract(normalized);
+    const acquisition = classifyAcquiredText(page.text, "URL_HTML", "HTML_STATIC");
     const result = await createSource(c.env, {
       kind: "WEB",
       title: page.title || normalized,
@@ -166,6 +177,10 @@ inbox.post("/url", async (c) => {
       origin: "url",
       original: page.html,
       extractedText: page.text,
+      textScope: acquisition.textScope,
+      extractionMethod: acquisition.extractionMethod,
+      finalUrl: normalized,
+      acquiredAt: new Date().toISOString(),
       metadata: {
         siteName: page.siteName,
         description: page.description,
@@ -283,35 +298,61 @@ inbox.post("/:sourceId/reextract", async (c) => {
   if (!source) return c.json({ error: "not_found" }, 404);
   let original: string | ArrayBuffer;
   let extractedText = body?.text?.trim() ?? "";
+  let acquisition: { textScope: TextScope; extractionMethod: ExtractionMethod } | null = null;
   if (source.input_format === "URL_HTML") {
     if (!source.canonical_url) return c.json({ error: "url_not_available" }, 400);
     const page = await fetchAndExtract(source.canonical_url).catch((error: Error) => null);
     if (!page) return c.json({ error: "reextract_failed" }, 502);
     original = page.html;
     extractedText = page.text;
+    acquisition = classifyAcquiredText(extractedText, "URL_HTML", "HTML_STATIC");
   } else {
     if (!extractedText) return c.json({ error: "extracted_text_required" }, 400);
     const object = source.r2_key ? await c.env.ORIGINALS.get(source.r2_key) : null;
     original = object ? await object.arrayBuffer() : extractedText;
   }
   const active = await getActiveVersion(c.env.DB, sourceId);
-  const result = await insertVersion(c.env, {
-    sourceId,
-    sourceTitle: source.title,
-    original,
-    extractedText,
-    inputFormat: source.input_format as InputFormat,
-    origin: "REEXTRACT",
-    versionOrigin: "REEXTRACT",
-    parentVersionId: active?.id ?? null,
-    activeOrigin: active?.version_origin ?? null,
-    metadata: body?.pageCount ? { pageCount: body.pageCount } : undefined,
-  });
-  if (result.activateIncoming) {
-    await activateVersion(c.env.DB, sourceId, result.versionId, result.qualityStatus);
-    if (result.qualityStatus === "READY") await analyzeSource(c.env, sourceId);
+  let result: InsertVersionResult | { versionId: string; version: number; qualityStatus: QualityStatus };
+  let reviewStatus: VersionReviewStatus = "PENDING_REVIEW";
+  if (acquisition) {
+    const r2Key = buildVersionKey(sourceId, await nextVersionNumber(c.env.DB, sourceId), source.title);
+    await c.env.ORIGINALS.put(r2Key, original, { customMetadata: { sourceId, origin: "REEXTRACT" } });
+    result = await appendAcquisitionVersion(c.env.DB, {
+      sourceId,
+      r2Key,
+      extractedText,
+      inputFormat: source.input_format as InputFormat,
+      textScope: acquisition.textScope,
+      extractionMethod: acquisition.extractionMethod,
+      finalUrl: source.canonical_url,
+      acquiredAt: new Date().toISOString(),
+      versionOrigin: "REEXTRACT",
+      parentVersionId: active?.id ?? null,
+    });
+    const activeAfter = await getActiveVersion(c.env.DB, sourceId);
+    reviewStatus = activeAfter?.id === result.versionId ? "ACTIVE" : "PENDING_REVIEW";
+    if (result.qualityStatus === "READY" && activeAfter?.id === result.versionId) await analyzeSource(c.env, sourceId);
+  } else {
+    const inserted = await insertVersion(c.env, {
+      sourceId,
+      sourceTitle: source.title,
+      original,
+      extractedText,
+      inputFormat: source.input_format as InputFormat,
+      origin: "REEXTRACT",
+      versionOrigin: "REEXTRACT",
+      parentVersionId: active?.id ?? null,
+      activeOrigin: active?.version_origin ?? null,
+      metadata: body?.pageCount ? { pageCount: body.pageCount } : undefined,
+    });
+    result = inserted;
+    if (inserted.activateIncoming) {
+      await activateVersion(c.env.DB, sourceId, inserted.versionId, inserted.qualityStatus);
+      if (inserted.qualityStatus === "READY") await analyzeSource(c.env, sourceId);
+    }
+    reviewStatus = inserted.reviewStatus;
   }
-  return c.json({ ok: true, sourceId, versionId: result.versionId, version: result.version, status: result.reviewStatus, qualityStatus: result.qualityStatus });
+  return c.json({ ok: true, sourceId, versionId: result.versionId, version: result.version, status: reviewStatus, qualityStatus: result.qualityStatus });
 });
 
 inbox.post("/:sourceId/renormalize", async (c) => {
@@ -416,23 +457,28 @@ inbox.post("/retry/:sourceId", async (c) => {
     const source = await loadSourceForVersion(c.env.DB, sourceId);
     if (!source) return c.json({ error: "not_found" }, 404);
     const active = await getActiveVersion(c.env.DB, sourceId);
-    const result = await insertVersion(c.env, {
+    const acquisition = classifyAcquiredText(page.text, "URL_HTML", "HTML_STATIC");
+    const nextVersion = await nextVersionNumber(c.env.DB, sourceId);
+    const r2Key = buildVersionKey(sourceId, nextVersion, source.title);
+    await c.env.ORIGINALS.put(r2Key, page.html, { customMetadata: { sourceId, origin: "REEXTRACT" } });
+    const result = await appendAcquisitionVersion(c.env.DB, {
       sourceId,
-      sourceTitle: source.title,
-      original: page.html,
+      r2Key,
       extractedText: page.text,
       inputFormat: "URL_HTML",
-      origin: "REEXTRACT",
+      textScope: acquisition.textScope,
+      extractionMethod: acquisition.extractionMethod,
+      finalUrl: src.canonical_url,
+      acquiredAt: new Date().toISOString(),
       versionOrigin: "REEXTRACT",
       parentVersionId: active?.id ?? null,
-      activeOrigin: active?.version_origin ?? null,
     });
-    if (result.activateIncoming) {
-      await activateVersion(c.env.DB, sourceId, result.versionId, result.qualityStatus);
-      if (result.qualityStatus === "READY") await analyzeSource(c.env, sourceId);
+    const activeAfter = await getActiveVersion(c.env.DB, sourceId);
+    if (result.qualityStatus === "READY" && activeAfter?.id === result.versionId) {
+      await analyzeSource(c.env, sourceId);
     }
     await c.env.DB.prepare("UPDATE processing_jobs SET retry_count = retry_count + 1 WHERE source_id = ?").bind(sourceId).run();
-    return c.json({ ok: true, versionId: result.versionId, version: result.version, status: result.reviewStatus });
+    return c.json({ ok: true, versionId: result.versionId, version: result.version, qualityStatus: result.qualityStatus });
   } catch (err) {
     const message = (err as Error).message.slice(0, 300);
     await c.env.DB
@@ -516,6 +562,18 @@ async function loadSourceForVersion(db: D1Database, sourceId: string): Promise<S
     .bind(sourceId).first<SourceForVersion>();
 }
 
+async function nextVersionNumber(db: D1Database, sourceId: string): Promise<number> {
+  const row = await db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM source_versions WHERE source_id = ?")
+    .bind(sourceId)
+    .first<{ version: number }>();
+  return (row?.version ?? 0) + 1;
+}
+
+function buildVersionKey(sourceId: string, version: number, sourceTitle: string): string {
+  const safeTitle = sourceTitle.replace(/[^a-zA-Z0-9가-힣._-]+/g, "_").slice(0, 120);
+  return `originals/${sourceId}/v${version}${safeTitle ? `-${safeTitle}` : ""}`;
+}
+
 async function insertVersion(env: Env, input: InsertVersionInput): Promise<InsertVersionResult> {
   const row = await env.DB.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM source_versions WHERE source_id = ?")
     .bind(input.sourceId).first<{ version: number }>();
@@ -547,6 +605,22 @@ async function insertVersion(env: Env, input: InsertVersionInput): Promise<Inser
     env.DB.prepare("UPDATE sources SET updated_at = ? WHERE id = ?").bind(ts, input.sourceId),
   ]);
   return { versionId, version, reviewStatus: decision.reviewStatus, activateIncoming: decision.activateIncoming, qualityStatus: normalized.qualityStatus };
+}
+
+function classifyAcquiredText(text: string, format: InputFormat, extractionMethod: ExtractionMethod): {
+  textScope: TextScope;
+  extractionMethod: ExtractionMethod;
+} {
+  const normalized = normalizeIngestText(text, format);
+  return {
+    textScope: classifyTextScope({
+      format,
+      meaningfulChars: normalized.report.meaningfulChars,
+      warnings: normalized.report.warnings,
+      extractionMethod,
+    }).scope,
+    extractionMethod,
+  };
 }
 
 function toVersionSummary(value: Record<string, unknown>, isActive: boolean) {
