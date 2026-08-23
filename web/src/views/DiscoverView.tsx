@@ -178,6 +178,7 @@ export default function DiscoverView({
   const [pendingFieldSignalId, setPendingFieldSignalId] = useState<string | null>(null);
   const [fieldSignalRunSummary, setFieldSignalRunSummary] = useState<DiscoveryFieldSignalRunDiagnostics | null>(null);
   const [fieldSignalsCollected, setFieldSignalsCollected] = useState(0);
+  const [keptAcquisitionJobId, setKeptAcquisitionJobId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setListError("");
@@ -216,13 +217,15 @@ export default function DiscoverView({
   }, [contentMode, loadFieldSignals]);
 
   useEffect(() => {
-    const latest = jobs.find((job) => job.kind === "SOURCE_ACQUISITION");
-    const resultRef = latest?.resultRef;
-    if (latest?.status === "SUCCEEDED" && resultRef?.view === "RESERVOIR" && "acquisition" in resultRef && resultRef.acquisition) {
+    if (!keptAcquisitionJobId) return;
+    const keptAcquisition = jobs.find((job) => job.id === keptAcquisitionJobId && job.kind === "SOURCE_ACQUISITION");
+    const resultRef = keptAcquisition?.resultRef;
+    if (keptAcquisition?.status === "SUCCEEDED" && resultRef?.view === "RESERVOIR" && "acquisition" in resultRef && resultRef.acquisition) {
+      setKeptAcquisitionJobId(null);
       setMsg("원문 수집이 완료되었습니다. 저장소에서 확인하세요.");
       onNavigate("RESERVOIR");
     }
-  }, [jobs, onNavigate]);
+  }, [jobs, keptAcquisitionJobId, onNavigate]);
 
   useEffect(() => {
     const latest = jobs.find((job) => job.kind === "DISCOVERY_RUN");
@@ -319,6 +322,10 @@ export default function DiscoverView({
       const response = await fetch(`/api/discover/candidates/${id}/${backendAction}`, { method: "POST" });
       const data = await response.json() as Partial<DiscoveryKeepResponse> & { error?: string };
       if (!response.ok) throw new Error(data.error ?? "분류 저장에 실패했습니다.");
+      if (data.jobId) {
+        setKeptAcquisitionJobId(data.jobId);
+        await onJobCreated?.();
+      }
       if (action === "develop" && data.sourceId) {
         await fetch("/api/signals", {
           method: "POST",

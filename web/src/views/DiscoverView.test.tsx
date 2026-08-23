@@ -1,12 +1,38 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ResearchJob, ResearchJobStatus } from "@radar/shared";
 import type { DiscoveryRunDiagnostics } from "@radar/shared/discoveryRun";
 import DiscoveryRunSummary from "../components/discovery/DiscoveryRunSummary";
 import FieldSignalRunSummary from "../components/discovery/FieldSignalRunSummary";
 import DiscoverView from "./DiscoverView";
 
 const candidate = { id: "candidate-1", openalexId: "https://openalex.org/W1", title: "자료 후보", authors: "저자", year: 2026, relevanceScore: 0.82, status: "CANDIDATE", queryUsed: "사진 연구", provider: "openalex", externalUrl: "https://doi.org/10.0000/example" };
+function acquisitionJob(id: string, status: ResearchJobStatus): ResearchJob {
+  return {
+    id,
+    workflowInstanceId: null,
+    kind: "SOURCE_ACQUISITION",
+    status,
+    progress: status === "SUCCEEDED" ? 100 : 0,
+    message: null,
+    input: {},
+    result: null,
+    resultRef: status === "SUCCEEDED"
+      ? { view: "RESERVOIR", sourceId: `source-${id}`, acquisition: true }
+      : null,
+    errorCode: null,
+    error: null,
+    retryOf: null,
+    requestedBy: null,
+    dedupeKey: id,
+    dismissedAt: null,
+    createdAt: "2026-08-24T00:00:00.000Z",
+    startedAt: null,
+    finishedAt: status === "SUCCEEDED" ? "2026-08-24T00:01:00.000Z" : null,
+    updatedAt: "2026-08-24T00:01:00.000Z",
+  };
+}
 const fieldSignal = {
   id: "signal-1",
   sourceId: "caa-news",
@@ -82,6 +108,56 @@ describe("DiscoverView", () => {
     await userEvent.click(screen.getByRole("button", { name: "보관하기" }));
 
     expect(await screen.findByText(/원문 수집을 시작했습니다/)).toBeInTheDocument();
+  });
+
+  it("navigates only when the acquisition job returned by the current Keep succeeds", async () => {
+    const onNavigate = vi.fn();
+    const onJobCreated = vi.fn().mockResolvedValue(undefined);
+    const unrelatedJob = acquisitionJob("job-unrelated", "SUCCEEDED");
+    const currentJob = acquisitionJob("job-acquisition-1", "QUEUED");
+    const { rerender } = render(
+      <DiscoverView onNavigate={onNavigate} jobs={[unrelatedJob]} onJobCreated={onJobCreated} />,
+    );
+
+    await screen.findByRole("option", { name: /자료 후보/ });
+    expect(onNavigate).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole("option", { name: /자료 후보/ }));
+    await userEvent.click(screen.getByRole("button", { name: "보관하기" }));
+    await waitFor(() => expect(onJobCreated).toHaveBeenCalledOnce());
+
+    rerender(<DiscoverView onNavigate={onNavigate} jobs={[unrelatedJob, currentJob]} onJobCreated={onJobCreated} />);
+    expect(onNavigate).not.toHaveBeenCalled();
+
+    rerender(
+      <DiscoverView
+        onNavigate={onNavigate}
+        jobs={[unrelatedJob, { ...currentJob, status: "SUCCEEDED", progress: 100, resultRef: { view: "RESERVOIR", sourceId: "source-1", acquisition: true } }]}
+        onJobCreated={onJobCreated}
+      />,
+    );
+    await waitFor(() => expect(onNavigate).toHaveBeenCalledOnce());
+    expect(onNavigate).toHaveBeenCalledWith("RESERVOIR");
+  });
+
+  it("refreshes jobs before refreshing candidates after Keep queues acquisition", async () => {
+    let finishJobRefresh: () => void = () => undefined;
+    const onJobCreated = vi.fn(() => new Promise<void>((resolve) => {
+      finishJobRefresh = resolve;
+    }));
+    render(<DiscoverView onNavigate={vi.fn()} onJobCreated={onJobCreated} />);
+
+    await screen.findByRole("option", { name: /자료 후보/ });
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/settings/homepage"));
+    vi.mocked(fetch).mockClear();
+
+    await userEvent.click(screen.getByRole("option", { name: /자료 후보/ }));
+    await userEvent.click(screen.getByRole("button", { name: "보관하기" }));
+    await waitFor(() => expect(onJobCreated).toHaveBeenCalledOnce());
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).startsWith("/api/discover/candidates?"))).toBe(false);
+
+    finishJobRefresh();
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).startsWith("/api/discover/candidates?"))).toBe(true));
   });
 
   it("opens diagnostics automatically when the run collected zero candidates", () => {
