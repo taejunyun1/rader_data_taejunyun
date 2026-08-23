@@ -51,6 +51,10 @@ export interface DiscoveryFieldSignalCollectionResult {
   diagnostics: DiscoveryFieldSignalRunDiagnostics;
 }
 
+interface RankedDiscoveryFieldSignal extends PendingDiscoveryFieldSignal {
+  titleDateKey: string;
+}
+
 function countReason(diagnostics: DiscoveryFieldSignalRunDiagnostics, reason: DiscoveryFieldSignalRejectionReason): void {
   diagnostics.rejectedByReason[reason] = (diagnostics.rejectedByReason[reason] ?? 0) + 1;
 }
@@ -77,9 +81,7 @@ export async function collectDiscoveryFieldSignals(
   input: DiscoveryFieldSignalCollectionInput,
 ): Promise<DiscoveryFieldSignalCollectionResult> {
   const diagnostics: DiscoveryFieldSignalRunDiagnostics = { sources: {}, rejectedByReason: {}, incomplete: false };
-  const accepted: PendingDiscoveryFieldSignal[] = [];
-  const seenUrls = new Set(input.existingUrls);
-  const seenTitleDates = new Set<string>();
+  const accepted: RankedDiscoveryFieldSignal[] = [];
 
   for (const source of input.sources) {
     const stats: DiscoveryFieldSignalSourceStats = emptyDiscoveryFieldSignalSourceStats();
@@ -99,7 +101,7 @@ export async function collectDiscoveryFieldSignals(
     stats.succeededRequests += 1;
     stats.received += result.items.length;
 
-    const sourceAccepted: PendingDiscoveryFieldSignal[] = [];
+    const sourceAccepted: RankedDiscoveryFieldSignal[] = [];
     for (const item of result.items) {
       if (!item.url) {
         stats.missingUrl += 1;
@@ -107,7 +109,7 @@ export async function collectDiscoveryFieldSignals(
         continue;
       }
 
-      if (seenUrls.has(item.url)) {
+      if (input.existingUrls.has(item.url)) {
         stats.duplicate += 1;
         countReason(diagnostics, "DUPLICATE");
         continue;
@@ -131,14 +133,6 @@ export async function collectDiscoveryFieldSignals(
       }
 
       const titleDateKey = normalizedTitleDateKey(item, assessment.eventAt, assessment.deadlineAt);
-      if (seenTitleDates.has(titleDateKey)) {
-        stats.duplicate += 1;
-        countReason(diagnostics, "DUPLICATE");
-        continue;
-      }
-
-      seenUrls.add(item.url);
-      seenTitleDates.add(titleDateKey);
       sourceAccepted.push({
         sourceId: source.id,
         sourceName: source.name,
@@ -151,24 +145,48 @@ export async function collectDiscoveryFieldSignals(
         deadlineAt: assessment.deadlineAt,
         matchedTerms: assessment.matchedTerms,
         relevanceScore: assessment.score,
+        titleDateKey,
       });
     }
 
     sourceAccepted.sort(compareSignals);
-    const selectedForSource = sourceAccepted.slice(0, MAX_FIELD_SIGNALS_PER_SOURCE);
-    const sourceExcluded = Math.max(0, sourceAccepted.length - selectedForSource.length);
-    if (sourceExcluded > 0) {
-      stats.quotaExcluded += sourceExcluded;
-      for (let index = 0; index < sourceExcluded; index += 1) countReason(diagnostics, "SOURCE_QUOTA");
-    }
-    accepted.push(...selectedForSource);
+    accepted.push(...sourceAccepted);
   }
 
-  const selected = accepted.slice(0, MAX_FIELD_SIGNALS_PER_RUN);
-  const selectedUrls = new Set(selected.map((item) => item.externalUrl));
-  for (const item of accepted) {
+  const globallyRanked = [...accepted].sort(compareSignals);
+  const seenUrls = new Set<string>();
+  const seenTitleDates = new Set<string>();
+  const deduped: RankedDiscoveryFieldSignal[] = [];
+  for (const item of globallyRanked) {
     const stats = diagnostics.sources[item.sourceId]!;
-    if (selectedUrls.has(item.externalUrl)) {
+    if (seenUrls.has(item.externalUrl) || seenTitleDates.has(item.titleDateKey)) {
+      stats.duplicate += 1;
+      countReason(diagnostics, "DUPLICATE");
+      continue;
+    }
+    seenUrls.add(item.externalUrl);
+    seenTitleDates.add(item.titleDateKey);
+    deduped.push(item);
+  }
+
+  const sourceCounts = new Map<string, number>();
+  const quotaFiltered: RankedDiscoveryFieldSignal[] = [];
+  for (const item of deduped) {
+    const sourceCount = sourceCounts.get(item.sourceId) ?? 0;
+    if (sourceCount >= MAX_FIELD_SIGNALS_PER_SOURCE) {
+      diagnostics.sources[item.sourceId]!.quotaExcluded += 1;
+      countReason(diagnostics, "SOURCE_QUOTA");
+      continue;
+    }
+    sourceCounts.set(item.sourceId, sourceCount + 1);
+    quotaFiltered.push(item);
+  }
+
+  const selected = quotaFiltered.slice(0, MAX_FIELD_SIGNALS_PER_RUN);
+  const selectedSet = new Set(selected);
+  for (const item of quotaFiltered) {
+    const stats = diagnostics.sources[item.sourceId]!;
+    if (selectedSet.has(item)) {
       stats.selected += 1;
       continue;
     }
@@ -176,7 +194,10 @@ export async function collectDiscoveryFieldSignals(
     countReason(diagnostics, "SOURCE_QUOTA");
   }
 
-  return { pending: selected, diagnostics };
+  return {
+    pending: selected.map(({ titleDateKey: _titleDateKey, ...item }) => item),
+    diagnostics,
+  };
 }
 
 export async function runDiscoveryFieldSignals(
@@ -230,7 +251,24 @@ export async function runDiscoveryFieldSignals(
       ),
   );
 
-  if (statements.length > 0) await env.DB.batch(statements);
+  const results: Array<{ meta?: { changes?: number } }> = statements.length > 0
+    ? await env.DB.batch<{ meta?: { changes?: number } }>(statements)
+    : [];
 
-  return { collected: collection.pending.length, diagnostics: collection.diagnostics };
+  let inserted = 0;
+  collection.pending.forEach((item, index) => {
+    const changes = Number((results[index] as { meta?: { changes?: number } } | undefined)?.meta?.changes ?? 0);
+    if (changes > 0) {
+      inserted += changes;
+      return;
+    }
+    const stats = collection.diagnostics.sources[item.sourceId];
+    if (stats) {
+      stats.selected = Math.max(0, stats.selected - 1);
+      stats.duplicate += 1;
+    }
+    countReason(collection.diagnostics, "DUPLICATE");
+  });
+
+  return { collected: inserted, diagnostics: collection.diagnostics };
 }
