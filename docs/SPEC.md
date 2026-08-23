@@ -15,7 +15,7 @@
 | D3 | Obsidian 입력 | UI 업로드(V0) — 브라우저에서 .md 파일/폴더 drag&drop | 로컬 싱크 CLI는 V1 후보 |
 | D4 | Google Drive | **V0 제외** — 수동 다운로드 후 업로드로 대체 | OAuth 개발 없음 |
 | D5 | PDF 텍스트 추출 | 브라우저 pdf.js로 업로드 시 추출 → 원본(PDF) R2 저장 + 추출 텍스트 전송 | 서버 측 PDF 파서 불필요 |
-| D6 | Discovery 소스 | OpenAlex(학술 기본) + arXiv + 큐레이션 RSS/Atom(Artforum, Hyperallergic, ARTnews, Aperture) | e-flux·RISS·Google Scholar·Scopus·Web of Science 및 미술관·학회·사진기관은 출처 디렉터리에 등록하고, 공개 피드 또는 공식 API가 확인된 경로만 자동 후보 수집 |
+| D6 | Discovery 소스 | OpenAlex + arXiv + 검증된 읽을거리 RSS(Unthinking Photography, Aperture, Hyperallergic) + 별도 현장 신호 RSS(CAA News, Association for Art History, ICP) | 읽을거리와 현장 신호는 별도 quota·상태로 저장하며, 공개 피드 또는 공식 API가 확인된 경로만 자동 수집 |
 | D7 | 프론트엔드 | Vite + React SPA, Workers Static Assets 배포 | 동일 Worker에서 API + 정적 자산 서빙 |
 | D8 | 인증 | Cloudflare Access + Google IdP | Worker에서 Access JWT(Cf-Access-Jwt-Assertion) 검증 |
 | D9 | UI 언어 | 한국어 중심. Distill/Critic/Counter 등 내부 파이프라인 명칭과 고유명사는 원어 병기 가능 | 콘텐츠(자료 원문), 논문 제목·저자·출처명은 원어 그대로 |
@@ -81,12 +81,12 @@ OpenAlex API — 학술 Discovery 기본 소스 + Reading Queue 존재 검증
 4. "System Discovery"의 소스를 OpenAlex로 확정(D6)
 5. 비용 정책의 "월 AI 사용량 guardrail"을 $10로 구체화(D10)
 
-### Discovery 출처 확장 (2026-08-23)
+### Discovery 읽을거리·현장 신호 분리 (2026-08-23)
 
-발견 탭은 출처를 세 가지 방식으로 구분한다.
-
-- `RSS`: 공개 RSS/Atom을 Worker가 자동 수집한다. 현재 기본 피드는 Artforum, Hyperallergic, ARTnews, Aperture다.
-- `API`: RISS, Scopus, Web of Science처럼 공식 키·기관 권한이 필요한 출처다. 키 없이 검색 결과 페이지를 크롤링하지 않는다.
-- `SEARCH`: e-flux Journal/Announcements, Google Scholar, 미술관·학회·사진기관처럼 실제 검색·읽기 링크를 제공하는 출처다. Google Scholar는 공식 자동 수집 API가 없으므로 자동 후보 provider로 가장하지 않는다.
-
-따라서 출처 디렉터리에 노출되는 것과 자동 후보 수집이 가능한 것은 별개의 상태이며, UI에서 두 상태를 명시한다.
+- 발견 결과는 `읽을거리`와 `현장 신호`로 분리한다.
+- 읽을거리는 관련도 0.65, 무료 원문/PDF, 최대 8개 정책을 유지한다.
+- 검증된 자동 읽을거리 피드는 Unthinking Photography, Aperture, Hyperallergic다.
+- 현장 신호는 CAA News, Association for Art History, ICP 공식 RSS에서 별도 수집하며 회당 최대 12개·출처당 최대 4개다.
+- 현장 신호 저장은 Reservoir 승격이 아니라 `SAVED` 상태 변경이다.
+- e-flux는 현재 공식 피드가 갱신되지 않아 검색 링크로 유지하며 HTML 페이지를 크롤링하지 않는다.
+- 미술관 작품·소장품 API는 별도 향후 설계 범위다.

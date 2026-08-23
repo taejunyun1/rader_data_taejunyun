@@ -57,14 +57,14 @@ Research Radar는 사진작가 윤태준의 개인 연구 편집 도구다. 챗�
 | Distill | context selection, Distill/Critic/Counter, Re-distill, 비용 원장 | V0 필수 |
 | Reading Queue | OpenAlex 존재 검증과 verified 표시 | V0 필수 |
 | Radar | 주/월/년 통계·합성 UI, 주간 snapshot cron | V0 필수 |
-| Discovery | 홈페이지 프로젝트·읽을거리 키워드 시드 + OpenAlex + arXiv + 공개 RSS/Atom(Aperture 포함) + 출처 디렉터리 | RISS/e-flux/Google Scholar/Scopus/Web of Science 및 미술관·학회·사진기관은 수집 방식(API/RSS/검색 링크)을 명시하며, 기관형 API는 키 연결 전 자동 후보화하지 않음 |
+| Discovery | 홈페이지·읽을거리 시드 + OpenAlex + arXiv + 읽을거리 RSS(Unthinking Photography, Aperture, Hyperallergic) + 현장 신호 RSS(CAA News, Association for Art History, ICP) + 출처 디렉터리 | RISS·KCI·Google Scholar·Scopus·Web of Science와 기타 미술관·사진기관은 공식 API/RSS가 검증되기 전 자동 수집하지 않음 |
 | Obsidian | CLI sync와 버전 히스토리 | V1 확장, V0 아님 |
 | Usage | 월 비용·목적·모델·일별 차트 | V2 확장 |
 | Export | JSON/Markdown/CSV 및 R2 원본 백업 | V0 필수 |
 
-Discovery 후보는 제목과 초록·RSS 요약에 연구 기준어가 실제로 포함되고 관련도 0.65 이상일 때만 등록한다. `data`·`theory`·`AI` 같은 일반어 단독 검색은 제외하며, 사진·이미지·시각문화 축이 없는 공학 중심 후보(벤치마크·데이터셋·캘리브레이션·인식·검색·파이프라인 등)는 차단한다. arXiv는 시각·이미지·컴퓨터비전 인접 카테고리로 제한하고, OpenAlex는 `open_access.oa_url`이 있는 자료만 받는다. ARTnews·Artforum 같은 구독 가능성 출처, 기관 인증만 필요한 RISS 링크, 접근 미확인 링크는 메인 후보에서 제외한다. 출처 디렉터리는 자동 수집(RSS), 공식 API 필요, 검색 링크를 구분하며, API 키 없이 RISS·Scopus·Web of Science·Google Scholar 결과를 무단 크롤링하지 않는다. 후보는 무료 원문 또는 PDF만 노출하며, 한 번의 실행에서 최대 8개(소스별 OpenAlex 4·arXiv 2·RSS 2), 제목 정규화 중복 제거를 적용한다. 기존 미검토 후보는 다음 Discovery 실행 시 새 기준으로 재평가하며, 탈락 자료는 삭제하지 않고 `IGNORED`로 남긴다.
+Discovery 읽을거리는 제목·초록·RSS 요약에 연구 기준어가 실제로 포함되고 관련도 0.65 이상일 때만 등록한다. OpenAlex는 OA URL, arXiv는 PDF, RSS HTML은 검증된 출처의 `FREE_FULLTEXT` 정책이 필요하다. Artforum·ARTnews·기관 인증 링크·접근 미확인 HTML은 후보에서 제외한다. 실행 상한은 8건(OpenAlex 4·arXiv 2·RSS 2)이며 RSS는 1차로 출처별 한 건씩 선택한다. 기본 읽을거리 피드는 KV fallback이 아니라 정적 레지스트리에서 매 실행 구성하고, KV에는 레지스트리에 없는 사용자 커스텀 피드만 최대 6개 저장한다. RISS·KCI·Google Scholar·Scopus·Web of Science 결과 페이지를 크롤링하지 않는다.
 
-Discovery 실행 결과는 `research_jobs.result_json`에 `diagnostics`로 함께 보존한다. 정상 응답 후 0건과 provider HTTP/timeout/parse 실패를 구분하고, provider별 요청·수신·접근 불가·품질 탈락·중복·quota·선정 수를 기록한다. 한국어·혼합 저장 문장은 후보 provenance로 유지하되 provider에는 결정론적 영어 concept query를 전달하며, 변환 불가 문장은 실행하지 않고 진단에 남긴다. 기존 OpenAlex 후보의 저장된 `FREE_FULLTEXT`/`PDF` 증거는 URL 재분류만으로 낮추지 않는다. 따라서 후보 0건은 유효한 결과일 수 있으며, Discover 화면은 원인별 진단과 다음 행동을 함께 표시한다.
+Discovery 현장 신호는 CAA News·Association for Art History·ICP 공식 RSS를 읽을거리와 별도로 수집한다. 관련도 0.55, 회당 최대 12건, 출처당 최대 4건이며 `NEW`·`SAVED`·`DISMISSED` 상태를 사용한다. 오래된 게시물은 `STALE`, 마감·행사가 지난 항목은 `EXPIRED`로 제외한다. Save는 Reservoir source를 만들지 않는다. 실행 결과는 읽을거리 `diagnostics`와 현장 신호 `fieldSignalDiagnostics`를 함께 보존하며, 출처별 요청·성공·실패·수신·관련성 탈락·오래됨·종료됨·중복·quota·선정 수를 구분한다. 정상 응답 후 0건은 오류가 아닌 유효한 빈 결과다.
 
 ### 3-1. 현재 UI 읽기 흐름
 
