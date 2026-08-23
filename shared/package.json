@@ -7,7 +7,8 @@
     ".": "./src/index.ts",
     "./discovery": "./src/discovery.ts",
     "./ingestion": "./src/ingestion.ts",
-    "./discoveryRun": "./src/discoveryRun.ts"
+    "./discoveryRun": "./src/discoveryRun.ts",
+    "./fieldSignals": "./src/fieldSignals.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
