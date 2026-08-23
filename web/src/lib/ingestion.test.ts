@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   classifyTextScope,
   deriveIngestMeta,
@@ -6,6 +10,11 @@ import {
   type InputFormat,
 } from "@radar/shared/ingestion";
 import { createSource } from "../../../worker/src/ingestion/store";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 describe("ingestion normalization", () => {
   it("normalizes Obsidian links and keeps headings and code blocks", () => {
@@ -75,6 +84,17 @@ describe("ingestion normalization", () => {
       "HTML_STATIC",
       "PDF_REMOTE_TO_MARKDOWN",
       "DISCOVERY_METADATA",
+    ]);
+  });
+
+  it("migrates research_jobs retry chains and self-references with foreign keys enabled", () => {
+    const result = verifySourceAcquisitionMigration();
+
+    expect(result.foreignKeyCheck).toBe("");
+    expect(result.jobs).toEqual([
+      "job-1||DISCOVERY_RUN",
+      "job-2|job-1|DISCOVERY_RUN",
+      "job-3|job-3|DISCOVERY_RUN",
     ]);
   });
 
@@ -210,6 +230,71 @@ describe("ingestion normalization", () => {
     expect(db.source.activeVersionId).toBe("version-1");
     expect(db.activatedVersionIds).toEqual([]);
   });
+
+  it("retries version reservation without changing the acquisition identity", async () => {
+    const mod = await import("../../../worker/src/ingestion/versioning");
+
+    expect(typeof mod.appendAcquisitionVersion).toBe("function");
+    if (typeof mod.appendAcquisitionVersion !== "function") return;
+
+    const db = createVersioningDb({
+      sourceId: "source-1",
+      activeVersionId: "version-1",
+      activeVersion: {
+        id: "version-1",
+        source_id: "source-1",
+        version: 1,
+        r2_key: "originals/source-1/v1.txt",
+        extracted_text: "기존 활성 텍스트",
+        normalized_text: "기존 활성 텍스트",
+        normalization_status: "READY",
+        normalization_report_json: JSON.stringify({ meaningfulChars: 8, warnings: [] }),
+        version_origin: "INITIAL_INGEST",
+        parent_version_id: null,
+        review_status: "ACTIVE",
+        created_at: "2026-08-23T00:00:00.000Z",
+        text_scope: "PARTIAL",
+        extraction_method: "LEGACY",
+        extraction_error: null,
+        content_type: null,
+        final_url: null,
+        acquired_at: null,
+      },
+      failFirstVersionReservation: true,
+    });
+
+    const result = await mod.appendAcquisitionVersion(db, {
+      versionId: "acq-version-2",
+      sourceId: "source-1",
+      r2Key: "originals/source-1/acq-acq-version-2-article",
+      extractedText: "충분히 긴 본문으로 동시 재수집 충돌 이후에도 같은 acquisition identity를 유지합니다.",
+      inputFormat: "URL_HTML",
+      textScope: "FULLTEXT",
+      extractionMethod: "HTML_STATIC",
+      finalUrl: "https://redirected.example/article",
+    });
+
+    expect(result.version).toBe(3);
+    const inserted = db.versions.find((row) => row.id === "acq-version-2");
+    expect(inserted?.version).toBe(3);
+    expect(inserted?.r2_key).toBe("originals/source-1/acq-acq-version-2-article");
+    expect(db.versions.some((row) => row.version === 2 && row.id !== "acq-version-2")).toBe(true);
+  });
+
+  it("keeps the final response url after redirects", async () => {
+    const { fetchAndExtract } = await import("../../../worker/src/ingestion/extractUrl");
+    const response = new Response(
+      "<html><head><title>Redirected</title></head><body><main>충분한 본문 텍스트가 있는 리다이렉트 결과 페이지입니다.</main></body></html>",
+      { status: 200, headers: { "content-type": "text/html; charset=utf-8" } },
+    );
+    Object.defineProperty(response, "url", { value: "https://final.example/article", configurable: true });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
+
+    const page = await fetchAndExtract("https://start.example/article");
+
+    expect(page.finalUrl).toBe("https://final.example/article");
+    expect(page.title).toBe("Redirected");
+  });
 });
 
 function createCreateSourceEnv(): Env & {
@@ -294,6 +379,7 @@ function createVersioningDb(input: {
   sourceId: string;
   activeVersionId: string | null;
   activeVersion: MockVersionRow | null;
+  failFirstVersionReservation?: boolean;
 }): D1Database & {
   source: { id: string; activeVersionId: string | null };
   versions: MockVersionRow[];
@@ -302,6 +388,7 @@ function createVersioningDb(input: {
   const versions = input.activeVersion ? [{ ...input.activeVersion }] : [];
   const source = { id: input.sourceId, activeVersionId: input.activeVersionId };
   const activatedVersionIds: string[] = [];
+  let failFirstVersionReservation = Boolean(input.failFirstVersionReservation);
 
   const db = {
     prepare(query: string): D1PreparedStatement {
@@ -326,6 +413,30 @@ function createVersioningDb(input: {
         },
         async run() {
           if (query.includes("INSERT INTO source_versions")) {
+            if (failFirstVersionReservation) {
+              failFirstVersionReservation = false;
+              versions.push({
+                id: "competing-version-2",
+                source_id: String(params[1]),
+                version: Number(params[2]),
+                r2_key: "originals/source-1/acq-competing",
+                extracted_text: "경합 버전",
+                normalized_text: "경합 버전",
+                normalization_status: "READY",
+                normalization_report_json: JSON.stringify({ meaningfulChars: 4, warnings: [] }),
+                version_origin: "REEXTRACT",
+                parent_version_id: "version-1",
+                review_status: "PENDING_REVIEW",
+                created_at: "2026-08-23T00:00:01.000Z",
+                text_scope: "PARTIAL",
+                extraction_method: "HTML_STATIC",
+                extraction_error: null,
+                content_type: null,
+                final_url: "https://competing.example/article",
+                acquired_at: "2026-08-23T00:00:01.000Z",
+              });
+              throw new Error("UNIQUE constraint failed: source_versions.source_id, source_versions.version");
+            }
             versions.push({
               id: String(params[0]),
               source_id: String(params[1]),
@@ -386,4 +497,64 @@ function createVersioningDb(input: {
   };
 
   return db;
+}
+
+function verifySourceAcquisitionMigration(): { foreignKeyCheck: string; jobs: string[] } {
+  const tempDir = mkdtempSync(join(tmpdir(), "radar-0015-"));
+  const dbPath = join(tempDir, "migration.sqlite");
+  const seedPath = join(tempDir, "seed.sql");
+  const migrationPath = join(process.cwd(), "../worker/migrations/0015_source_acquisition.sql");
+  const migrationSql = readFileSync(migrationPath, "utf8");
+
+  try {
+    writeFileSync(
+      seedPath,
+      [
+        "PRAGMA foreign_keys=OFF;",
+        "CREATE TABLE research_jobs (id TEXT PRIMARY KEY, workflow_instance_id TEXT UNIQUE, kind TEXT NOT NULL CHECK (kind IN ('DISCOVERY_RUN','DISTILL_RUN','RADAR_SYNTHESIS','DEEP_ANALYSIS')), status TEXT NOT NULL CHECK (status IN ('QUEUED','RUNNING','SUCCEEDED','FAILED','BLOCKED')), progress INTEGER NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 100), message TEXT, input_json TEXT NOT NULL, result_json TEXT, result_ref_json TEXT, error_code TEXT, error TEXT, retry_of TEXT REFERENCES research_jobs(id), requested_by TEXT, dedupe_key TEXT NOT NULL, dismissed_at TEXT, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, updated_at TEXT NOT NULL);",
+        "CREATE TABLE sources (id TEXT PRIMARY KEY, origin TEXT);",
+        "CREATE TABLE source_versions (id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES sources(id), version INTEGER NOT NULL, char_count INTEGER);",
+        "INSERT INTO sources VALUES ('s1', 'manual');",
+        "INSERT INTO source_versions VALUES ('v1', 's1', 1, 1200);",
+        "INSERT INTO research_jobs VALUES ('job-1', NULL, 'DISCOVERY_RUN', 'QUEUED', 0, NULL, '{}', NULL, NULL, NULL, NULL, NULL, NULL, 'k1', NULL, '2026-08-23T00:00:00.000Z', NULL, NULL, '2026-08-23T00:00:00.000Z');",
+        "INSERT INTO research_jobs VALUES ('job-2', NULL, 'DISCOVERY_RUN', 'FAILED', 100, NULL, '{}', NULL, NULL, 'retry', 'boom', 'job-1', NULL, 'k2', NULL, '2026-08-23T00:01:00.000Z', NULL, '2026-08-23T00:01:30.000Z', '2026-08-23T00:01:30.000Z');",
+        "INSERT INTO research_jobs VALUES ('job-3', NULL, 'DISCOVERY_RUN', 'FAILED', 100, NULL, '{}', NULL, NULL, 'retry', 'loop', 'job-3', NULL, 'k3', NULL, '2026-08-23T00:02:00.000Z', NULL, '2026-08-23T00:02:30.000Z', '2026-08-23T00:02:30.000Z');",
+        "PRAGMA foreign_keys=ON;",
+        migrationSql,
+      ].join("\n"),
+      "utf8",
+    );
+
+    execFileSync("sqlite3", [dbPath], {
+      cwd: tempDir,
+      input: readFileSync(seedPath, "utf8"),
+      stdio: ["pipe", "pipe", "pipe"],
+      encoding: "utf8",
+    });
+
+    const foreignKeyCheck = execFileSync("sqlite3", [dbPath, "PRAGMA foreign_key_check;"], {
+      cwd: tempDir,
+      stdio: ["ignore", "pipe", "pipe"],
+      encoding: "utf8",
+    }).trim();
+    const jobs = execFileSync(
+      "sqlite3",
+      [
+        dbPath,
+        "SELECT id || '|' || COALESCE(retry_of, '') || '|' || kind FROM research_jobs ORDER BY created_at;",
+      ],
+      {
+        cwd: tempDir,
+        stdio: ["ignore", "pipe", "pipe"],
+        encoding: "utf8",
+      },
+    )
+      .trim()
+      .split("\n")
+      .filter(Boolean);
+
+    return { foreignKeyCheck, jobs };
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 }

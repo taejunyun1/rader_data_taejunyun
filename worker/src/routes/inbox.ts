@@ -179,12 +179,12 @@ inbox.post("/url", async (c) => {
       extractedText: page.text,
       textScope: acquisition.textScope,
       extractionMethod: acquisition.extractionMethod,
-      finalUrl: normalized,
+      finalUrl: page.finalUrl,
       acquiredAt: new Date().toISOString(),
       metadata: {
         siteName: page.siteName,
         description: page.description,
-        finalUrl: normalized,
+        finalUrl: page.finalUrl,
       },
     });
     if (!result.duplicateOf && result.qualityStatus === "READY") await analyzeSource(c.env, result.sourceId);
@@ -298,6 +298,7 @@ inbox.post("/:sourceId/reextract", async (c) => {
   if (!source) return c.json({ error: "not_found" }, 404);
   let original: string | ArrayBuffer;
   let extractedText = body?.text?.trim() ?? "";
+  let acquiredFinalUrl: string | null = null;
   let acquisition: { textScope: TextScope; extractionMethod: ExtractionMethod } | null = null;
   if (source.input_format === "URL_HTML") {
     if (!source.canonical_url) return c.json({ error: "url_not_available" }, 400);
@@ -305,6 +306,7 @@ inbox.post("/:sourceId/reextract", async (c) => {
     if (!page) return c.json({ error: "reextract_failed" }, 502);
     original = page.html;
     extractedText = page.text;
+    acquiredFinalUrl = page.finalUrl;
     acquisition = classifyAcquiredText(extractedText, "URL_HTML", "HTML_STATIC");
   } else {
     if (!extractedText) return c.json({ error: "extracted_text_required" }, 400);
@@ -315,16 +317,18 @@ inbox.post("/:sourceId/reextract", async (c) => {
   let result: InsertVersionResult | { versionId: string; version: number; qualityStatus: QualityStatus };
   let reviewStatus: VersionReviewStatus = "PENDING_REVIEW";
   if (acquisition) {
-    const r2Key = buildVersionKey(sourceId, await nextVersionNumber(c.env.DB, sourceId), source.title);
-    await c.env.ORIGINALS.put(r2Key, original, { customMetadata: { sourceId, origin: "REEXTRACT" } });
+    const versionId = uuid();
+    const r2Key = buildAcquisitionKey(sourceId, versionId, source.title);
+    await c.env.ORIGINALS.put(r2Key, original, { customMetadata: { sourceId, versionId, origin: "REEXTRACT" } });
     result = await appendAcquisitionVersion(c.env.DB, {
+      versionId,
       sourceId,
       r2Key,
       extractedText,
       inputFormat: source.input_format as InputFormat,
       textScope: acquisition.textScope,
       extractionMethod: acquisition.extractionMethod,
-      finalUrl: source.canonical_url,
+      finalUrl: acquiredFinalUrl,
       acquiredAt: new Date().toISOString(),
       versionOrigin: "REEXTRACT",
       parentVersionId: active?.id ?? null,
@@ -458,17 +462,18 @@ inbox.post("/retry/:sourceId", async (c) => {
     if (!source) return c.json({ error: "not_found" }, 404);
     const active = await getActiveVersion(c.env.DB, sourceId);
     const acquisition = classifyAcquiredText(page.text, "URL_HTML", "HTML_STATIC");
-    const nextVersion = await nextVersionNumber(c.env.DB, sourceId);
-    const r2Key = buildVersionKey(sourceId, nextVersion, source.title);
-    await c.env.ORIGINALS.put(r2Key, page.html, { customMetadata: { sourceId, origin: "REEXTRACT" } });
+    const versionId = uuid();
+    const r2Key = buildAcquisitionKey(sourceId, versionId, source.title);
+    await c.env.ORIGINALS.put(r2Key, page.html, { customMetadata: { sourceId, versionId, origin: "REEXTRACT" } });
     const result = await appendAcquisitionVersion(c.env.DB, {
+      versionId,
       sourceId,
       r2Key,
       extractedText: page.text,
       inputFormat: "URL_HTML",
       textScope: acquisition.textScope,
       extractionMethod: acquisition.extractionMethod,
-      finalUrl: src.canonical_url,
+      finalUrl: page.finalUrl,
       acquiredAt: new Date().toISOString(),
       versionOrigin: "REEXTRACT",
       parentVersionId: active?.id ?? null,
@@ -572,6 +577,11 @@ async function nextVersionNumber(db: D1Database, sourceId: string): Promise<numb
 function buildVersionKey(sourceId: string, version: number, sourceTitle: string): string {
   const safeTitle = sourceTitle.replace(/[^a-zA-Z0-9가-힣._-]+/g, "_").slice(0, 120);
   return `originals/${sourceId}/v${version}${safeTitle ? `-${safeTitle}` : ""}`;
+}
+
+function buildAcquisitionKey(sourceId: string, versionId: string, sourceTitle: string): string {
+  const safeTitle = sourceTitle.replace(/[^a-zA-Z0-9가-힣._-]+/g, "_").slice(0, 120);
+  return `originals/${sourceId}/acq-${versionId}${safeTitle ? `-${safeTitle}` : ""}`;
 }
 
 async function insertVersion(env: Env, input: InsertVersionInput): Promise<InsertVersionResult> {

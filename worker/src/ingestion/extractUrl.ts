@@ -4,6 +4,7 @@ export interface ExtractedPage {
   text: string;
   siteName: string | null;
   description: string | null;
+  finalUrl: string;
 }
 
 export async function fetchAndExtract(url: string): Promise<ExtractedPage> {
@@ -31,6 +32,7 @@ export async function fetchAndExtract(url: string): Promise<ExtractedPage> {
 
   const raw = await res.text();
   const html = raw.length > 2_000_000 ? raw.slice(0, 2_000_000) : raw;
+  const finalUrl = res.url || url;
   const title =
     matchTag(html, "title") ??
     matchMeta(html, "og:title") ??
@@ -39,7 +41,7 @@ export async function fetchAndExtract(url: string): Promise<ExtractedPage> {
   const siteName = matchMeta(html, "og:site_name");
   const text = htmlToText(html).slice(0, 300_000);
 
-  return { html, title: title.slice(0, 300), text, siteName, description };
+  return { html, title: title.slice(0, 300), text, siteName, description, finalUrl };
 }
 
 function matchTag(html: string, tag: string): string | null {

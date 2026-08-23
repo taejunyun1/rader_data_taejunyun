@@ -1,3 +1,6 @@
+BEGIN;
+PRAGMA defer_foreign_keys = ON;
+
 ALTER TABLE source_versions ADD COLUMN text_scope TEXT NOT NULL DEFAULT 'UNKNOWN';
 ALTER TABLE source_versions ADD COLUMN extraction_method TEXT NOT NULL DEFAULT 'LEGACY';
 ALTER TABLE source_versions ADD COLUMN extraction_error TEXT;
@@ -29,7 +32,7 @@ CREATE TABLE research_jobs_new (
   result_ref_json TEXT,
   error_code TEXT,
   error TEXT,
-  retry_of TEXT REFERENCES research_jobs(id),
+  retry_of TEXT REFERENCES research_jobs_new(id),
   requested_by TEXT,
   dedupe_key TEXT NOT NULL,
   dismissed_at TEXT,
@@ -38,9 +41,15 @@ CREATE TABLE research_jobs_new (
   finished_at TEXT,
   updated_at TEXT NOT NULL
 );
-INSERT INTO research_jobs_new SELECT id, workflow_instance_id, kind, status, progress, message, input_json, result_json, result_ref_json, error_code, error, retry_of, requested_by, dedupe_key, dismissed_at, created_at, started_at, finished_at, updated_at FROM research_jobs;
+INSERT INTO research_jobs_new
+SELECT id, workflow_instance_id, kind, status, progress, message, input_json, result_json, result_ref_json,
+       error_code, error, retry_of, requested_by, dedupe_key, dismissed_at, created_at, started_at, finished_at,
+       updated_at
+FROM research_jobs;
 DROP TABLE research_jobs;
 ALTER TABLE research_jobs_new RENAME TO research_jobs;
 CREATE INDEX idx_research_jobs_recent ON research_jobs(created_at DESC);
 CREATE INDEX idx_research_jobs_status ON research_jobs(status, updated_at DESC);
 CREATE UNIQUE INDEX idx_research_jobs_active_dedupe ON research_jobs(dedupe_key) WHERE status IN ('QUEUED', 'RUNNING');
+
+COMMIT;

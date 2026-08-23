@@ -86,3 +86,53 @@ No Task 2 blocking issues remain after the requested verification.
 Residual note:
 
 - I verified the migration by code inspection and surrounding schema history, not by executing a separate D1 migration dry-run command, because the explicit user verification scope for this task was limited to the two Vitest files and the shared/worker typechecks.
+
+## Review Fix Update
+
+Date: 2026-08-23
+
+The original review finding was valid. Replaying `worker/migrations/0015_source_acquisition.sql` from base commit `66fc254` against SQLite with `PRAGMA foreign_keys=ON` and an existing `retry_of` row reproduced the failure:
+
+- `FOREIGN KEY constraint failed`
+- the rebuild then aborted before `research_jobs_new` could be renamed cleanly
+
+The first uncommitted fix changed the rebuilt table to `retry_of REFERENCES research_jobs_new(id)` and copied retry chains in dependency order. That addressed the normal parent/child retry case, but it still dropped a literal self-reference row such as `retry_of = id` if such legacy data existed from a prior foreign-key-off state.
+
+I corrected the migration by wrapping it in a transaction, enabling `PRAGMA defer_foreign_keys = ON`, and copying all `research_jobs` rows directly into `research_jobs_new` before dropping/renaming the table. That keeps enforcement active at commit time while preserving:
+
+- normal retry chains
+- literal self-references
+- the rebuilt self-referential foreign key after rename
+
+I added a focused regression test in `web/src/lib/ingestion.test.ts` that executes the real `0015_source_acquisition.sql` through `sqlite3` against a seeded database containing both:
+
+- `job-2.retry_of = job-1`
+- `job-3.retry_of = job-3`
+
+The test asserts:
+
+- the migration completes with foreign keys enabled
+- `PRAGMA foreign_key_check` returns no violations
+- all seeded rows remain present with their retry links intact
+
+I also reviewed the acquisition version reservation flow. The current `appendAcquisitionVersion` and inbox re-extract/retry paths are safe because they now reserve a stable `versionId` first, derive the acquisition R2 key from that UUID, and retry only the D1 `version` number on unique-conflict. The existing/new test coverage in `web/src/lib/ingestion.test.ts` verifies that a version reservation retry:
+
+- preserves the same acquisition `versionId`
+- preserves the same UUID-derived R2 key
+- advances only the D1 numeric `version`
+
+Final verification run on 2026-08-23:
+
+```bash
+pnpm --dir web exec vitest run src/lib/ingestion.test.ts src/lib/remoteAcquisition.test.ts
+pnpm --filter @radar/shared typecheck
+pnpm --filter @radar/worker typecheck
+pnpm --dir web exec vitest run src/lib/ingestion.test.ts -t "migrates research_jobs retry chains and self-references with foreign keys enabled"
+```
+
+Observed results:
+
+- Vitest targeted suite: `2` files passed, `20` tests passed
+- Shared typecheck: passed
+- Worker typecheck: passed
+- Focused migration regression: `1` test passed

@@ -46,6 +46,7 @@ export function decideIncomingVersion(input: { activeOrigin: string | null; inco
 }
 
 export interface AppendAcquisitionVersionInput {
+  versionId?: string;
   sourceId: string;
   r2Key: string | null;
   extractedText: string;
@@ -59,6 +60,8 @@ export interface AppendAcquisitionVersionInput {
   versionOrigin?: VersionOrigin;
   parentVersionId?: string | null;
 }
+
+const MAX_VERSION_RESERVATION_ATTEMPTS = 5;
 
 function meaningfulCharsFromReport(raw: string | null, text: string | null): number {
   try {
@@ -119,62 +122,120 @@ export async function appendAcquisitionVersion(
 ): Promise<{ versionId: string; version: number; qualityStatus: QualityStatus }> {
   const activeVersion = await getActiveVersion(db, input.sourceId);
   const incomingOrigin = input.versionOrigin ?? "REEXTRACT";
-  const row = await db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM source_versions WHERE source_id = ?")
-    .bind(input.sourceId)
-    .first<{ version: number }>();
-  const version = (row?.version ?? 0) + 1;
-  const versionId = uuid();
+  const versionId = input.versionId ?? uuid();
   const extractedText = input.extractedText.slice(0, 500_000);
   const normalized = normalizeIngestText(extractedText, input.inputFormat);
   const meaningfulChars = normalized.report.meaningfulChars;
   const qualityStatus = qualityStatusForTextScope(input.textScope, normalized.qualityStatus, meaningfulChars);
+  const contentHash = await sha256Hex(extractedText);
+  const ts = input.acquiredAt ?? new Date().toISOString();
+  const parentVersionId = input.parentVersionId ?? activeVersion?.id ?? null;
+  const { version } = await insertAcquisitionVersion(db, {
+    versionId,
+    sourceId: input.sourceId,
+    r2Key: input.r2Key,
+    extractedText,
+    contentHash,
+    normalizedText: normalized.normalizedText,
+    normalizationReportJson: JSON.stringify(normalized.report),
+    versionOrigin: incomingOrigin,
+    parentVersionId,
+    createdAt: ts,
+    textScope: input.textScope,
+    extractionMethod: input.extractionMethod,
+    extractionError: input.extractionError ?? null,
+    contentType: input.contentType ?? null,
+    finalUrl: input.finalUrl ?? null,
+    acquiredAt: input.acquiredAt ?? ts,
+  });
+
+  await db.prepare("UPDATE sources SET updated_at = ? WHERE id = ?").bind(ts, input.sourceId).run();
+
+  const currentActiveVersion = await getActiveVersion(db, input.sourceId);
   const activateIncoming = shouldActivateAcquisitionVersion({
-    activeVersion,
+    activeVersion: currentActiveVersion,
     textScope: input.textScope,
     qualityStatus,
     incomingMeaningfulChars: meaningfulChars,
     incomingOrigin,
   });
-  const reviewStatus: VersionReviewStatus = activateIncoming ? "ACTIVE" : "PENDING_REVIEW";
-  const contentHash = await sha256Hex(extractedText);
-  const ts = input.acquiredAt ?? new Date().toISOString();
-
-  await db.batch([
-    db.prepare(
-      `INSERT INTO source_versions
-       (id, source_id, version, r2_key, extracted_text, char_count, content_hash, normalized_text,
-        normalization_status, normalization_report_json, version_origin, parent_version_id, review_status, created_at,
-        text_scope, extraction_method, extraction_error, content_type, final_url, acquired_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'READY', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(
-      versionId,
-      input.sourceId,
-      version,
-      input.r2Key,
-      extractedText,
-      extractedText.length,
-      contentHash,
-      normalized.normalizedText,
-      JSON.stringify(normalized.report),
-      incomingOrigin,
-      input.parentVersionId ?? activeVersion?.id ?? null,
-      reviewStatus,
-      ts,
-      input.textScope,
-      input.extractionMethod,
-      input.extractionError ?? null,
-      input.contentType ?? null,
-      input.finalUrl ?? null,
-      input.acquiredAt ?? ts,
-    ),
-    db.prepare("UPDATE sources SET updated_at = ? WHERE id = ?").bind(ts, input.sourceId),
-  ]);
 
   if (activateIncoming) {
     await activateVersion(db, input.sourceId, versionId, qualityStatus, ts);
   }
 
   return { versionId, version, qualityStatus };
+}
+
+async function insertAcquisitionVersion(
+  db: D1Database,
+  input: {
+    versionId: string;
+    sourceId: string;
+    r2Key: string | null;
+    extractedText: string;
+    contentHash: string;
+    normalizedText: string;
+    normalizationReportJson: string;
+    versionOrigin: VersionOrigin;
+    parentVersionId: string | null;
+    createdAt: string;
+    textScope: TextScope;
+    extractionMethod: ExtractionMethod;
+    extractionError: string | null;
+    contentType: string | null;
+    finalUrl: string | null;
+    acquiredAt: string;
+  },
+): Promise<{ version: number }> {
+  for (let attempt = 0; attempt < MAX_VERSION_RESERVATION_ATTEMPTS; attempt++) {
+    const row = await db.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM source_versions WHERE source_id = ?")
+      .bind(input.sourceId)
+      .first<{ version: number }>();
+    const version = (row?.version ?? 0) + 1;
+
+    try {
+      await db.prepare(
+        `INSERT INTO source_versions
+         (id, source_id, version, r2_key, extracted_text, char_count, content_hash, normalized_text,
+          normalization_status, normalization_report_json, version_origin, parent_version_id, review_status, created_at,
+          text_scope, extraction_method, extraction_error, content_type, final_url, acquired_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'READY', ?, ?, ?, 'PENDING_REVIEW', ?, ?, ?, ?, ?, ?, ?)`
+      ).bind(
+        input.versionId,
+        input.sourceId,
+        version,
+        input.r2Key,
+        input.extractedText,
+        input.extractedText.length,
+        input.contentHash,
+        input.normalizedText,
+        input.normalizationReportJson,
+        input.versionOrigin,
+        input.parentVersionId,
+        input.createdAt,
+        input.textScope,
+        input.extractionMethod,
+        input.extractionError,
+        input.contentType,
+        input.finalUrl,
+        input.acquiredAt,
+      ).run();
+      return { version };
+    } catch (error) {
+      if (attempt < MAX_VERSION_RESERVATION_ATTEMPTS - 1 && isVersionReservationConflict(error)) {
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  throw new Error("version_reservation_failed");
+}
+
+function isVersionReservationConflict(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("source_versions.source_id, source_versions.version");
 }
 
 export async function activateVersion(db: D1Database, sourceId: string, versionId: string, qualityStatus: QualityStatus, now = new Date().toISOString()): Promise<void> {
