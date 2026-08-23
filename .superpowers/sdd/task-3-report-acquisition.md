@@ -122,3 +122,45 @@ tsc --noEmit  -> exit 0
 
 - `extractStaticHtml` is still regex-based and deterministic, so malformed or deeply nested HTML can score imperfectly. That is acceptable for Task 3 because the brief explicitly constrained this step to static extraction without browser rendering.
 - The PDF boundary currently returns `PDF_CONVERSION_FAILED` after raw preservation. Task 4 must replace that with the Workers AI `toMarkdown()` branch.
+
+## Review Fix Follow-up (2026-08-23)
+
+Addressed both Important review findings against commit `9e5de4a` without expanding Task 3 scope.
+
+### 1. Hostname DNS resolution hardening
+
+- `acquireRemoteSource()` now performs a deterministic hostname resolution check before every outbound request, including each redirect hop.
+- The request boundary remains `http` / `https` only.
+- Literal blocked hosts still fail immediately, and non-literal hostnames now resolve through Cloudflare DNS-over-HTTPS before the fetch proceeds.
+- Any lookup failure, unresolved hostname, or A/AAAA answer in blocked ranges now fails closed with `REDIRECT_BLOCKED`.
+- Blocked ranges now cover:
+  - IPv4 loopback, link-local, RFC1918/private, unspecified, carrier-grade NAT, and benchmark ranges
+  - IPv6 loopback, link-local, unique-local, site-local, unspecified, and IPv4-mapped private equivalents
+- Added an injectable DNS resolver seam for tests so the acquisition path stays deterministic without live DNS.
+
+### 2. Nested consent/share/ad stripping
+
+- `extractStaticHtml()` still removes the original structural chrome tags, but now also strips nested elements whose `class`, `id`, or ARIA-style attributes clearly mark them as cookie, consent, share/social, subscribe/promo, or ad containers.
+- This cleanup happens before candidate scoring and again before fragment text conversion, so those strings do not bleed into the selected article text even when the noisy block sits inside `main`, `article`, or content-hint containers.
+
+### Added Regression Coverage
+
+- Added a hostname-resolution regression proving `https://public.example/...` is rejected when the injected resolver returns `127.0.0.1` / `10.0.0.9`.
+- Added an HTML regression proving nested cookie, consent, share, and ad text is removed from extracted article text.
+
+### Final Verification
+
+Ran fresh after the fixes:
+
+```bash
+pnpm --dir web exec vitest run src/lib/remoteAcquisition.test.ts
+pnpm --filter @radar/worker typecheck
+```
+
+Observed final result:
+
+```text
+Test Files  1 passed (1)
+Tests       11 passed (11)
+tsc --noEmit  -> exit 0
+```

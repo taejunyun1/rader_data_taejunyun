@@ -43,6 +43,21 @@ describe("static HTML extraction", () => {
     expect(result.scope).toBe("FULLTEXT");
   });
 
+  it("removes nested cookie, consent, share, and ad blocks inside content containers", async () => {
+    const { extractStaticHtml } = await import("../../../worker/src/ingestion/extractHtml");
+
+    const result = extractStaticHtml(
+      `<main><article><h1>제목</h1><p>${"본문 ".repeat(260)}</p><div class="cookie-banner">쿠키 동의</div><section aria-label="Share this article">공유하기</section><aside id="consent-panel">개인정보 동의</aside><div class="ad-slot">광고 배너</div></article></main>`,
+      "https://example.com/article",
+    );
+
+    expect(result.text).toContain("본문");
+    expect(result.text).not.toContain("쿠키 동의");
+    expect(result.text).not.toContain("공유하기");
+    expect(result.text).not.toContain("개인정보 동의");
+    expect(result.text).not.toContain("광고 배너");
+  });
+
   it("falls back to the body when no strong content container exists", async () => {
     const { extractStaticHtml } = await import("../../../worker/src/ingestion/extractHtml");
 
@@ -83,6 +98,8 @@ describe("remote acquisition", () => {
       sourceId: "source-1",
       url: "https://start.example/article",
       version: 2,
+    }, {
+      resolveDns: allowPublicDnsResolution,
     });
 
     expect(result).toMatchObject({
@@ -108,6 +125,25 @@ describe("remote acquisition", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it("blocks hostnames that resolve to loopback or private addresses before issuing the request", async () => {
+    const { acquireRemoteSource } = await import("../../../worker/src/ingestion/acquireRemoteSource");
+    const env = makeAcquisitionEnv();
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await expect(acquireRemoteSource(
+      env,
+      { sourceId: "source-1", url: "https://public.example/article", version: 2 },
+      {
+        resolveDns: async (hostname, recordType) => {
+          expect(hostname).toBe("public.example");
+          return recordType === "A" ? ["127.0.0.1", "10.0.0.9"] : [];
+        },
+      },
+    )).rejects.toThrow("REDIRECT_BLOCKED");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("rejects unsupported content types with a stable error code", async () => {
     const { acquireRemoteSource } = await import("../../../worker/src/ingestion/acquireRemoteSource");
     const env = makeAcquisitionEnv();
@@ -117,7 +153,9 @@ describe("remote acquisition", () => {
     );
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
 
-    await expect(acquireRemoteSource(env, { sourceId: "source-1", url: "https://example.com/file.png", version: 2 }))
+    await expect(acquireRemoteSource(env, { sourceId: "source-1", url: "https://example.com/file.png", version: 2 }, {
+      resolveDns: allowPublicDnsResolution,
+    }))
       .rejects.toThrow("UNSUPPORTED_CONTENT_TYPE");
   });
 });
@@ -170,4 +208,8 @@ function makeAcquisitionEnv() {
 function withResponseUrl(response: Response, url: string): Response {
   Object.defineProperty(response, "url", { value: url, configurable: true });
   return response;
+}
+
+async function allowPublicDnsResolution(_hostname: string, recordType: "A" | "AAAA"): Promise<string[]> {
+  return recordType === "A" ? ["93.184.216.34"] : ["2606:2800:220:1:248:1893:25c8:1946"];
 }
