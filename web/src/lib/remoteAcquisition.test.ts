@@ -419,6 +419,35 @@ describe("remote acquisition", () => {
 
     expect(env.__fixture.objects.has("originals/source-invalid-pdf/v2.pdf")).toBe(true);
   });
+
+  it("maps invalid-PDF raw storage failures to HTTP_5XX", async () => {
+    const { acquireRemoteSource } = await import("../../../worker/src/ingestion/acquireRemoteSource");
+    const env = makeAcquisitionEnv({
+      contentType: "application/pdf",
+      body: new TextEncoder().encode("not-a-pdf").buffer,
+      put: async () => {
+        throw new Error("r2_put_failed");
+      },
+    });
+    const response = withResponseUrl(
+      new Response(env.__fixture.body.slice(0), {
+        status: 200,
+        headers: { "content-type": "application/pdf" },
+      }),
+      "https://example.com/paper.pdf",
+    );
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
+
+    await expect(acquireRemoteSource(env, {
+      sourceId: "source-invalid-pdf-put-failure",
+      url: "https://example.com/paper.pdf",
+      version: 2,
+    }, {
+      resolveDns: allowPublicDnsResolution,
+    })).rejects.toThrow("HTTP_5XX");
+
+    expect(env.__fixture.objects.has("originals/source-invalid-pdf-put-failure/v2.pdf")).toBe(false);
+  });
 });
 
 describe("source acquisition workflow", () => {
@@ -586,6 +615,7 @@ function makeAcquisitionEnv(input: {
   contentType?: string;
   body?: ArrayBuffer;
   toMarkdown?: (files: unknown[]) => Promise<{ name: string; blob: Blob }[]>;
+  put?: (key: string, value: ArrayBuffer | Blob | string) => Promise<void>;
 } = {}) {
   const objects = new Map<string, ArrayBuffer>();
   const contentType = input.contentType ?? "text/html";
@@ -593,6 +623,7 @@ function makeAcquisitionEnv(input: {
   return {
     ORIGINALS: {
       put: async (key: string, value: ArrayBuffer | Blob | string) => {
+        if (input.put) return input.put(key, value);
         if (value instanceof ArrayBuffer) {
           objects.set(key, value);
           return;

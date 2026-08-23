@@ -90,8 +90,12 @@ export async function acquireRemoteSource(
 
     if (error instanceof RemoteFetchError) {
       if (error.code === "PDF_SIGNATURE_INVALID" && error.document) {
-        const r2Key = buildOriginalKey(input.sourceId, input.version, input.versionId, "PDF");
-        await env.ORIGINALS.put(r2Key, error.document.body);
+        try {
+          const r2Key = buildOriginalKey(input.sourceId, input.version, input.versionId, "PDF");
+          await env.ORIGINALS.put(r2Key, error.document.body);
+        } catch {
+          throw new RemoteAcquisitionError("HTTP_5XX");
+        }
       }
       throw new RemoteAcquisitionError(error.code);
     }
