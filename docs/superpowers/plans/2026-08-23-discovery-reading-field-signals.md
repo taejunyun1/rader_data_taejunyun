@@ -67,7 +67,7 @@
 **Interfaces:**
 
 - Consumes: existing `DiscoverySourcePreset`, `DiscoveryAccessStatus`, and `classifyDiscoveryAccess()`.
-- Produces: `DiscoveryContentTarget`, `DiscoverySourceAccessPolicy`, expanded `DiscoverySourcePreset`, `DEFAULT_DISCOVERY_FEEDS`, `DEFAULT_FIELD_SIGNAL_FEEDS`, `discoverySourceByFeedUrl()`, and the optional `sourcePolicy` argument used by Tasks 2 and 4.
+- Produces: `DiscoveryContentTarget`, `DiscoverySourceAccessPolicy`, expanded `DiscoverySourcePreset`, `DEFAULT_DISCOVERY_FEEDS`, `DEFAULT_FIELD_SIGNAL_FEEDS`, `discoverySourceByFeedUrl()`, `discoverySourceById()`, and the optional `sourcePolicy` argument used by Tasks 2 and 4.
 
 - [ ] **Step 1: Write failing source-registry tests**
 
@@ -80,6 +80,7 @@ import {
   DEFAULT_FIELD_SIGNAL_FEEDS,
   DISCOVERY_SOURCE_PRESETS,
   discoverySourceByFeedUrl,
+  discoverySourceById,
 } from "@radar/shared";
 
 describe("discovery source registry", () => {
@@ -118,6 +119,8 @@ describe("discovery source registry", () => {
       feedUrl: "https://hyperallergic.com/rss/",
     });
     expect(discoverySourceByFeedUrl("https://unknown.example/feed")).toBeNull();
+    expect(discoverySourceById("icp")).toMatchObject({ target: "FIELD_SIGNAL", autoCollect: true });
+    expect(discoverySourceById("unknown-source")).toBeNull();
   });
 });
 ```
@@ -326,6 +329,10 @@ export function discoverySourceByFeedUrl(feedUrl: string): DiscoverySourcePreset
     ? DISCOVERY_SOURCE_PRESETS.find((source) => source.id === legacySourceId) ?? null
     : null;
 }
+
+export function discoverySourceById(sourceId: string): DiscoverySourcePreset | null {
+  return DISCOVERY_SOURCE_PRESETS.find((source) => source.id === sourceId) ?? null;
+}
 ```
 
 - [ ] **Step 5: Make reading access classification honor the source policy**
@@ -352,7 +359,19 @@ export function classifyDiscoveryAccess(
   if (normalizedProvider === "openalex") return "UNKNOWN";
   return "UNKNOWN";
 }
+
+export function resolveDiscoveryAccessForExisting(
+  stored: DiscoveryAccessStatus | null | undefined,
+  provider: string | null | undefined,
+  href: string | null | undefined,
+  sourcePolicy?: "FREE_FULLTEXT" | "PAYWALLED" | "INSTITUTION" | "UNKNOWN",
+): DiscoveryAccessStatus {
+  if (stored === "PDF" || stored === "FREE_FULLTEXT") return stored;
+  return classifyDiscoveryAccess(provider, href, sourcePolicy);
+}
 ```
+
+Replace the existing `resolveDiscoveryAccessForExisting()` implementation with the function above so source policy is also used when an existing `CANDIDATE` is reclassified.
 
 - [ ] **Step 6: Run focused tests and all typechecks**
 
@@ -1465,9 +1484,11 @@ export async function runDiscoveryFieldSignals(env: Env, profile: DiscoveryProfi
 }
 ```
 
-- [ ] **Step 6: Persist reading source provenance**
+- [ ] **Step 6: Persist reading source provenance and use it in maintenance**
 
-In the `INSERT INTO discovery_candidates` statement in `worker/src/discovery/run.ts`, add `source_id` after `query_source`, add one `?` after the existing final placeholder, and add `candidate.sourceId` as the final binding. Do not add `source_id` to the maintenance SELECT because access reassessment does not consume it; the API projection is updated in Task 5.
+In the maintenance SELECT in `worker/src/discovery/run.ts`, add `source_id` after `created_at` and add `source_id: string | null` to the row type. In the existing-candidate loop, resolve `const sourcePolicy = candidate.source_id ? discoverySourceById(candidate.source_id)?.accessPolicy : undefined;` and pass it as the fourth argument to `resolveDiscoveryAccessForExisting(candidate.access_status, candidate.provider, candidate.external_url, sourcePolicy)`.
+
+In the `INSERT INTO discovery_candidates` statement, add `source_id` after `query_source`, add one `?` after the existing final placeholder, and add `candidate.sourceId` as the final binding. The API projection is updated in Task 5.
 
 - [ ] **Step 7: Run collector tests, all unit tests, and typecheck**
 
