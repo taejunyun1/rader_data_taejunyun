@@ -36,6 +36,9 @@ let reservoirItems: Array<Record<string, unknown>>;
 let pendingSourceOneDetail: Promise<Response> | null;
 let pendingSearch: Promise<Response> | null;
 let pendingDeepHistory: Record<string, Promise<Response> | undefined>;
+let pendingDecisionSignal: Promise<Response> | null;
+let pendingReanalysis: Promise<Response> | null;
+let viewSignalFailure = false;
 let sourceOneDetailFailure = false;
 
 beforeEach(() => {
@@ -46,6 +49,9 @@ beforeEach(() => {
   pendingSourceOneDetail = null;
   pendingSearch = null;
   pendingDeepHistory = {};
+  pendingDecisionSignal = null;
+  pendingReanalysis = null;
+  viewSignalFailure = false;
   sourceOneDetailFailure = false;
   vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -65,7 +71,13 @@ beforeEach(() => {
     if (url === "/api/reservoir/source-1/deep-analysis" && init?.method === "POST") {
       return Promise.resolve(new Response(JSON.stringify(deepAnalysisResult.body), { status: deepAnalysisResult.status }));
     }
-    if (url === "/api/signals" && init?.method === "POST") return Promise.resolve(new Response(JSON.stringify({ ok: true })));
+    if (url === "/api/inbox/retry/source-1?analyze=1" && init?.method === "POST" && pendingReanalysis) return pendingReanalysis;
+    if (url === "/api/signals" && init?.method === "POST") {
+      const action = JSON.parse(String(init.body ?? "{}")) as { action?: string };
+      if (action.action === "view" && viewSignalFailure) return Promise.reject(new Error("signal_failed"));
+      if (action.action !== "view" && pendingDecisionSignal) return pendingDecisionSignal;
+      return Promise.resolve(new Response(JSON.stringify({ ok: true })));
+    }
     return Promise.resolve(new Response(JSON.stringify({ items: [] })));
   }));
 });
@@ -166,6 +178,36 @@ describe("ReservoirView", () => {
     expect(screen.queryByText(/검색 결과 1개/)).not.toBeInTheDocument();
   });
 
+  it("invalidates a pending search when an empty search clears it", async () => {
+    let resolveSearch: (response: Response) => void = () => undefined;
+    pendingSearch = new Promise((resolve) => { resolveSearch = resolve; });
+    render(<ReservoirView />);
+
+    const search = screen.getByPlaceholderText("제목, 저자, 질문으로 검색");
+    await userEvent.type(search, "사진");
+    await userEvent.click(screen.getByRole("button", { name: "검색" }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/search?q=%EC%82%AC%EC%A7%84"));
+    await userEvent.clear(search);
+    await userEvent.click(screen.getByRole("button", { name: "검색" }));
+
+    await act(async () => {
+      resolveSearch(new Response(JSON.stringify({ hits: [{ sourceId: "source-1", title: "검색된 자료 A", matched: "title", snippet: "사진" }] })));
+    });
+
+    expect(screen.queryByText(/검색 결과 1개/)).not.toBeInTheDocument();
+    expect(screen.getByText("읽을 자료를 선택하세요")).toBeInTheDocument();
+  });
+
+  it("keeps a loaded detail visible when its best-effort view signal fails", async () => {
+    viewSignalFailure = true;
+    render(<ReservoirView />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+
+    expect(await screen.findByText("시스템이 정리한 내용")).toBeInTheDocument();
+    expect(screen.queryByText("자료 상세 내용을 불러오지 못했습니다.")).not.toBeInTheDocument();
+  });
+
   it("does not apply a prior source's deep-history result after selecting another source", async () => {
     let resolveDeepHistory: (response: Response) => void = () => undefined;
     pendingDeepHistory["analysis-1"] = new Promise((resolve) => { resolveDeepHistory = resolve; });
@@ -248,6 +290,29 @@ describe("ReservoirView", () => {
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/signals", expect.objectContaining({ method: "POST", body: JSON.stringify({ sourceId: "source-1", action: "develop" }) })));
   });
 
+  it("does not reselect an earlier source when its pending decision completes", async () => {
+    let resolveDecision: (response: Response) => void = () => undefined;
+    pendingDecisionSignal = new Promise((resolve) => { resolveDecision = resolve; });
+    reservoirItems = [
+      reservoirItems[0],
+      { ...reservoirItems[0], id: "source-2", title: "자료 B" },
+    ];
+    render(<ReservoirView />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+    await userEvent.click(screen.getByRole("button", { name: "판단하기" }));
+    await userEvent.click(screen.getByRole("button", { name: "보관하기" }));
+    await userEvent.click(screen.getByRole("button", { name: /자료 B/ }));
+    expect(await screen.findByText("두 번째 자료 분석")).toBeInTheDocument();
+
+    await act(async () => {
+      resolveDecision(new Response(JSON.stringify({ ok: true })));
+    });
+
+    expect(screen.getByText("두 번째 자료 분석")).toBeInTheDocument();
+    expect(screen.queryByText("시스템이 정리한 내용")).not.toBeInTheDocument();
+  });
+
   it("runs deep analysis with the selected quality profile", async () => {
     render(<ReservoirView />);
     await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
@@ -284,6 +349,24 @@ describe("ReservoirView", () => {
 
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/inbox/retry/source-1?analyze=1", { method: "POST" }));
     expect(fetch).not.toHaveBeenCalledWith("/api/inbox/retry/source-1?fetch=1", { method: "POST" });
+  });
+
+  it("does not reopen a source when its pending reanalysis completes after returning to the list", async () => {
+    let resolveReanalysis: (response: Response) => void = () => undefined;
+    pendingReanalysis = new Promise((resolve) => { resolveReanalysis = resolve; });
+    render(<ReservoirView />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+    await userEvent.click(screen.getByRole("button", { name: "판단하기" }));
+    await userEvent.click(screen.getByRole("button", { name: "다시 분석하기" }));
+    await userEvent.click(screen.getByRole("button", { name: "목록으로" }));
+
+    await act(async () => {
+      resolveReanalysis(new Response(JSON.stringify({ status: "analyzed" })));
+    });
+
+    expect(screen.getByText("읽을 자료를 선택하세요")).toBeInTheDocument();
+    expect(screen.queryByText("시스템이 정리한 내용")).not.toBeInTheDocument();
   });
 
   it("refetches the canonical source without reanalyzing the current version", async () => {

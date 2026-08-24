@@ -34,3 +34,11 @@
 - Deep-history requests now use their own generation in addition to the interaction generation. For repeated history clicks on the same source, only the newest request may replace the displayed analysis or set the loading error.
 - TDD record: added deferred search-then-selection and repeated same-source history tests. Both failed before the guards were added (late search cleared the newer detail; stale history error surfaced after the later history result) and pass after the change.
 - Verification: focused Task 4 web Vitest run passed (4 files, 38 tests); full web Vitest passed (37 files, 245 tests); `pnpm typecheck` passed for shared, worker, and web; `git diff --check` passed.
+
+## Review follow-up — 2026-08-24 (empty intent and signal isolation)
+
+- An empty Reservoir search now advances the shared interaction generation before clearing search hits. A deferred non-empty search response can no longer restore stale hits after the query has been cleared.
+- View-signal recording now runs after a successful detail fetch as an independent best-effort POST. A failed or rejected view signal no longer clears valid detail or shows a detail-fetch error.
+- Judgment and reanalysis capture their starting interaction generation. Their completion, error, source refresh, selection clear, and list reload now run only while that interaction remains current, so a later source selection or return to the list is not overwritten. The normal same-source completion still refreshes the current source.
+- TDD record: added four deferred-response regressions for empty-search invalidation, failed view signaling, delayed judgment after a newer selection, and delayed reanalysis after returning to the list. The focused RED run failed in exactly those four cases; the GREEN run passed `21` tests.
+- Verification: full web Vitest passed (37 files, 249 tests); `pnpm typecheck` passed for shared, worker, and web. The prior budget-reservation report is preserved verbatim in `task-4-report-history.md`.

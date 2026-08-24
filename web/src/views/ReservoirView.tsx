@@ -246,24 +246,27 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
       if (interactionRequest.current !== requestId) return;
       setDetail(next);
       if (next.deepAnalysis?.profile) setDeepProfile(next.deepAnalysis.profile);
-      await fetch("/api/signals", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceId: id, action: "view" }) });
     } catch {
       if (interactionRequest.current !== requestId) return;
       setDetail(null);
       setDecisionOpen(false);
       setDetailError("자료 상세 내용을 불러오지 못했습니다.");
+      return;
     }
+    void fetch("/api/signals", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceId: id, action: "view" }) }).catch(() => undefined);
   }
 
   async function signal(action: DecisionAction["id"]) {
     if (!detail) return;
     const sourceId = String(detail.source.id);
+    const requestId = interactionRequest.current;
     setActionPending(true);
     setPendingAction(action);
     setDecisionError("");
     try {
       const response = await fetch("/api/signals", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceId, action }) });
       if (!response.ok) throw new Error("signal_failed");
+      if (interactionRequest.current !== requestId) return;
       setMsg(`${action === "develop" ? "발전시키기" : action === "keep" ? "다음 리서치까지 보관" : action === "watch" ? "관찰하기" : "제외하기"}로 기록했습니다.`);
       setDecisionOpen(false);
       if (action === "ignore") {
@@ -272,13 +275,15 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
         await openDetail(sourceId);
       }
       await load();
-    } catch { setDecisionError("분류를 저장하지 못했습니다. 다시 시도해 주세요."); }
+    } catch {
+      if (interactionRequest.current === requestId) setDecisionError("분류를 저장하지 못했습니다. 다시 시도해 주세요.");
+    }
     finally { setActionPending(false); setPendingAction(null); }
   }
 
   async function runSearch() {
-    if (!query.trim()) { setSearchHits(null); return; }
     const requestId = startInteraction();
+    if (!query.trim()) { setSearchHits(null); return; }
     try {
       const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
       if (!response.ok) throw new Error("search_failed");
@@ -293,14 +298,19 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
 
   async function reanalyze() {
     if (!detail) return;
+    const sourceId = String(detail.source.id);
+    const requestId = interactionRequest.current;
     setActionPending(true);
     setMsg("다시 분석하는 중입니다.");
     try {
-      const response = await fetch(`/api/inbox/retry/${String(detail.source.id)}?analyze=1`, { method: "POST" });
+      const response = await fetch(`/api/inbox/retry/${sourceId}?analyze=1`, { method: "POST" });
       const data = await response.json() as { status?: string; error?: string };
+      if (interactionRequest.current !== requestId) return;
       setMsg(data.status === "analyzed" ? "분석을 완료했습니다." : `분석에 실패했습니다: ${String(data.error ?? "알 수 없는 오류").slice(0, 120)}`);
-      await openDetail(String(detail.source.id));
-    } catch { setMsg("분석을 다시 시작하지 못했습니다."); }
+      await openDetail(sourceId);
+    } catch {
+      if (interactionRequest.current === requestId) setMsg("분석을 다시 시작하지 못했습니다.");
+    }
     finally { setActionPending(false); }
   }
 
