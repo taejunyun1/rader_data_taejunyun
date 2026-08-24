@@ -297,16 +297,17 @@
 
 - [x] **Step 5: workflow에 reservation lifecycle을 연결한다.**
 
-  `worker/src/workflows/researchJob.ts`의 `DEEP_ANALYSIS` branch에서 기존 `monthSpendUsd` import/authoritative check를 제거한다. `analyzeDeepSource` 직전에 reserve하고 실패하면 `JobBlockedError("monthly_budget_exhausted", "monthly_budget_exhausted")`를 던진다. reserve 성공 뒤에는 다음 형태로 항상 release한다.
+  `worker/src/workflows/researchJob.ts`의 `DEEP_ANALYSIS` branch에서 기존 `monthSpendUsd` import/authoritative check를 제거한다. `analyzeDeepSource` 직전에 reserve하고 실패하면 `JobBlockedError("monthly_budget_exhausted", "monthly_budget_exhausted")`를 던진다. paid analysis step이 실패할 때는 설정된 workflow retry 동안 reservation을 유지해 다음 시도가 기존 `RESERVED` row를 idempotently 재사용하게 한다. 성공한 뒤에는 별도의 retryable release step으로 해제하고, workflow가 최종 실패하면 outer catch에서 원래 오류를 보존한 채 best-effort cleanup한다.
 
   ```ts
   const reservation = await reserveDeepAnalysisBudget(this.env, { researchJobId: job.id, profile: input.profile });
   if (!reservation.ok) throw new JobBlockedError("monthly_budget_exhausted", "monthly_budget_exhausted");
-  try {
-    return await analyzeDeepSource(this.env, input.sourceId, input.profile);
-  } finally {
+  const result = await analyzeDeepSource(this.env, input.sourceId, input.profile);
+  await step.do("release-deep-analysis-budget", { retries: { limit: 2, delay: "5 seconds", backoff: "exponential" } }, async () => {
     await releaseDeepAnalysisBudgetReservation(this.env.DB, job.id);
-  }
+    return true;
+  });
+  return result;
   ```
 
   route `worker/src/routes/reservoir.ts`의 existing `monthSpendUsd >= budget` check는 불필요한 job creation을 줄이는 fast-path로만 유지한다. workflow reservation이 race-safe 최종 판정이라는 주석을 추가하고, route 결과/HTTP 429 schema는 바꾸지 않는다.
@@ -399,3 +400,5 @@
 - [x] `0016` migration is additive and local D1 migration verification ran successfully (`pnpm db:migrate` → `✅ No migrations to apply!`).
 - [x] budget enforcement is one conditional insert, idempotent by research job id, and release happens on both success and error.
 - [x] `pnpm -r typecheck`, full Vitest, `pnpm build`, core E2E, `git diff --check` have passed before deploy.
+
+Final whole-branch review: approved after Task 1–5 review loops and a final cross-task audit; no Critical/Important findings remain. Remote migration/deploy/Access-browser checks remain pending until authenticated Cloudflare access is available.
