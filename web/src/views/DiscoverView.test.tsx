@@ -12,6 +12,7 @@ const secondCandidate = { ...candidate, id: "candidate-2", title: "다음 후보
 let currentCandidate = candidate;
 let candidateItems: typeof candidate[] | null = null;
 let pendingCandidateAction: Promise<Response> | null = null;
+let candidateListResponse: ((url: string) => Promise<Response> | null) | null = null;
 function acquisitionJob(id: string, status: ResearchJobStatus): ResearchJob {
   return {
     id,
@@ -60,6 +61,7 @@ beforeEach(() => {
   currentCandidate = candidate;
   candidateItems = null;
   pendingCandidateAction = null;
+  candidateListResponse = null;
   vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url === "/api/discover/candidates/candidate-1/keep" && init?.method === "POST") return pendingCandidateAction ?? Promise.resolve(new Response(JSON.stringify({ ok: true, status: "KEPT", sourceId: "source-1", jobId: "job-acquisition-1" })));
@@ -81,7 +83,9 @@ beforeEach(() => {
       fieldSignalStatus = "NEW";
       return Promise.resolve(new Response(JSON.stringify({ ok: true, status: "NEW" })));
     }
-    if (url.startsWith("/api/discover/candidates")) return Promise.resolve(new Response(JSON.stringify({ items: candidateItems ?? [currentCandidate] })));
+    if (url.startsWith("/api/discover/candidates?")) {
+      return candidateListResponse?.(url) ?? Promise.resolve(new Response(JSON.stringify({ items: candidateItems ?? [currentCandidate] })));
+    }
     if (url === "/api/discover/queries") return Promise.resolve(new Response(JSON.stringify({ queries: [] })));
     if (url === "/api/discover/feeds") return Promise.resolve(new Response(JSON.stringify({ feeds: [] })));
     if (url === "/api/settings/homepage") return Promise.resolve(new Response(JSON.stringify({ projects: [] })));
@@ -124,6 +128,30 @@ describe("DiscoverView", () => {
     expect(screen.queryByRole("dialog", { name: "읽은 뒤 판단" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /다음 후보/ })).not.toHaveAttribute("aria-current");
     expect(screen.queryByRole("heading", { name: "다음 후보" })).not.toBeInTheDocument();
+  });
+
+  it("keeps a newer candidate selection when an older filtered reload resolves last", async () => {
+    let resolveKeptReload: (response: Response) => void = () => undefined;
+    const keptReload = new Promise<Response>((resolve) => {
+      resolveKeptReload = resolve;
+    });
+    const candidateUrls: string[] = [];
+    candidateItems = [candidate, secondCandidate];
+    candidateListResponse = (url) => {
+      candidateUrls.push(url);
+      return url.includes("status=KEPT") ? keptReload : Promise.resolve(new Response(JSON.stringify({ items: candidateItems })));
+    };
+    render(<DiscoverView onNavigate={vi.fn()} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /다음 후보/ }));
+    await userEvent.click(screen.getByRole("button", { name: "보관됨" }));
+    await waitFor(() => expect(candidateUrls).toContain("/api/discover/candidates?status=KEPT"));
+    await userEvent.click(screen.getByRole("button", { name: "새 후보" }));
+    await waitFor(() => expect(candidateUrls.filter((url) => url === "/api/discover/candidates?status=CANDIDATE")).toHaveLength(2));
+
+    resolveKeptReload(new Response(JSON.stringify({ items: [candidate] })));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /다음 후보/ })).toHaveAttribute("aria-current", "true"));
   });
 
   it("shows an existing candidate decision in the reading action bar", async () => {

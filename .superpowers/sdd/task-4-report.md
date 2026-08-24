@@ -56,3 +56,11 @@
 - Same-candidate decisions retain their existing intent guard; a reload that removes that candidate now safely invalidates the old intent rather than retargeting its judgment to another candidate.
 - TDD record: added the A-judgment → refreshed-B-only regression. It failed before the change because B replaced A while the judgment sheet stayed open; it passes with neither A nor B selected until an explicit click.
 - Verification: focused Task 4 web Vitest passed (4 files, 44 tests); full web Vitest passed (37 files, 251 tests); `pnpm -r typecheck` passed for shared, worker, and web.
+
+## Review follow-up — 2026-08-24 (Discover candidate list latest intent)
+
+- Discover candidate list requests now receive an incrementing generation and `AbortController`. Mount, status/lane filter changes, completed discovery-job refreshes, explicit retries, and post-decision reloads all use this same guarded path.
+- A response may update candidates, selection, judgment state, or list errors only while it is both the newest list request and the same candidate-selection intent captured when it began. Superseded requests are aborted; late responses and aborts are ignored.
+- The first accepted list request still selects its first candidate by default. Once the user has selected or cleared a candidate, a later accepted list that no longer contains that ID uses the existing reset path: close judgment, clear selection, and do not auto-select another candidate.
+- TDD record: added a deferred `KEPT` filter response versus newer `CANDIDATE` reload regression. It failed before the guard because the late response cleared the selected second candidate; it passes after the change.
+- Verification: focused Task 4 web Vitest passed (4 files, 45 tests); full web Vitest passed (37 files, 252 tests); `pnpm typecheck` passed for shared, worker, and web.

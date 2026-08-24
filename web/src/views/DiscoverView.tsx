@@ -57,6 +57,11 @@ interface CandidateIntent {
   generation: number;
 }
 
+interface CandidateListRequest {
+  generation: number;
+  controller: AbortController;
+}
+
 const STATUS_FILTERS = [
   { value: "CANDIDATE", label: "새 후보" },
   { value: "KEPT", label: "보관됨" },
@@ -203,6 +208,7 @@ export default function DiscoverView({
   const [fieldSignalsCollected, setFieldSignalsCollected] = useState(0);
   const [keptAcquisitionIntent, setKeptAcquisitionIntent] = useState<CandidateIntent & { jobId: string } | null>(null);
   const candidateIntentRef = useRef<CandidateIntent>({ candidateId: null, generation: 0 });
+  const candidateListRequestRef = useRef<CandidateListRequest | null>(null);
   const canAutoSelectCandidateRef = useRef(true);
 
   const advanceCandidateIntent = useCallback((candidateId: string | null): CandidateIntent => {
@@ -216,6 +222,20 @@ export default function DiscoverView({
     && candidateIntentRef.current.generation === intent.generation
   ), []);
 
+  const beginCandidateListRequest = useCallback((): CandidateListRequest => {
+    candidateListRequestRef.current?.controller.abort();
+    const request = {
+      generation: (candidateListRequestRef.current?.generation ?? 0) + 1,
+      controller: new AbortController(),
+    };
+    candidateListRequestRef.current = request;
+    return request;
+  }, []);
+
+  const isCurrentCandidateListRequest = useCallback((request: CandidateListRequest): boolean => (
+    candidateListRequestRef.current?.generation === request.generation
+  ), []);
+
   const openReservoir = useCallback((sourceId: string) => {
     if (onOpenReservoir) {
       onOpenReservoir(sourceId);
@@ -226,12 +246,16 @@ export default function DiscoverView({
 
   const load = useCallback(async (intent?: CandidateIntent) => {
     if (intent && !isCurrentCandidateIntent(intent)) return;
+    const requestIntent = intent ?? candidateIntentRef.current;
+    const request = beginCandidateListRequest();
     setListError("");
     try {
-      const response = await fetch(`/api/discover/candidates?status=${statusFilter}${laneFilter ? `&lane=${laneFilter}` : ""}`);
+      const response = await fetch(`/api/discover/candidates?status=${statusFilter}${laneFilter ? `&lane=${laneFilter}` : ""}`, {
+        signal: request.controller.signal,
+      });
       if (!response.ok) throw new Error("candidates_failed");
       const data = await response.json() as { items?: Candidate[] };
-      if (intent && !isCurrentCandidateIntent(intent)) return;
+      if (!isCurrentCandidateListRequest(request) || !isCurrentCandidateIntent(requestIntent)) return;
       const next = data.items ?? [];
       setCandidates(next);
       const selectedCandidateId = candidateIntentRef.current.candidateId;
@@ -244,11 +268,12 @@ export default function DiscoverView({
         advanceCandidateIntent(next[0].id);
         setSelectedId(next[0].id);
       }
-    } catch {
-      if (intent && !isCurrentCandidateIntent(intent)) return;
+    } catch (error) {
+      if (!isCurrentCandidateListRequest(request) || !isCurrentCandidateIntent(requestIntent)) return;
+      if (error instanceof Error && error.name === "AbortError") return;
       setListError("발견 후보를 불러오지 못했습니다.");
     }
-  }, [isCurrentCandidateIntent, laneFilter, statusFilter]);
+  }, [beginCandidateListRequest, isCurrentCandidateIntent, isCurrentCandidateListRequest, laneFilter, statusFilter]);
 
   const loadFieldSignals = useCallback(async () => {
     setFieldSignalError("");
@@ -264,6 +289,7 @@ export default function DiscoverView({
 
   useEffect(() => {
     void load();
+    return () => candidateListRequestRef.current?.controller.abort();
   }, [load]);
 
   useEffect(() => {
