@@ -17,7 +17,7 @@ interface DecisionBottomSheetProps {
   children?: React.ReactNode;
 }
 
-const DECISION_STATUS_LABELS: Record<DecisionAction["id"], string> = {
+export const DECISION_STATUS_LABELS: Record<DecisionAction["id"], string> = {
   develop: "발전 반영됨",
   keep: "다음 리서치까지 보관됨",
   watch: "관찰 중",

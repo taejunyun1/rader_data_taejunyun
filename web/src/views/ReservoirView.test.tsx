@@ -52,7 +52,7 @@ describe("ReservoirView", () => {
   it("keeps the index visible while reading a source", async () => {
     render(<ReservoirView />);
     await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
-    expect(screen.getByRole("dialog", { name: "읽은 뒤 판단" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "읽은 뒤 판단" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "저장소 자료" })).toBeInTheDocument();
     expect(screen.getByText("시스템 해석")).toBeInTheDocument();
     expect(screen.getByText("원문에서 추출한 문장")).toBeInTheDocument();
@@ -61,9 +61,32 @@ describe("ReservoirView", () => {
     expect(screen.getByRole("combobox", { name: "심층 정리 품질" })).toHaveValue("precision");
   });
 
+  it("opens reading before asking for a judgment", async () => {
+    render(<ReservoirView />);
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+
+    expect(screen.getByText("시스템 해석")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "읽은 뒤 판단" })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "판단하기" }));
+    expect(screen.getByRole("dialog", { name: "읽은 뒤 판단" })).toBeInTheDocument();
+  });
+
+  it("returns to a coherent unselected state", async () => {
+    render(<ReservoirView />);
+    const item = await screen.findByRole("button", { name: /자료 A/ });
+    await userEvent.click(item);
+    await userEvent.click(screen.getByRole("button", { name: "목록으로" }));
+
+    expect(screen.getByText("읽을 자료를 선택하세요")).toBeInTheDocument();
+    expect(item).not.toHaveAttribute("aria-current");
+    expect(screen.queryByRole("button", { name: "판단하기" })).not.toBeInTheDocument();
+  });
+
   it("records a develop signal", async () => {
     render(<ReservoirView />);
     await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+    await userEvent.click(screen.getByRole("button", { name: "판단하기" }));
     await userEvent.click(screen.getByRole("button", { name: "발전시키기" }));
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/signals", expect.objectContaining({ method: "POST", body: JSON.stringify({ sourceId: "source-1", action: "develop" }) })));
   });
@@ -99,6 +122,7 @@ describe("ReservoirView", () => {
   it("reanalyzes the current version without starting source acquisition", async () => {
     render(<ReservoirView />);
     await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+    await userEvent.click(screen.getByRole("button", { name: "판단하기" }));
     await userEvent.click(screen.getByRole("button", { name: "다시 분석하기" }));
 
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/inbox/retry/source-1?analyze=1", { method: "POST" }));
@@ -109,6 +133,7 @@ describe("ReservoirView", () => {
     const onJobCreated = vi.fn().mockResolvedValue(undefined);
     render(<ReservoirView onJobCreated={onJobCreated} />);
     await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+    await userEvent.click(screen.getByRole("button", { name: "판단하기" }));
     await userEvent.click(screen.getByRole("button", { name: "다시 가져오기" }));
 
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/inbox/retry/source-1?fetch=1", { method: "POST" }));
@@ -120,6 +145,7 @@ describe("ReservoirView", () => {
     currentSourceDetail = { ...sourceDetail, source: { ...sourceDetail.source, canonicalUrl: null } };
     render(<ReservoirView />);
     await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+    await userEvent.click(screen.getByRole("button", { name: "판단하기" }));
 
     expect(screen.getByRole("button", { name: "다시 가져오기" })).toBeDisabled();
   });
@@ -149,9 +175,11 @@ describe("ReservoirView", () => {
     render(<ReservoirView />);
     await userEvent.click(await screen.findByRole("button", { name: "관찰 중" }));
     await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+    expect(screen.getByText("현재 판단 · 관찰 중")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "판단 변경" }));
     expect(screen.getByText("현재 판단")).toBeInTheDocument();
     expect(screen.getAllByText("관찰 중").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByRole("button", { name: "판단 변경" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "판단 변경" })).toHaveLength(2);
     expect(screen.queryByRole("button", { name: "보관하기" })).not.toBeInTheDocument();
   });
 });

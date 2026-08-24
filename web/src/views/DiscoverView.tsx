@@ -14,6 +14,7 @@ import FieldSignalList from "../components/discovery/FieldSignalList";
 import FieldSignalRunSummary from "../components/discovery/FieldSignalRunSummary";
 import PageHeader from "../components/layout/PageHeader";
 import DecisionBottomSheet from "../components/reading/DecisionBottomSheet";
+import ReadingActionBar from "../components/reading/ReadingActionBar";
 import ReadingPane from "../components/reading/ReadingPane";
 import SourceIndex from "../components/reading/SourceIndex";
 import SplitWorkspace from "../components/reading/SplitWorkspace";
@@ -384,16 +385,20 @@ export default function DiscoverView({
     }
   }
 
+  function clearCandidateSelection() {
+    setSelectedId(null);
+    setDecisionOpen(false);
+    setDecisionError("");
+  }
+
   function selectCandidate(id: string) {
     const candidate = candidates.find((item) => item.id === id);
     setSelectedId(id);
     setDecisionError("");
+    setDecisionOpen(false);
     if (candidate?.status === "KEPT" && candidate.sourceId) {
-      setDecisionOpen(false);
       openReservoir(candidate.sourceId);
-      return;
     }
-    setDecisionOpen(true);
   }
 
   async function saveProfile() {
@@ -455,7 +460,7 @@ export default function DiscoverView({
               readingKey={selectedId}
               mobilePane={selectedId ? "reading" : "index"}
               index={<SourceIndex title="발견 후보" items={candidates.map(toIndexItem)} selectedId={selectedId} onSelect={selectCandidate} />}
-              reading={document ? <ReadingPane document={document} /> : <StatusMessage kind="empty" title="읽을 후보를 선택하세요" description="왼쪽 목록에서 후보를 고르면 실제 접근 링크와 함께 읽기 질문을 확인할 수 있습니다." />}
+              reading={document ? <><ReadingActionBar pending={busy} onBack={clearCandidateSelection} onOpenDecision={() => setDecisionOpen(true)} /><ReadingPane document={document} /></> : <StatusMessage kind="empty" title="읽을 후보를 선택하세요" description="왼쪽 목록에서 후보를 고르면 실제 접근 링크와 함께 읽기 질문을 확인할 수 있습니다." />}
             />
           )}
           {document && <DecisionBottomSheet actions={DISCOVERY_ACTIONS} document={document} open={decisionOpen} pending={busy} pendingAction={pendingAction} error={decisionError} onClose={() => setDecisionOpen(false)} onAction={(action) => void act(document.id, action)} />}

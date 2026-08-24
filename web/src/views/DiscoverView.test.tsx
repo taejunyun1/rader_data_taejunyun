@@ -89,16 +89,28 @@ describe("DiscoverView", () => {
   it("keeps actual access links visible while reading a candidate", async () => {
     render(<DiscoverView onNavigate={vi.fn()} />);
     await userEvent.click(await screen.findByRole("button", { name: /자료 후보/ }));
-    expect(screen.getByRole("dialog", { name: "읽은 뒤 판단" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "읽은 뒤 판단" })).not.toBeInTheDocument();
     expect(screen.getAllByRole("link", { name: /서지·접근 정보/ })[0]).toHaveAttribute("href", "https://doi.org/10.0000/example");
     expect(screen.getByText("시스템 해석")).toBeInTheDocument();
     expect(screen.getByText("분석 내용 없음")).toBeInTheDocument();
+  });
+
+  it("opens candidate reading before asking for a judgment", async () => {
+    render(<DiscoverView onNavigate={vi.fn()} />);
+    await userEvent.click(await screen.findByRole("button", { name: /자료 후보/ }));
+
+    expect(screen.getByText("분석 내용 없음")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "읽은 뒤 판단" })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "판단하기" }));
+    expect(screen.getByRole("dialog", { name: "읽은 뒤 판단" })).toBeInTheDocument();
   });
 
   it("maps 발전시키기 to keep plus a develop signal", async () => {
     const onNavigate = vi.fn();
     render(<DiscoverView onNavigate={onNavigate} />);
     await userEvent.click(await screen.findByRole("button", { name: /자료 후보/ }));
+    await userEvent.click(screen.getByRole("button", { name: "판단하기" }));
     await userEvent.click(screen.getByRole("button", { name: "발전시키기" }));
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/signals", expect.objectContaining({ method: "POST", body: JSON.stringify({ sourceId: "source-1", action: "develop" }) })));
     expect(onNavigate).toHaveBeenCalledWith("RESERVOIR");
@@ -107,6 +119,7 @@ describe("DiscoverView", () => {
   it("tells the user that a kept candidate is being imported", async () => {
     render(<DiscoverView onNavigate={vi.fn()} />);
     await userEvent.click(await screen.findByRole("button", { name: /자료 후보/ }));
+    await userEvent.click(screen.getByRole("button", { name: "판단하기" }));
     await userEvent.click(screen.getByRole("button", { name: "보관하기" }));
 
     expect(await screen.findByText(/원문 수집을 시작했습니다/)).toBeInTheDocument();
@@ -125,6 +138,7 @@ describe("DiscoverView", () => {
     expect(onNavigate).not.toHaveBeenCalled();
 
     await userEvent.click(screen.getByRole("button", { name: /자료 후보/ }));
+    await userEvent.click(screen.getByRole("button", { name: "판단하기" }));
     await userEvent.click(screen.getByRole("button", { name: "보관하기" }));
     await waitFor(() => expect(onJobCreated).toHaveBeenCalledOnce());
 
@@ -154,6 +168,7 @@ describe("DiscoverView", () => {
     vi.mocked(fetch).mockClear();
 
     await userEvent.click(screen.getByRole("button", { name: /자료 후보/ }));
+    await userEvent.click(screen.getByRole("button", { name: "판단하기" }));
     await userEvent.click(screen.getByRole("button", { name: "보관하기" }));
     await waitFor(() => expect(onJobCreated).toHaveBeenCalledOnce());
     expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).startsWith("/api/discover/candidates?"))).toBe(false);
