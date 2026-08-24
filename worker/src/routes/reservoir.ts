@@ -192,6 +192,7 @@ reservoir.post("/:sourceId/deep-analysis", async (c) => {
   });
   if (!readiness.ok) return c.json(readiness, 422);
   const budget = parseFloat(c.env.MONTHLY_BUDGET_USD) || 10;
+  // Fast UX guard only; the workflow's D1 reservation is the race-safe final budget check.
   if ((await monthSpendUsd(c.env)) >= budget) return c.json({ error: "monthly_budget_exhausted" }, 429);
   try {
     const requestedBy = c.req.header("CF-Access-Authenticated-User-Email") ?? "local";

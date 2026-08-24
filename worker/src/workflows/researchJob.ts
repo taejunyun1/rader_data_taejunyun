@@ -7,10 +7,10 @@ import type { TextScope } from "@radar/shared/ingestion";
 import { runDiscovery } from "../discovery/run";
 import { discoveryCombinedJobFailure, discoveryCombinedJobOutcome, discoveryJobOutcome } from "../discovery/diagnostics";
 import { loadParams } from "../lib/params";
-import { monthSpendUsd } from "../lib/openai";
 import { runDistill, verifyQueueItems } from "../distill/run";
 import { runRadarSynthesis } from "../radar/run";
 import { analyzeDeepSource } from "../analysis/deepAnalyze";
+import { releaseDeepAnalysisBudgetReservation, reserveDeepAnalysisBudget } from "../analysis/budgetReservation";
 import { blockResearchJob, completeResearchJob, failResearchJob, getResearchJob, markJobRunning, updateJobProgress } from "../jobs/store";
 import { executeSourceAcquisitionJob } from "./sourceAcquisition";
 
@@ -129,9 +129,15 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
 
     await updateJobProgress(this.env.DB, job.id, 20, "자료 본문을 읽는 중");
     const input = job.input as { sourceId: string; profile: "precision" | "maximum" };
-    const budget = parseFloat(this.env.MONTHLY_BUDGET_USD) || 10;
-    if (await monthSpendUsd(this.env) >= budget) throw new JobBlockedError("monthly_budget_exhausted", "monthly_budget_exhausted");
-    const result = await analyzeDeepSource(this.env, input.sourceId, input.profile);
+    const reservation = await reserveDeepAnalysisBudget(this.env, { researchJobId: job.id, profile: input.profile });
+    if (!reservation.ok) throw new JobBlockedError("monthly_budget_exhausted", "monthly_budget_exhausted");
+    const result = await (async () => {
+      try {
+        return await analyzeDeepSource(this.env, input.sourceId, input.profile);
+      } finally {
+        await releaseDeepAnalysisBudgetReservation(this.env.DB, job.id);
+      }
+    })();
     return { result: { analysisId: result.analysisId, model: result.model, costUsd: result.costUsd }, resultRef: { view: "RESERVOIR", sourceId: input.sourceId, analysisId: result.analysisId } };
   }
 }
