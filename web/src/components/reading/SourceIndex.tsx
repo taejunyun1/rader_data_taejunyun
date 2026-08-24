@@ -45,7 +45,9 @@ export default function SourceIndex({ title, items, selectedId, onSelect, count 
                 <span className="source-index__meta">{item.meta}</span>
                 <strong>{item.title}</strong>
                 {item.tags.length > 0 && <span className="source-index__tags">{item.tags.slice(0, 3).join(" · ")}</span>}
-                <SourceAccessBadge access={item.access} linked={false} />
+                {item.access.kind === "UNKNOWN"
+                  ? <span className="source-index__access-note">{item.access.label}</span>
+                  : <SourceAccessBadge access={item.access} linked={false} />}
               </button>
             </li>
           );

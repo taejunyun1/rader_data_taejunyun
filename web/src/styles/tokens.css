@@ -17,5 +17,8 @@
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 12px;
+  --control-height: 40px;
+  --touch-target: 44px;
+  --font-size-meta: 11px;
   --shadow-popover: 0 18px 45px rgb(23 24 28 / 14%);
 }
