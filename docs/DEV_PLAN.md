@@ -130,6 +130,7 @@ exact title/author → keywords → questions → summary → fragments 순 후�
 
 ### Task 2.5: Reservoir 심층 정리
 저장소 상세에서 `정밀`/`최고 정밀` 품질을 선택해 active version의 긴 본문을 구간별로 읽고 `source_analysis.analysis_type = deep`으로 별도 보존한다. 기존 basic 분석·검색·착즙 컨텍스트를 덮어쓰지 않는다.
+동시 실행은 workflow reservation을 포함한 월 예산 상한 안에서만 시작된다.
 **AC**: 기본 분석보다 긴 본문을 처리하고, 품질·모델·읽은 글자 수·자료 버전·비용·이력을 확인할 수 있다. **Scope: L**
 
 ## Phase 3 — Distill / Critic / Counter
@@ -152,6 +153,7 @@ Distill 직후 자동 실행. 경고 카테고리 8종(근거부족/논리비약
 
 ### Task 3.5: Re-Distill + 비용 guardrail
 부분 선택(요소 단위) 재실행, redistill_of 연결. ai_usage 월 집계 → 80% 경고 배너, 100% 시 Distill 차단(자동 수집·분석은 유지).
+동시 실행 요청도 예약/사용량 합산 기준으로 월 예산을 초과하지 않는다.
 **AC**: 예산 임계값 테스트에서 차단 동작. **Scope: M**
 
 **Checkpoint P3**: Distill 실행 → Critic/Counter 자동 → 요소 선택 Re-Distill → 세션 이력 확인, 월 비용 집계 확인.
