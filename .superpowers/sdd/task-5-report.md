@@ -10,3 +10,9 @@ Scope: reading workspace visual hierarchy, control density, header opacity, and 
 
 Verification: new Playwright UX spec 4/4, relevant Vitest 55/55, full web Vitest 264/264, `pnpm -r typecheck`, and `git diff --check` passed.
 No deploy performed.
+
+Review follow-up (2026-08-24):
+
+- Kept the mobile header sticky by removing only the conflicting `position: relative` override; its wrapped mobile layout remains unchanged.
+- Made `.topic-strip > .topic-chip` meet the 44px mobile touch-target contract and asserted the filter/topic strips' `overflow-x: auto` behavior.
+- Strengthened the desktop fixture with a selected long reading detail, then asserted the list scroll position changes while the reading pane remains at its initial scroll position.
