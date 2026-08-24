@@ -71,3 +71,11 @@
 - Ordinary candidate disappearance still clears the full candidate intent, and a later explicit selection clears the retained Keep intent. A stale or unrelated acquisition therefore cannot navigate to Reservoir.
 - TDD record: added the A Keep → B-only refreshed list → acquisition success → Reservoir navigation regression. It failed before the fix because reconciliation cleared the queued Keep intent.
 - Verification: focused DiscoverView Vitest passed (21 tests); full web Vitest passed (37 files, 253 tests); `pnpm --dir web run typecheck` passed.
+
+## Review follow-up — 2026-08-24 (Reservoir freshness races)
+
+- Reservoir list/filter reloads now use a latest-request generation, so late responses and errors cannot replace newer items, next-research state, or the active reading context.
+- Deep-analysis submission tracks both its request generation and the selected interaction generation. A late result, readiness block, error, job refresh, or pending-state completion from source A cannot affect source B or an unselected reader.
+- Judgment, reanalysis, and canonical refetch now retain an action generation across their own detail refresh, but navigation invalidates it. Their stale completion/error feedback and pending-state cleanup cannot affect a later source or list state.
+- TDD record: added deferred list-overlap, deep-analysis block/navigation, deep-analysis error/list-return, and refetch-error/navigation regressions. All four failed before the guards and pass after the change.
+- Verification: focused Task 4 web Vitest passed (4 files, 50 tests); full web Vitest passed (37 files, 257 tests); `pnpm typecheck` passed for shared, worker, and web.

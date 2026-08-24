@@ -183,9 +183,14 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
   const [deepPending, setDeepPending] = useState(false);
   const [deepBlock, setDeepBlock] = useState<DeepAnalysisBlock | null>(null);
   const interactionRequest = useRef(0);
+  const listRequest = useRef(0);
+  const actionRequest = useRef(0);
+  const deepAnalysisRequest = useRef(0);
   const deepHistoryRequest = useRef(0);
 
   const load = useCallback(async () => {
+    const requestId = listRequest.current + 1;
+    listRequest.current = requestId;
     setListError("");
     const params = new URLSearchParams();
     if (kindFilter) params.set("kind", kindFilter);
@@ -195,9 +200,12 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
       const response = await fetch(`/api/reservoir${params.toString() ? `?${params}` : ""}`);
       if (!response.ok) throw new Error("list_failed");
       const data = await response.json() as { items?: ReservoirItem[]; nextResearch?: { markedCount: number; lastResearchAt: string | null } };
+      if (listRequest.current !== requestId) return;
       setItems(data.items ?? []);
       setNextResearch(data.nextResearch ?? null);
-    } catch { setListError("저장소 자료를 불러오지 못했습니다."); }
+    } catch {
+      if (listRequest.current === requestId) setListError("저장소 자료를 불러오지 못했습니다.");
+    }
   }, [decisionFilter, kindFilter, topicFilter]);
 
   useEffect(() => { void load(); }, [load]);
@@ -210,9 +218,16 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
     fetch("/api/reservoir/topics").then((r) => r.json() as Promise<{ topics?: { topic: string; count: number }[] }>).then((data) => setTopics(data.topics ?? [])).catch(() => setTopics([]));
   }, [items]);
 
-  function startInteraction() {
+  function startInteraction({ preserveAction = false }: { preserveAction?: boolean } = {}) {
     interactionRequest.current += 1;
+    deepAnalysisRequest.current += 1;
     deepHistoryRequest.current += 1;
+    setDeepPending(false);
+    if (!preserveAction) {
+      actionRequest.current += 1;
+      setActionPending(false);
+      setPendingAction(null);
+    }
     return interactionRequest.current;
   }
 
@@ -230,8 +245,8 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
     resetSelection();
   }
 
-  async function openDetail(id: string) {
-    const requestId = startInteraction();
+  async function openDetail(id: string, { preserveAction = false }: { preserveAction?: boolean } = {}) {
+    const requestId = startInteraction({ preserveAction });
     setSelectedId(id);
     setDetail(null);
     setDecisionOpen(false);
@@ -243,42 +258,52 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
       const response = await fetch(`/api/reservoir/${id}`);
       if (!response.ok) throw new Error("detail_failed");
       const next = await response.json() as SourceDetail;
-      if (interactionRequest.current !== requestId) return;
+      if (interactionRequest.current !== requestId) return requestId;
       setDetail(next);
       if (next.deepAnalysis?.profile) setDeepProfile(next.deepAnalysis.profile);
     } catch {
-      if (interactionRequest.current !== requestId) return;
+      if (interactionRequest.current !== requestId) return requestId;
       setDetail(null);
       setDecisionOpen(false);
       setDetailError("자료 상세 내용을 불러오지 못했습니다.");
-      return;
+      return requestId;
     }
     void fetch("/api/signals", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceId: id, action: "view" }) }).catch(() => undefined);
+    return requestId;
   }
 
   async function signal(action: DecisionAction["id"]) {
     if (!detail) return;
     const sourceId = String(detail.source.id);
     const requestId = interactionRequest.current;
+    const actionRequestId = actionRequest.current + 1;
+    actionRequest.current = actionRequestId;
+    const isCurrent = () => interactionRequest.current === requestId && actionRequest.current === actionRequestId;
     setActionPending(true);
     setPendingAction(action);
     setDecisionError("");
     try {
       const response = await fetch("/api/signals", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceId, action }) });
       if (!response.ok) throw new Error("signal_failed");
-      if (interactionRequest.current !== requestId) return;
+      if (!isCurrent()) return;
       setMsg(`${action === "develop" ? "발전시키기" : action === "keep" ? "다음 리서치까지 보관" : action === "watch" ? "관찰하기" : "제외하기"}로 기록했습니다.`);
       setDecisionOpen(false);
       if (action === "ignore") {
         clearSelection();
       } else {
-        await openDetail(sourceId);
+        const detailRequestId = await openDetail(sourceId, { preserveAction: true });
+        if (actionRequest.current !== actionRequestId || interactionRequest.current !== detailRequestId) return;
       }
       await load();
     } catch {
-      if (interactionRequest.current === requestId) setDecisionError("분류를 저장하지 못했습니다. 다시 시도해 주세요.");
+      if (isCurrent()) setDecisionError("분류를 저장하지 못했습니다. 다시 시도해 주세요.");
     }
-    finally { setActionPending(false); setPendingAction(null); }
+    finally {
+      if (actionRequest.current === actionRequestId) {
+        setActionPending(false);
+        setPendingAction(null);
+      }
+    }
   }
 
   async function runSearch() {
@@ -300,42 +325,63 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
     if (!detail) return;
     const sourceId = String(detail.source.id);
     const requestId = interactionRequest.current;
+    const actionRequestId = actionRequest.current + 1;
+    actionRequest.current = actionRequestId;
+    const isCurrent = () => interactionRequest.current === requestId && actionRequest.current === actionRequestId;
     setActionPending(true);
     setMsg("다시 분석하는 중입니다.");
     try {
       const response = await fetch(`/api/inbox/retry/${sourceId}?analyze=1`, { method: "POST" });
       const data = await response.json() as { status?: string; error?: string };
-      if (interactionRequest.current !== requestId) return;
+      if (!isCurrent()) return;
       setMsg(data.status === "analyzed" ? "분석을 완료했습니다." : `분석에 실패했습니다: ${String(data.error ?? "알 수 없는 오류").slice(0, 120)}`);
-      await openDetail(sourceId);
+      const detailRequestId = await openDetail(sourceId, { preserveAction: true });
+      if (actionRequest.current !== actionRequestId || interactionRequest.current !== detailRequestId) return;
     } catch {
-      if (interactionRequest.current === requestId) setMsg("분석을 다시 시작하지 못했습니다.");
+      if (isCurrent()) setMsg("분석을 다시 시작하지 못했습니다.");
     }
-    finally { setActionPending(false); }
+    finally {
+      if (actionRequest.current === actionRequestId) setActionPending(false);
+    }
   }
 
   async function refetch() {
     if (!detail || typeof detail.source.canonicalUrl !== "string" || !detail.source.canonicalUrl.trim()) return;
+    const sourceId = String(detail.source.id);
+    const requestId = interactionRequest.current;
+    const actionRequestId = actionRequest.current + 1;
+    actionRequest.current = actionRequestId;
+    const isCurrent = () => interactionRequest.current === requestId && actionRequest.current === actionRequestId;
     setActionPending(true);
     setMsg("원문 수집을 요청하는 중입니다.");
     try {
-      const response = await fetch(`/api/inbox/retry/${String(detail.source.id)}?fetch=1`, { method: "POST" });
+      const response = await fetch(`/api/inbox/retry/${sourceId}?fetch=1`, { method: "POST" });
       const data = await response.json() as { reused?: boolean; error?: string };
       if (!response.ok) throw new Error(data.error ?? "원문 수집을 시작하지 못했습니다.");
+      if (!isCurrent()) return;
       await onJobCreated?.();
+      if (!isCurrent()) return;
       setMsg(data.reused ? "이미 진행 중인 원문 수집을 계속합니다." : "원문 수집을 시작했습니다. 작업센터에서 진행 상태를 확인하세요.");
     } catch (error) {
-      setMsg(error instanceof Error ? error.message : "원문 수집을 시작하지 못했습니다.");
-    } finally { setActionPending(false); }
+      if (isCurrent()) setMsg(error instanceof Error ? error.message : "원문 수집을 시작하지 못했습니다.");
+    } finally {
+      if (actionRequest.current === actionRequestId) setActionPending(false);
+    }
   }
 
   async function runDeepAnalysis() {
     if (!detail || detail.acquisition?.canDeepAnalyze === false) return;
+    const sourceId = String(detail.source.id);
+    const interactionRequestId = interactionRequest.current;
+    const requestId = deepAnalysisRequest.current + 1;
+    deepAnalysisRequest.current = requestId;
+    const isCurrent = () => interactionRequest.current === interactionRequestId && deepAnalysisRequest.current === requestId;
     setDeepPending(true);
     setMsg("심층 정리를 시작했습니다. 완료되면 상단 작업센터에서 결과를 확인할 수 있습니다.");
     try {
-      const response = await fetch(`/api/reservoir/${String(detail.source.id)}/deep-analysis`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ profile: deepProfile }) });
+      const response = await fetch(`/api/reservoir/${sourceId}/deep-analysis`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ profile: deepProfile }) });
       const data = await response.json() as DeepAnalysisResponse;
+      if (!isCurrent()) return;
       if (response.status === 422 && isDeepAnalysisBlock(data)) {
         setDeepBlock(data);
         setMsg("");
@@ -343,10 +389,13 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
       }
       if (!response.ok) throw new Error(data.error ?? "심층 정리를 시작하지 못했습니다.");
       await onJobCreated?.();
+      if (!isCurrent()) return;
       setMsg(data.reused ? "이미 진행 중인 심층 정리를 계속합니다." : "심층 정리를 시작했습니다. 완료되면 상단 작업센터에서 결과를 확인할 수 있습니다.");
     } catch (error) {
-      setMsg(error instanceof Error && error.message === "monthly_budget_exhausted" ? "이번 달 AI 사용량 한도에 도달했습니다." : error instanceof Error ? error.message : "심층 정리를 시작하지 못했습니다.");
-    } finally { setDeepPending(false); }
+      if (isCurrent()) setMsg(error instanceof Error && error.message === "monthly_budget_exhausted" ? "이번 달 AI 사용량 한도에 도달했습니다." : error instanceof Error ? error.message : "심층 정리를 시작하지 못했습니다.");
+    } finally {
+      if (deepAnalysisRequest.current === requestId) setDeepPending(false);
+    }
   }
 
   async function openDeepHistory(analysisId: string) {
