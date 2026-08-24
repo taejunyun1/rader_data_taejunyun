@@ -26,3 +26,11 @@
 - Deep-history loading captures the selected source ID and current generation. It updates the detail only when both still match, and surfaces its error only for that current request; a prior source's history result cannot overwrite a newly selected source.
 - TDD record: added focused deferred-response tests for search/detail clearing and deep-history/source replacement; both failed before the guards were added.
 - Verification: focused Task 4 web Vitest run passed (4 files, 36 tests); full web Vitest passed (37 files, 243 tests); `pnpm typecheck` passed for shared, worker, and web.
+
+## Review follow-up — 2026-08-24 (latest-intent ordering)
+
+- Closed the latest Task 4 asynchronous findings without entering Task 5/6 scope.
+- Reservoir search, selection, and explicit clearing now share one interaction generation. Starting a non-empty search invalidates earlier detail/deep-history work immediately; its response clears selection and replaces search results only if that search is still the newest interaction. A later source selection clears the pending search result instead.
+- Deep-history requests now use their own generation in addition to the interaction generation. For repeated history clicks on the same source, only the newest request may replace the displayed analysis or set the loading error.
+- TDD record: added deferred search-then-selection and repeated same-source history tests. Both failed before the guards were added (late search cleared the newer detail; stale history error surfaced after the later history result) and pass after the change.
+- Verification: focused Task 4 web Vitest run passed (4 files, 38 tests); full web Vitest passed (37 files, 245 tests); `pnpm typecheck` passed for shared, worker, and web; `git diff --check` passed.

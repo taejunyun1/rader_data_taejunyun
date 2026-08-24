@@ -182,7 +182,8 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
   const [deepProfile, setDeepProfile] = useState<"precision" | "maximum">("precision");
   const [deepPending, setDeepPending] = useState(false);
   const [deepBlock, setDeepBlock] = useState<DeepAnalysisBlock | null>(null);
-  const detailRequest = useRef(0);
+  const interactionRequest = useRef(0);
+  const deepHistoryRequest = useRef(0);
 
   const load = useCallback(async () => {
     setListError("");
@@ -209,8 +210,13 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
     fetch("/api/reservoir/topics").then((r) => r.json() as Promise<{ topics?: { topic: string; count: number }[] }>).then((data) => setTopics(data.topics ?? [])).catch(() => setTopics([]));
   }, [items]);
 
-  function clearSelection() {
-    detailRequest.current += 1;
+  function startInteraction() {
+    interactionRequest.current += 1;
+    deepHistoryRequest.current += 1;
+    return interactionRequest.current;
+  }
+
+  function resetSelection() {
     setSelectedId(null);
     setDetail(null);
     setDetailError("");
@@ -219,9 +225,13 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
     setDeepBlock(null);
   }
 
+  function clearSelection() {
+    startInteraction();
+    resetSelection();
+  }
+
   async function openDetail(id: string) {
-    const requestId = detailRequest.current + 1;
-    detailRequest.current = requestId;
+    const requestId = startInteraction();
     setSelectedId(id);
     setDetail(null);
     setDecisionOpen(false);
@@ -233,12 +243,12 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
       const response = await fetch(`/api/reservoir/${id}`);
       if (!response.ok) throw new Error("detail_failed");
       const next = await response.json() as SourceDetail;
-      if (detailRequest.current !== requestId) return;
+      if (interactionRequest.current !== requestId) return;
       setDetail(next);
       if (next.deepAnalysis?.profile) setDeepProfile(next.deepAnalysis.profile);
       await fetch("/api/signals", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceId: id, action: "view" }) });
     } catch {
-      if (detailRequest.current !== requestId) return;
+      if (interactionRequest.current !== requestId) return;
       setDetail(null);
       setDecisionOpen(false);
       setDetailError("자료 상세 내용을 불러오지 못했습니다.");
@@ -268,11 +278,17 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
 
   async function runSearch() {
     if (!query.trim()) { setSearchHits(null); return; }
-    const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
-    if (!response.ok) { setListError("검색 결과를 불러오지 못했습니다."); return; }
-    const data = await response.json() as { hits?: { sourceId: string; title: string; matched: string; snippet: string }[] };
-    clearSelection();
-    setSearchHits(data.hits ?? []);
+    const requestId = startInteraction();
+    try {
+      const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+      if (!response.ok) throw new Error("search_failed");
+      const data = await response.json() as { hits?: { sourceId: string; title: string; matched: string; snippet: string }[] };
+      if (interactionRequest.current !== requestId) return;
+      resetSelection();
+      setSearchHits(data.hits ?? []);
+    } catch {
+      if (interactionRequest.current === requestId) setListError("검색 결과를 불러오지 못했습니다.");
+    }
   }
 
   async function reanalyze() {
@@ -326,18 +342,20 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
   async function openDeepHistory(analysisId: string) {
     if (!detail) return;
     const sourceId = String(detail.source.id);
-    const requestId = detailRequest.current;
+    const interactionRequestId = interactionRequest.current;
+    const requestId = deepHistoryRequest.current + 1;
+    deepHistoryRequest.current = requestId;
     try {
       const response = await fetch(`/api/reservoir/${sourceId}/deep-analysis/${analysisId}`);
       if (!response.ok) {
-        if (detailRequest.current === requestId) setMsg("이전 심층 정리를 불러오지 못했습니다.");
+        if (interactionRequest.current === interactionRequestId && deepHistoryRequest.current === requestId) setMsg("이전 심층 정리를 불러오지 못했습니다.");
         return;
       }
       const data = await response.json() as { analysis?: DeepAnalysisViewModel };
-      if (detailRequest.current !== requestId || !data.analysis) return;
+      if (interactionRequest.current !== interactionRequestId || deepHistoryRequest.current !== requestId || !data.analysis) return;
       setDetail((current) => current && String(current.source.id) === sourceId ? { ...current, deepAnalysis: data.analysis } : current);
     } catch {
-      if (detailRequest.current === requestId) setMsg("이전 심층 정리를 불러오지 못했습니다.");
+      if (interactionRequest.current === interactionRequestId && deepHistoryRequest.current === requestId) setMsg("이전 심층 정리를 불러오지 못했습니다.");
     }
   }
 

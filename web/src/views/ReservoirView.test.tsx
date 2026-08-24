@@ -34,7 +34,8 @@ type TestSourceDetail = Omit<typeof sourceDetail, "source" | "acquisition"> & {
 let currentSourceDetail: TestSourceDetail;
 let reservoirItems: Array<Record<string, unknown>>;
 let pendingSourceOneDetail: Promise<Response> | null;
-let pendingDeepHistory: Promise<Response> | null;
+let pendingSearch: Promise<Response> | null;
+let pendingDeepHistory: Record<string, Promise<Response> | undefined>;
 let sourceOneDetailFailure = false;
 
 beforeEach(() => {
@@ -43,7 +44,8 @@ beforeEach(() => {
   currentSourceDetail = sourceDetail;
   reservoirItems = [{ id: "source-1", title: "자료 A", kind: "PAPER_ACADEMIC", reliability: "PRIMARY", status: "indexed", origin: "upload", year: 2025, canonicalUrl: "https://example.com/paper", createdAt: "2026-08-21", topics: "[\"사진\"]", keywordCount: 1, signalCount: 0, markedForNextResearch: 1, decisionStatus: null }];
   pendingSourceOneDetail = null;
-  pendingDeepHistory = null;
+  pendingSearch = null;
+  pendingDeepHistory = {};
   sourceOneDetailFailure = false;
   vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -53,11 +55,13 @@ beforeEach(() => {
       return Promise.resolve(new Response(JSON.stringify({ items: reservoirItems.map((item) => ({ ...item, decisionStatus })) })));
     }
     if (url === "/api/reservoir/topics") return Promise.resolve(new Response(JSON.stringify({ topics: [] })));
+    if (url.startsWith("/api/search?") && pendingSearch) return pendingSearch;
     if (url === "/api/reservoir/source-1" && pendingSourceOneDetail) return pendingSourceOneDetail;
     if (url === "/api/reservoir/source-1" && sourceOneDetailFailure) return Promise.resolve(new Response("", { status: 500 }));
     if (url === "/api/reservoir/source-1") return Promise.resolve(new Response(JSON.stringify(requestedWatching ? { ...currentSourceDetail, source: { ...currentSourceDetail.source, decisionStatus: "watch" } } : currentSourceDetail)));
     if (url === "/api/reservoir/source-2") return Promise.resolve(new Response(JSON.stringify(sourceDetailB)));
-    if (url === "/api/reservoir/source-1/deep-analysis/analysis-1" && pendingDeepHistory) return pendingDeepHistory;
+    const deepHistoryMatch = url.match(/^\/api\/reservoir\/source-1\/deep-analysis\/(analysis-[12])$/);
+    if (deepHistoryMatch && pendingDeepHistory[deepHistoryMatch[1]]) return pendingDeepHistory[deepHistoryMatch[1]];
     if (url === "/api/reservoir/source-1/deep-analysis" && init?.method === "POST") {
       return Promise.resolve(new Response(JSON.stringify(deepAnalysisResult.body), { status: deepAnalysisResult.status }));
     }
@@ -139,9 +143,32 @@ describe("ReservoirView", () => {
     expect(screen.queryByText("자료 상세 내용을 불러오지 못했습니다.")).not.toBeInTheDocument();
   });
 
+  it("ignores a late search response after a newer source selection", async () => {
+    let resolveSearch: (response: Response) => void = () => undefined;
+    pendingSearch = new Promise((resolve) => { resolveSearch = resolve; });
+    reservoirItems = [
+      reservoirItems[0],
+      { ...reservoirItems[0], id: "source-2", title: "자료 B" },
+    ];
+    render(<ReservoirView />);
+
+    await userEvent.type(screen.getByPlaceholderText("제목, 저자, 질문으로 검색"), "사진");
+    await userEvent.click(screen.getByRole("button", { name: "검색" }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/search?q=%EC%82%AC%EC%A7%84"));
+    await userEvent.click(screen.getByRole("button", { name: /자료 B/ }));
+    expect(await screen.findByText("두 번째 자료 분석")).toBeInTheDocument();
+
+    await act(async () => {
+      resolveSearch(new Response(JSON.stringify({ hits: [{ sourceId: "source-1", title: "검색된 자료 A", matched: "title", snippet: "사진" }] })));
+    });
+
+    expect(screen.getByText("두 번째 자료 분석")).toBeInTheDocument();
+    expect(screen.queryByText(/검색 결과 1개/)).not.toBeInTheDocument();
+  });
+
   it("does not apply a prior source's deep-history result after selecting another source", async () => {
     let resolveDeepHistory: (response: Response) => void = () => undefined;
-    pendingDeepHistory = new Promise((resolve) => { resolveDeepHistory = resolve; });
+    pendingDeepHistory["analysis-1"] = new Promise((resolve) => { resolveDeepHistory = resolve; });
     currentSourceDetail = {
       ...sourceDetail,
       deepAnalysis: { profile: "precision", overview: "현재 A 심층 정리", arguments: [], structure: [], quotes: [], connections: [], researchUses: [], limitations: [], meta: { sourceCharCount: 2400, analyzedCharCount: 2400, chunkCount: 1 } },
@@ -166,6 +193,39 @@ describe("ReservoirView", () => {
 
     expect(screen.queryByText("오래된 A 심층 정리")).not.toBeInTheDocument();
     expect(screen.getByText("두 번째 자료 분석")).toBeInTheDocument();
+  });
+
+  it("keeps only the latest same-source deep-history result and error", async () => {
+    let resolveFirstHistory: (response: Response) => void = () => undefined;
+    let resolveSecondHistory: (response: Response) => void = () => undefined;
+    pendingDeepHistory["analysis-1"] = new Promise((resolve) => { resolveFirstHistory = resolve; });
+    pendingDeepHistory["analysis-2"] = new Promise((resolve) => { resolveSecondHistory = resolve; });
+    currentSourceDetail = {
+      ...sourceDetail,
+      deepAnalysis: { profile: "precision", overview: "현재 A 심층 정리", arguments: [], structure: [], quotes: [], connections: [], researchUses: [], limitations: [], meta: { sourceCharCount: 2400, analyzedCharCount: 2400, chunkCount: 1 } },
+      deepAnalysisHistory: [
+        { id: "analysis-1", createdAt: "2026-08-23T12:00:00.000Z" },
+        { id: "analysis-2", createdAt: "2026-08-24T12:00:00.000Z" },
+      ],
+    };
+    render(<ReservoirView />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+    await userEvent.click(screen.getByText("이전 심층 정리 2개"));
+    const historyButtons = screen.getAllByRole("button", { name: /이전 정리/ });
+    await userEvent.click(historyButtons[0]);
+    await userEvent.click(historyButtons[1]);
+
+    await act(async () => {
+      resolveSecondHistory(new Response(JSON.stringify({ analysis: { profile: "precision", overview: "두 번째 이력", arguments: [], structure: [], quotes: [], connections: [], researchUses: [], limitations: [], meta: { sourceCharCount: 2400, analyzedCharCount: 2400, chunkCount: 1 } } })));
+    });
+    expect(screen.getByText("두 번째 이력")).toBeInTheDocument();
+
+    await act(async () => {
+      resolveFirstHistory(new Response("", { status: 500 }));
+    });
+    expect(screen.getByText("두 번째 이력")).toBeInTheDocument();
+    expect(screen.queryByText("이전 심층 정리를 불러오지 못했습니다.")).not.toBeInTheDocument();
   });
 
   it("keeps a mobile list return action visible when detail loading fails", async () => {
