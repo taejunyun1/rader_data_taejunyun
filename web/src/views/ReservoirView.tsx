@@ -196,6 +196,7 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
   const deepAnalysisRequest = useRef(0);
   const deepHistoryRequest = useRef(0);
   const topicRequest = useRef(0);
+  const selectedIdRef = useRef<string | null>(null);
   const filterIntentRef = useRef<ReservoirFilterIntent>({ kind: "", topic: "", decision: "active", generation: 0 });
 
   const isCurrentFilterIntent = useCallback((intent: ReservoirFilterIntent): boolean => (
@@ -236,8 +237,13 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
       if (!response.ok) throw new Error("list_failed");
       const data = await response.json() as { items?: ReservoirItem[]; nextResearch?: { markedCount: number; lastResearchAt: string | null } };
       if (listRequest.current !== requestId || !isCurrentFilterIntent(intent)) return;
-      setItems(data.items ?? []);
+      const nextItems = data.items ?? [];
+      setItems(nextItems);
       setNextResearch(data.nextResearch ?? null);
+      if (selectedIdRef.current && !nextItems.some((item) => item.id === selectedIdRef.current)) {
+        startInteraction();
+        resetSelection();
+      }
     } catch {
       if (listRequest.current === requestId && isCurrentFilterIntent(intent)) setListError("저장소 자료를 불러오지 못했습니다.");
     }
@@ -279,6 +285,7 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
   }
 
   function resetSelection() {
+    selectedIdRef.current = null;
     setSelectedId(null);
     setDetail(null);
     setDetailLoading(false);
@@ -295,6 +302,7 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
 
   async function openDetail(id: string, { preserveAction = false }: { preserveAction?: boolean } = {}) {
     const requestId = startInteraction({ preserveAction });
+    selectedIdRef.current = id;
     setSelectedId(id);
     setDetail(null);
     setDetailLoading(true);

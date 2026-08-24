@@ -160,6 +160,28 @@ describe("DiscoverView", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: /다음 후보/ })).toHaveAttribute("aria-current", "true"));
   });
 
+  it("accepts the current filter response after a stale row click", async () => {
+    let resolveKeptList: (response: Response) => void = () => undefined;
+    const keptList = new Promise<Response>((resolve) => { resolveKeptList = resolve; });
+    candidateListResponse = (url) => (
+      url.includes("status=KEPT")
+        ? keptList
+        : Promise.resolve(new Response(JSON.stringify({ items: [candidate] })))
+    );
+    render(<DiscoverView onNavigate={vi.fn()} />);
+
+    const staleCandidate = await screen.findByRole("button", { name: /자료 후보/ });
+    await userEvent.click(screen.getByRole("button", { name: "보관됨" }));
+    await userEvent.click(staleCandidate);
+
+    await act(async () => {
+      resolveKeptList(new Response(JSON.stringify({ items: [{ ...secondCandidate, status: "KEPT" }] })));
+    });
+
+    expect(await screen.findByRole("button", { name: /다음 후보/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /자료 후보/ })).not.toBeInTheDocument();
+  });
+
   it("shows an existing candidate decision in the reading action bar", async () => {
     currentCandidate = { ...candidate, status: "WATCHED" };
     render(<DiscoverView onNavigate={vi.fn()} />);

@@ -21,6 +21,16 @@ async function installWorkspaceFixture(page: Page) {
 
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
+    if (url.pathname === "/api/discover/candidates") return route.fulfill({ json: { items: [{
+      id: "candidate-1", openalexId: null, title: "발견 자료", authors: "Fixture Author", year: 2026,
+      relevanceScore: 0.9, status: "CANDIDATE", queryUsed: "photography", provider: "rss",
+      externalUrl: "https://example.com/discovery", accessStatus: "FREE_FULLTEXT", sourceId: null,
+    }] } });
+    if (url.pathname === "/api/discover/signals") return route.fulfill({ json: { items: [] } });
+    if (url.pathname === "/api/discover/profile") return route.fulfill({ json: { profile: { original: { keywords: [], strength: 70 }, counter: { keywords: [], strength: 30 }, updatedAt: "" } } });
+    if (url.pathname === "/api/discover/recommendations") return route.fulfill({ json: { recommendations: { original: [], counter: [] } } });
+    if (url.pathname === "/api/discover/feeds") return route.fulfill({ json: { feeds: [] } });
+    if (url.pathname === "/api/settings/homepage") return route.fulfill({ json: { projects: [] } });
     if (url.pathname === "/api/usage/summary") return route.fulfill({ json: { usedUsd: 1, budgetUsd: 10, usedPct: 10, blocked: false } });
     if (url.pathname === "/api/jobs") return route.fulfill({ json: { jobs: [] } });
     if (url.pathname === "/api/radar/stats") return route.fulfill({ json: { stats: { newSources: 0, newKeywords: [], newQuestions: [], signalCounts: {}, topKeptSources: [], distillRuns: 0, gapsRaised: 0, readingQueueSize: 0, kindBreakdown: {} } } });
@@ -55,6 +65,10 @@ async function installWorkspaceFixture(page: Page) {
 
 async function openReservoir(page: Page) {
   await page.getByRole("navigation").getByRole("button", { name: /저장소/ }).click();
+}
+
+async function openDiscover(page: Page) {
+  await page.getByRole("navigation").getByRole("button", { name: /발견/ }).click();
 }
 
 test("reservoir keeps the desktop workspace within the viewport while each pane scrolls independently", async ({ page }) => {
@@ -96,6 +110,26 @@ test("sticky header is opaque", async ({ page }) => {
   await openReservoir(page);
 
   await expect(page.locator(".page-header")).toHaveCSS("background-color", "rgb(255, 255, 255)");
+});
+
+test("Discover retains a usable workspace height on a short desktop viewport before and after entering view", async ({ page }) => {
+  await installWorkspaceFixture(page);
+  await page.setViewportSize({ width: 1440, height: 480 });
+  await page.goto("/");
+  await openDiscover(page);
+
+  const workspace = page.getByTestId("split-workspace");
+  const initialBox = await workspace.boundingBox();
+  expect(initialBox).not.toBeNull();
+  expect(initialBox!.y).toBeGreaterThanOrEqual(480);
+  expect(initialBox!.height).toBeGreaterThan(300);
+
+  await workspace.scrollIntoViewIfNeeded();
+  const viewport = page.viewportSize();
+  const visibleBox = await workspace.boundingBox();
+  expect(viewport).not.toBeNull();
+  expect(visibleBox).not.toBeNull();
+  expect(visibleBox!.y + visibleBox!.height).toBeLessThanOrEqual(viewport!.height + 1);
 });
 
 test("mobile keeps the header sticky and filter controls horizontally scrollable", async ({ page }) => {

@@ -7,7 +7,8 @@ export function formatSourceTitle(value: unknown, fallback = "제목 없음"): s
   if (!cleaned) return fallback;
 
   const withoutDatePrefix = cleaned.replace(DATE_SLUG_PREFIX, "");
-  const looksLikeSlug = !/\s/.test(withoutDatePrefix) && /[-_]/.test(withoutDatePrefix);
+  const looksLikeSlug = !/\s/.test(withoutDatePrefix)
+    && (DATE_SLUG_PREFIX.test(cleaned) || withoutDatePrefix.includes("_"));
   const readable = looksLikeSlug
     ? withoutDatePrefix.replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim()
     : withoutDatePrefix;

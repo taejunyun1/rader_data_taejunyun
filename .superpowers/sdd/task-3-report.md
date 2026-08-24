@@ -1,11 +1,9 @@
-# Task 3 Report
+# Task 3 Final Whole-Branch Review Report
 
-- Changed: `SplitWorkspace.tsx`, `SplitWorkspace.test.tsx`, `reading.css`, `ReservoirView.tsx`, `DiscoverView.tsx`.
-- Added independent desktop pane scrolling and mobile index/reading pane switching.
-- `readingKey` resets the reading-pane scroll only when selection changes.
-- Added accessible index and reading landmarks.
-- Tests: focused SplitWorkspace (2/2); focused component/views (26/26).
-- Tests: full web Vitest (233/233); `pnpm --dir web run typecheck` passed.
-- Commit: `260824: 읽기 작업공간 독립 스크롤과 모바일 전환`.
-- Caveat: no deploy performed; pre-existing unrelated working-tree files remain untouched.
-- Follow-up fix: replaced the reading pane's nested `main` landmark with `section role="region" aria-label="자료 읽기"` because `AppShell` owns the page `main`; scroll reset behavior is unchanged.
+- Prior Task 3 report preserved at `history/task-3-report-2026-08-24-reading-workspace.md`.
+- Discover candidate lists now accept the active filter/list generation independently of stale row clicks, then reconcile the selection against the accepted rows.
+- Reservoir clears selected detail and the decision sheet when an accepted filtered list excludes the selected source; existing action guards remain current-intent based.
+- SplitWorkspace keeps its CSS fallback height while it begins below the viewport and clamps after entering it.
+- Source-title presentation preserves meaningful hyphenated titles while retaining date/underscore slug normalization.
+- Regression coverage: delayed Discover filter + stale row, Reservoir selection exclusion, SplitWorkspace entry geometry, title formatting, and short-desktop Discover E2E.
+- No worker/API/D1/R2 changes and no deploy.

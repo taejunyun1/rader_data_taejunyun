@@ -162,6 +162,26 @@ describe("ReservoirView", () => {
     expect(screen.getByText("8개 표시됨")).toBeInTheDocument();
   });
 
+  it("clears the reading selection when the accepted filtered list excludes it", async () => {
+    let resolveWatching: (response: Response) => void = () => undefined;
+    pendingReservoirLists["/api/reservoir?decision=watching"] = new Promise((resolve) => { resolveWatching = resolve; });
+    render(<ReservoirView />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+    await userEvent.click(screen.getByRole("button", { name: "관찰 중" }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/reservoir?decision=watching"));
+    await act(async () => {
+      resolveWatching(new Response(JSON.stringify({
+        items: [{ ...reservoirItems[0], id: "source-2", title: "자료 B" }],
+        nextResearch: { markedCount: 0, lastResearchAt: null },
+      })));
+    });
+
+    expect(await screen.findByText("읽을 자료를 선택하세요")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /자료 B/ })).not.toHaveAttribute("aria-current");
+    expect(screen.queryByRole("dialog", { name: "읽은 뒤 판단" })).not.toBeInTheDocument();
+  });
+
   it("keeps current topic options when an older topic response arrives late", async () => {
     let resolveOldTopics: (response: Response) => void = () => undefined;
     const oldTopics = new Promise<Response>((resolve) => { resolveOldTopics = resolve; });

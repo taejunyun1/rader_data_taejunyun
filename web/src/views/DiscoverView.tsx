@@ -348,7 +348,6 @@ export default function DiscoverView({
 
   const load = useCallback(async (intent?: CandidateIntent, filterIntent: CandidateFilterIntent = candidateFilterIntentRef.current) => {
     if ((intent && !isCurrentCandidateIntent(intent)) || !isCurrentCandidateFilterIntent(filterIntent)) return;
-    const requestIntent = intent ?? candidateIntentRef.current;
     const request = beginCandidateListRequest();
     setListError("");
     try {
@@ -357,7 +356,9 @@ export default function DiscoverView({
       });
       if (!response.ok) throw new Error("candidates_failed");
       const data = await response.json() as { items?: Candidate[] };
-      if (!isCurrentCandidateListRequest(request) || !isCurrentCandidateIntent(requestIntent) || !isCurrentCandidateFilterIntent(filterIntent)) return;
+      if (!isCurrentCandidateListRequest(request)
+        || !isCurrentCandidateFilterIntent(filterIntent)
+        || (intent && !isCurrentCandidateIntent(intent))) return;
       const next = data.items ?? [];
       setCandidates(next);
       const selectedCandidateId = candidateIntentRef.current.candidateId;
@@ -374,7 +375,9 @@ export default function DiscoverView({
         setSelectedId(next[0].id);
       }
     } catch (error) {
-      if (!isCurrentCandidateListRequest(request) || !isCurrentCandidateIntent(requestIntent) || !isCurrentCandidateFilterIntent(filterIntent)) return;
+      if (!isCurrentCandidateListRequest(request)
+        || !isCurrentCandidateFilterIntent(filterIntent)
+        || (intent && !isCurrentCandidateIntent(intent))) return;
       if (error instanceof Error && error.name === "AbortError") return;
       setListError("발견 후보를 불러오지 못했습니다.");
     }

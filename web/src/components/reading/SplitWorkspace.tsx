@@ -20,6 +20,10 @@ export default function SplitWorkspace({ index, reading, readingKey = null, mobi
       frameId = 0;
       const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
       const top = workspace.getBoundingClientRect().top;
+      if (top >= viewportHeight) {
+        workspace.style.removeProperty("--split-workspace-available-height");
+        return;
+      }
       workspace.style.setProperty("--split-workspace-available-height", `${Math.max(0, viewportHeight - Math.max(0, top))}px`);
     };
     const scheduleUpdate = () => {
