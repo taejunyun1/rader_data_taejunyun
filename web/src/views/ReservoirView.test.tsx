@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import ReservoirView from "./ReservoirView";
@@ -34,6 +34,7 @@ type TestSourceDetail = Omit<typeof sourceDetail, "source" | "acquisition"> & {
 let currentSourceDetail: TestSourceDetail;
 let reservoirItems: Array<Record<string, unknown>>;
 let pendingSourceOneDetail: Promise<Response> | null;
+let pendingDeepHistory: Promise<Response> | null;
 let sourceOneDetailFailure = false;
 
 beforeEach(() => {
@@ -42,6 +43,7 @@ beforeEach(() => {
   currentSourceDetail = sourceDetail;
   reservoirItems = [{ id: "source-1", title: "자료 A", kind: "PAPER_ACADEMIC", reliability: "PRIMARY", status: "indexed", origin: "upload", year: 2025, canonicalUrl: "https://example.com/paper", createdAt: "2026-08-21", topics: "[\"사진\"]", keywordCount: 1, signalCount: 0, markedForNextResearch: 1, decisionStatus: null }];
   pendingSourceOneDetail = null;
+  pendingDeepHistory = null;
   sourceOneDetailFailure = false;
   vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -55,6 +57,7 @@ beforeEach(() => {
     if (url === "/api/reservoir/source-1" && sourceOneDetailFailure) return Promise.resolve(new Response("", { status: 500 }));
     if (url === "/api/reservoir/source-1") return Promise.resolve(new Response(JSON.stringify(requestedWatching ? { ...currentSourceDetail, source: { ...currentSourceDetail.source, decisionStatus: "watch" } } : currentSourceDetail)));
     if (url === "/api/reservoir/source-2") return Promise.resolve(new Response(JSON.stringify(sourceDetailB)));
+    if (url === "/api/reservoir/source-1/deep-analysis/analysis-1" && pendingDeepHistory) return pendingDeepHistory;
     if (url === "/api/reservoir/source-1/deep-analysis" && init?.method === "POST") {
       return Promise.resolve(new Response(JSON.stringify(deepAnalysisResult.body), { status: deepAnalysisResult.status }));
     }
@@ -117,6 +120,52 @@ describe("ReservoirView", () => {
     await waitFor(() => expect(screen.getByText("읽을 자료를 선택하세요")).toBeInTheDocument());
     expect(screen.queryByText("시스템이 정리한 내용")).not.toBeInTheDocument();
     expect(screen.queryByText("자료 상세 내용을 불러오지 못했습니다.")).not.toBeInTheDocument();
+  });
+
+  it("ignores an active detail response after search clears the reading selection", async () => {
+    let resolveSourceOneDetail: (response: Response) => void = () => undefined;
+    pendingSourceOneDetail = new Promise((resolve) => { resolveSourceOneDetail = resolve; });
+    render(<ReservoirView />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+    await userEvent.type(screen.getByPlaceholderText("제목, 저자, 질문으로 검색"), "사진");
+    await userEvent.click(screen.getByRole("button", { name: "검색" }));
+    expect(await screen.findByText(/검색 결과\s*0개/)).toBeInTheDocument();
+
+    resolveSourceOneDetail(new Response(JSON.stringify(sourceDetail)));
+
+    await waitFor(() => expect(screen.getByText("읽을 자료를 선택하세요")).toBeInTheDocument());
+    expect(screen.queryByText("시스템이 정리한 내용")).not.toBeInTheDocument();
+    expect(screen.queryByText("자료 상세 내용을 불러오지 못했습니다.")).not.toBeInTheDocument();
+  });
+
+  it("does not apply a prior source's deep-history result after selecting another source", async () => {
+    let resolveDeepHistory: (response: Response) => void = () => undefined;
+    pendingDeepHistory = new Promise((resolve) => { resolveDeepHistory = resolve; });
+    currentSourceDetail = {
+      ...sourceDetail,
+      deepAnalysis: { profile: "precision", overview: "현재 A 심층 정리", arguments: [], structure: [], quotes: [], connections: [], researchUses: [], limitations: [], meta: { sourceCharCount: 2400, analyzedCharCount: 2400, chunkCount: 1 } },
+      deepAnalysisHistory: [{ id: "analysis-1", createdAt: "2026-08-23T12:00:00.000Z" }],
+    };
+    reservoirItems = [
+      reservoirItems[0],
+      { ...reservoirItems[0], id: "source-2", title: "자료 B" },
+    ];
+    render(<ReservoirView />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+    await userEvent.click(screen.getByText("이전 심층 정리 1개"));
+    await userEvent.click(screen.getByRole("button", { name: /이전 정리/ }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/reservoir/source-1/deep-analysis/analysis-1"));
+    await userEvent.click(screen.getByRole("button", { name: /자료 B/ }));
+    expect(await screen.findByText("두 번째 자료 분석")).toBeInTheDocument();
+
+    await act(async () => {
+      resolveDeepHistory(new Response(JSON.stringify({ analysis: { profile: "precision", overview: "오래된 A 심층 정리", arguments: [], structure: [], quotes: [], connections: [], researchUses: [], limitations: [], meta: { sourceCharCount: 2400, analyzedCharCount: 2400, chunkCount: 1 } } })));
+    });
+
+    expect(screen.queryByText("오래된 A 심층 정리")).not.toBeInTheDocument();
+    expect(screen.getByText("두 번째 자료 분석")).toBeInTheDocument();
   });
 
   it("keeps a mobile list return action visible when detail loading fails", async () => {

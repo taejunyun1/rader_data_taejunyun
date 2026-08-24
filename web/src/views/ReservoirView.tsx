@@ -271,10 +271,8 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
     const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
     if (!response.ok) { setListError("검색 결과를 불러오지 못했습니다."); return; }
     const data = await response.json() as { hits?: { sourceId: string; title: string; matched: string; snippet: string }[] };
+    clearSelection();
     setSearchHits(data.hits ?? []);
-    setDetail(null);
-    setSelectedId(null);
-    setDecisionOpen(false);
   }
 
   async function reanalyze() {
@@ -327,10 +325,20 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
 
   async function openDeepHistory(analysisId: string) {
     if (!detail) return;
-    const response = await fetch(`/api/reservoir/${String(detail.source.id)}/deep-analysis/${analysisId}`);
-    if (!response.ok) { setMsg("이전 심층 정리를 불러오지 못했습니다."); return; }
-    const data = await response.json() as { analysis?: DeepAnalysisViewModel };
-    if (data.analysis) setDetail((current) => current ? { ...current, deepAnalysis: data.analysis } : current);
+    const sourceId = String(detail.source.id);
+    const requestId = detailRequest.current;
+    try {
+      const response = await fetch(`/api/reservoir/${sourceId}/deep-analysis/${analysisId}`);
+      if (!response.ok) {
+        if (detailRequest.current === requestId) setMsg("이전 심층 정리를 불러오지 못했습니다.");
+        return;
+      }
+      const data = await response.json() as { analysis?: DeepAnalysisViewModel };
+      if (detailRequest.current !== requestId || !data.analysis) return;
+      setDetail((current) => current && String(current.source.id) === sourceId ? { ...current, deepAnalysis: data.analysis } : current);
+    } catch {
+      if (detailRequest.current === requestId) setMsg("이전 심층 정리를 불러오지 못했습니다.");
+    }
   }
 
   const indexItems = useMemo(() => searchHits
