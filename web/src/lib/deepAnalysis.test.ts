@@ -260,6 +260,70 @@ describe("deep analysis budget reservation", () => {
     expect(second.ok).toBe(true);
   });
 
+  it("keeps a failed analysis attempt reservation through the workflow step retry", async () => {
+    vi.doUnmock("../../../worker/src/analysis/budgetReservation");
+    vi.resetModules();
+    const db = workflowBudgetReservationDb(deepJob("job-retry"), { monthlyBudgetUsd: 10 });
+    const env = budgetReservationEnv(db);
+    const { deepAnalysisReservationUsd } = await import("../../../worker/src/analysis/budgetReservation");
+    const amountUsd = await deepAnalysisReservationUsd(env, "precision");
+    db.monthlyBudgetUsd = amountUsd;
+    let attempts = 0;
+    const { ResearchJobWorkflow } = await loadDeepAnalysisWorkflow({
+      useRealReservation: true,
+      analyzeDeepSource: async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          db.usageUsd = amountUsd;
+          throw new Error("deep_analysis_invalid_output");
+        }
+        return { analysisId: "analysis-retry", model: "review-model", costUsd: amountUsd };
+      },
+    });
+    const workflow = Object.create(ResearchJobWorkflow.prototype) as { env: Env; run: typeof ResearchJobWorkflow.prototype.run };
+    workflow.env = env;
+
+    await workflow.run({ payload: { jobId: "job-retry" } } as never, retryingWorkflowStep("execute-deep_analysis"));
+
+    expect(attempts).toBe(2);
+    expect(db.reservations).toHaveLength(1);
+    expect(db.reservations[0]).toMatchObject({ researchJobId: "job-retry", status: "RELEASED" });
+    expect(db.reserveInsertChanges).toEqual([1, 0]);
+    expect(db.completeResearchJob).toHaveBeenCalledWith(
+      db,
+      "job-retry",
+      expect.objectContaining({ analysisId: "analysis-retry" }),
+      { view: "RESERVOIR", sourceId: "source-1", analysisId: "analysis-retry" },
+    );
+    expect(db.blockResearchJob).not.toHaveBeenCalled();
+    expect(db.failResearchJob).not.toHaveBeenCalled();
+  });
+
+  it("does not replace the primary analysis error when failure cleanup release fails", async () => {
+    vi.resetModules();
+    const releaseLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { ResearchJobWorkflow } = await loadDeepAnalysisWorkflow({
+      reservationResults: [{ ok: true, reservationId: "reservation-primary-error", amountUsd: 0.05 }],
+      analysisError: new Error("deep_analysis_invalid_output"),
+      releaseError: new Error("release_failed"),
+    });
+    const db = workflowStatusDb(deepJob("job-primary-error"));
+    const workflow = Object.create(ResearchJobWorkflow.prototype) as { env: Env; run: typeof ResearchJobWorkflow.prototype.run };
+    workflow.env = { DB: db, MONTHLY_BUDGET_USD: "10" } as Env;
+
+    await expect(workflow.run({ payload: { jobId: "job-primary-error" } } as never, workflowStep())).rejects.toThrow("deep_analysis_invalid_output");
+
+    expect(db.failResearchJob).toHaveBeenCalledWith(db, "job-primary-error", "workflow_runtime_failed", "deep_analysis_invalid_output");
+    expect(db.blockResearchJob).not.toHaveBeenCalled();
+    expect(JSON.parse(String(releaseLog.mock.calls[0]?.[0]))).toMatchObject({
+      level: "error",
+      scope: "workflow:deep-analysis-budget-release",
+      researchJobId: "job-primary-error",
+      message: "release_failed",
+      originalError: "deep_analysis_invalid_output",
+    });
+  });
+
   it("uses one INSERT SELECT statement with the budget predicate instead of a separate spend preflight", async () => {
     vi.doUnmock("../../../worker/src/analysis/budgetReservation");
     vi.resetModules();
@@ -621,6 +685,20 @@ function workflowStep() {
   };
 }
 
+function retryingWorkflowStep(retryStepName: string) {
+  return {
+    do: vi.fn(async (name: string, ...args: unknown[]) => {
+      const callback = args.at(-1) as () => unknown;
+      try {
+        return await callback();
+      } catch (error) {
+        if (name === retryStepName) return callback();
+        throw error;
+      }
+    }),
+  };
+}
+
 function workflowStatusDb(job: ReturnType<typeof deepJob>) {
   return {
     job,
@@ -653,10 +731,45 @@ function workflowStatusDb(job: ReturnType<typeof deepJob>) {
   };
 }
 
+function workflowBudgetReservationDb(job: ReturnType<typeof deepJob>, input: { monthlyBudgetUsd: number; usageUsd?: number }) {
+  const db = budgetReservationDb(input) as ReturnType<typeof budgetReservationDb> & ReturnType<typeof workflowStatusDb> & {
+    reserveInsertChanges: number[];
+  };
+  Object.assign(db, {
+    job,
+    reserveInsertChanges: [] as number[],
+    getResearchJob: vi.fn().mockResolvedValue(job),
+    markJobRunning: vi.fn().mockResolvedValue(undefined),
+    updateJobProgress: vi.fn().mockResolvedValue(undefined),
+    completeResearchJob: vi.fn().mockResolvedValue(undefined),
+    failResearchJob: vi.fn().mockResolvedValue(undefined),
+    blockResearchJob: vi.fn().mockResolvedValue(undefined),
+    reserveDeepAnalysisBudget: vi.fn(),
+    releaseDeepAnalysisBudgetReservation: vi.fn().mockResolvedValue(undefined),
+    analyzeDeepSource: vi.fn(),
+  });
+  const originalPrepare = db.prepare.bind(db);
+  db.prepare = (sql: string) => {
+    const statement = originalPrepare(sql);
+    if (!sql.includes("INSERT INTO ai_budget_reservations")) return statement;
+    const originalRun = statement.run.bind(statement);
+    statement.run = async () => {
+      const result = await originalRun();
+      db.reserveInsertChanges.push(Number(result.meta?.changes ?? 0));
+      return result;
+    };
+    return statement;
+  };
+  return db;
+}
+
 async function loadDeepAnalysisWorkflow(input: {
-  reservationResults: ({ ok: true; reservationId: string; amountUsd: number } | { ok: false })[];
+  reservationResults?: ({ ok: true; reservationId: string; amountUsd: number } | { ok: false })[];
   analysisResults?: { analysisId: string; model: string; costUsd: number }[];
   analysisError?: Error;
+  releaseError?: Error;
+  useRealReservation?: boolean;
+  analyzeDeepSource?: (env: Env, sourceId: string, profile: "precision" | "maximum") => Promise<{ analysisId: string; model: string; costUsd: number }>;
 }) {
   vi.doMock("../../../worker/src/jobs/store", () => ({
     getResearchJob: (db: ReturnType<typeof workflowStatusDb>, id: string) => db.getResearchJob(id),
@@ -666,19 +779,27 @@ async function loadDeepAnalysisWorkflow(input: {
     failResearchJob: (db: ReturnType<typeof workflowStatusDb>, id: string, errorCode: string, error: string) => db.failResearchJob(db, id, errorCode, error),
     blockResearchJob: (db: ReturnType<typeof workflowStatusDb>, id: string, errorCode: string, error: string) => db.blockResearchJob(db, id, errorCode, error),
   }));
-  vi.doMock("../../../worker/src/analysis/budgetReservation", () => ({
-    reserveDeepAnalysisBudget: (env: Env, reservationInput: { researchJobId: string; profile: "precision" | "maximum" }) => {
-      const db = env.DB as ReturnType<typeof workflowStatusDb>;
-      const result = input.reservationResults.shift() ?? { ok: false };
-      db.reserveDeepAnalysisBudget(env, reservationInput);
-      return result;
-    },
-    releaseDeepAnalysisBudgetReservation: (db: ReturnType<typeof workflowStatusDb>, researchJobId: string) => db.releaseDeepAnalysisBudgetReservation(db, researchJobId),
-  }));
+  if (input.useRealReservation) {
+    vi.doUnmock("../../../worker/src/analysis/budgetReservation");
+  } else {
+    vi.doMock("../../../worker/src/analysis/budgetReservation", () => ({
+      reserveDeepAnalysisBudget: (env: Env, reservationInput: { researchJobId: string; profile: "precision" | "maximum" }) => {
+        const db = env.DB as ReturnType<typeof workflowStatusDb>;
+        const result = input.reservationResults?.shift() ?? { ok: false };
+        db.reserveDeepAnalysisBudget(env, reservationInput);
+        return result;
+      },
+      releaseDeepAnalysisBudgetReservation: async (db: ReturnType<typeof workflowStatusDb>, researchJobId: string) => {
+        if (input.releaseError) throw input.releaseError;
+        return db.releaseDeepAnalysisBudgetReservation(db, researchJobId);
+      },
+    }));
+  }
   vi.doMock("../../../worker/src/analysis/deepAnalyze", () => ({
-    analyzeDeepSource: (env: Env, sourceId: string, profile: "precision" | "maximum") => {
+    analyzeDeepSource: async (env: Env, sourceId: string, profile: "precision" | "maximum") => {
       const db = env.DB as ReturnType<typeof workflowStatusDb>;
       db.analyzeDeepSource(env, sourceId, profile);
+      if (input.analyzeDeepSource) return input.analyzeDeepSource(env, sourceId, profile);
       if (input.analysisError) throw input.analysisError;
       return input.analysisResults?.shift() ?? { analysisId: "analysis-default", model: "review-model", costUsd: 0.01 };
     },

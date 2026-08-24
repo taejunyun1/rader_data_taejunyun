@@ -98,3 +98,56 @@ Result:
 - `web/vitest.config.ts` changed only to let web Vitest resolve `cloudflare:workers` for real workflow-module tests. This is outside the brief's original file list, but without it the workflow integration fixture cannot import `worker/src/workflows/researchJob.ts` in the web test runner.
 - Reservation release is intentionally audit-preserving: active budget only sums `RESERVED`; final spend remains `ai_usage`.
 - The reservation ceiling is conservative and model-aware using configured model roles and configured pricing/fallback pricing. It does not hardcode model names or prices.
+
+## Follow-up Fix Report
+
+Date: 2026-08-24
+Status: Complete
+
+### Scope
+
+- Moved deep-analysis reservation release out of the paid `execute-deep_analysis` workflow step.
+- Added a separate `release-deep-analysis-budget` workflow step that runs only after successful analysis, so release retry does not rerun paid analysis.
+- Added failure cleanup for ultimately failed deep-analysis workflows. Cleanup release failures are logged and do not replace the original workflow error or status decision.
+- Added regression tests for:
+  - failed analysis attempt followed by workflow step retry reusing the same RESERVED row
+  - release failure during failure cleanup preserving the primary analysis error
+
+### Exact Commands and Outcomes
+
+RED:
+
+```bash
+pnpm --dir web exec vitest run src/lib/deepAnalysis.test.ts
+```
+
+Outcome:
+
+- Failed as expected: `1` file failed, `2` tests failed, `16` passed.
+- Failure 1: retry became `monthly_budget_exhausted`.
+- Failure 2: release failure replaced `deep_analysis_invalid_output` with `release_failed`.
+
+GREEN:
+
+```bash
+pnpm --dir web exec vitest run src/lib/deepAnalysis.test.ts
+```
+
+Outcome:
+
+- Passed: `1` file, `18` tests.
+
+Typecheck:
+
+```bash
+pnpm -r typecheck
+```
+
+Outcome:
+
+- Passed across `shared`, `worker`, and `web`.
+
+### Concerns
+
+- No migration changes were needed for this follow-up, so `pnpm db:migrate` was not rerun.
+- Existing untracked local artifacts were left untouched: `.playwright-cli/`, `.pnpm-store/`, `.superpowers/brainstorm/`, `docs/superpowers/plans/2026-08-24-remote-fetch-safety-and-ai-budget-guard-plan.md`, `output/`, and `web/test-results/`.

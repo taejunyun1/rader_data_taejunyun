@@ -58,11 +58,23 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
         async () => this.execute(job),
       );
 
+      if (job.kind === "DEEP_ANALYSIS") {
+        await step.do(
+          "release-deep-analysis-budget",
+          { retries: { limit: 1, delay: "5 seconds", backoff: "exponential" }, timeout: "1 minute" },
+          async () => {
+            await releaseDeepAnalysisBudgetReservation(this.env.DB, job.id);
+            return true;
+          },
+        );
+      }
+
       await step.do("mark-complete", async () => {
         await completeResearchJob(this.env.DB, job.id, result.result, result.resultRef);
         return true;
       });
     } catch (error) {
+      if (job.kind === "DEEP_ANALYSIS") await this.releaseDeepAnalysisBudgetAfterFailure(job.id, error);
       if (error instanceof JobBlockedError) {
         await blockResearchJob(this.env.DB, job.id, error.code, error.message);
       } else {
@@ -131,13 +143,21 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
     const input = job.input as { sourceId: string; profile: "precision" | "maximum" };
     const reservation = await reserveDeepAnalysisBudget(this.env, { researchJobId: job.id, profile: input.profile });
     if (!reservation.ok) throw new JobBlockedError("monthly_budget_exhausted", "monthly_budget_exhausted");
-    const result = await (async () => {
-      try {
-        return await analyzeDeepSource(this.env, input.sourceId, input.profile);
-      } finally {
-        await releaseDeepAnalysisBudgetReservation(this.env.DB, job.id);
-      }
-    })();
+    const result = await analyzeDeepSource(this.env, input.sourceId, input.profile);
     return { result: { analysisId: result.analysisId, model: result.model, costUsd: result.costUsd }, resultRef: { view: "RESERVOIR", sourceId: input.sourceId, analysisId: result.analysisId } };
+  }
+
+  private async releaseDeepAnalysisBudgetAfterFailure(researchJobId: string, originalError: unknown): Promise<void> {
+    try {
+      await releaseDeepAnalysisBudgetReservation(this.env.DB, researchJobId);
+    } catch (releaseError) {
+      console.error(JSON.stringify({
+        level: "error",
+        scope: "workflow:deep-analysis-budget-release",
+        researchJobId,
+        message: releaseError instanceof Error ? releaseError.message : "deep_analysis_budget_release_failed",
+        originalError: originalError instanceof Error ? originalError.message : String(originalError),
+      }));
+    }
   }
 }
