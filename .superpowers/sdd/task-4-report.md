@@ -49,3 +49,10 @@
 - Candidate judgment completion rechecks its candidate ID and generation before recording follow-up develop signals, refreshing candidates, changing visible state, or navigating to Reservoir. A Keep acquisition completion applies the same current-intent check.
 - TDD record: added a deferred `develop` response regression; selecting a second candidate while the first judgment is pending now leaves the newer reading selection intact and prevents the old source signal/navigation. The pre-fix run failed because it navigated to `RESERVOIR`.
 - Verification: focused reading-flow Vitest passed (4 files, 43 tests); full web Vitest passed (37 files, 250 tests); `pnpm -r typecheck` passed for shared, worker, and web.
+
+## Review follow-up — 2026-08-24 (Discover refreshed selection)
+
+- Discover candidate reloads now preserve the initial default selection only until the first candidate is selected. If the currently selected candidate is absent from a refreshed job- or filter-driven list, the view invalidates candidate intent, closes the judgment sheet, clears selection/document/error/pending state, and remains in the unselected reading state instead of selecting the next candidate.
+- Same-candidate decisions retain their existing intent guard; a reload that removes that candidate now safely invalidates the old intent rather than retargeting its judgment to another candidate.
+- TDD record: added the A-judgment → refreshed-B-only regression. It failed before the change because B replaced A while the judgment sheet stayed open; it passes with neither A nor B selected until an explicit click.
+- Verification: focused Task 4 web Vitest passed (4 files, 44 tests); full web Vitest passed (37 files, 251 tests); `pnpm -r typecheck` passed for shared, worker, and web.

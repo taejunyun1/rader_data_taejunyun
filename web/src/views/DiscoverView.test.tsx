@@ -111,6 +111,21 @@ describe("DiscoverView", () => {
     expect(screen.getByRole("dialog", { name: "읽은 뒤 판단" })).toBeInTheDocument();
   });
 
+  it("clears judgment intent when a refreshed list no longer contains the selected candidate", async () => {
+    render(<DiscoverView onNavigate={vi.fn()} />);
+    await userEvent.click(await screen.findByRole("button", { name: /자료 후보/ }));
+    await userEvent.click(screen.getByRole("button", { name: "판단하기" }));
+    expect(screen.getByRole("dialog", { name: "읽은 뒤 판단" })).toBeInTheDocument();
+
+    candidateItems = [secondCandidate];
+    await userEvent.click(screen.getByRole("button", { name: "보관됨" }));
+
+    await waitFor(() => expect(screen.getByText("읽을 후보를 선택하세요")).toBeInTheDocument());
+    expect(screen.queryByRole("dialog", { name: "읽은 뒤 판단" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /다음 후보/ })).not.toHaveAttribute("aria-current");
+    expect(screen.queryByRole("heading", { name: "다음 후보" })).not.toBeInTheDocument();
+  });
+
   it("shows an existing candidate decision in the reading action bar", async () => {
     currentCandidate = { ...candidate, status: "WATCHED" };
     render(<DiscoverView onNavigate={vi.fn()} />);

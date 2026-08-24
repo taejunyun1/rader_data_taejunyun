@@ -203,6 +203,7 @@ export default function DiscoverView({
   const [fieldSignalsCollected, setFieldSignalsCollected] = useState(0);
   const [keptAcquisitionIntent, setKeptAcquisitionIntent] = useState<CandidateIntent & { jobId: string } | null>(null);
   const candidateIntentRef = useRef<CandidateIntent>({ candidateId: null, generation: 0 });
+  const canAutoSelectCandidateRef = useRef(true);
 
   const advanceCandidateIntent = useCallback((candidateId: string | null): CandidateIntent => {
     const next = { candidateId, generation: candidateIntentRef.current.generation + 1 };
@@ -233,7 +234,16 @@ export default function DiscoverView({
       if (intent && !isCurrentCandidateIntent(intent)) return;
       const next = data.items ?? [];
       setCandidates(next);
-      setSelectedId((current) => current && next.some((candidate) => candidate.id === current) ? current : next[0]?.id ?? null);
+      const selectedCandidateId = candidateIntentRef.current.candidateId;
+      if (selectedCandidateId && !next.some((candidate) => candidate.id === selectedCandidateId)) {
+        clearCandidateSelection();
+        return;
+      }
+      if (canAutoSelectCandidateRef.current && !selectedCandidateId && next[0]) {
+        canAutoSelectCandidateRef.current = false;
+        advanceCandidateIntent(next[0].id);
+        setSelectedId(next[0].id);
+      }
     } catch {
       if (intent && !isCurrentCandidateIntent(intent)) return;
       setListError("발견 후보를 불러오지 못했습니다.");
@@ -255,10 +265,6 @@ export default function DiscoverView({
   useEffect(() => {
     void load();
   }, [load]);
-
-  useEffect(() => {
-    if (candidateIntentRef.current.candidateId !== selectedId) advanceCandidateIntent(selectedId);
-  }, [advanceCandidateIntent, selectedId]);
 
   useEffect(() => {
     if (contentMode === "FIELD_SIGNAL") {
@@ -428,6 +434,7 @@ export default function DiscoverView({
   }
 
   function clearCandidateSelection() {
+    canAutoSelectCandidateRef.current = false;
     advanceCandidateIntent(null);
     setSelectedId(null);
     setDecisionOpen(false);
@@ -439,6 +446,7 @@ export default function DiscoverView({
 
   function selectCandidate(id: string) {
     const candidate = candidates.find((item) => item.id === id);
+    canAutoSelectCandidateRef.current = false;
     advanceCandidateIntent(id);
     setSelectedId(id);
     setDecisionError("");
