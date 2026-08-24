@@ -123,16 +123,17 @@ export async function customQueries(db: D1Database): Promise<string[]> {
   return loadListKV(db, DISCOVERY_QUERIES_KEY, 4);
 }
 
-export function sanitizeCustomFeedUrls(feeds: string[]): string[] {
+export function sanitizeCustomFeedUrls(feeds: readonly unknown[]): string[] {
   return [...new Set(
     feeds
+      .filter((feed): feed is string => typeof feed === "string")
       .map((feed) => normalizePublicHttpUrl(feed))
       .filter((feed): feed is string => Boolean(feed))
       .filter((feed) => discoverySourceByFeedUrl(feed) === null),
   )].slice(0, 6);
 }
 
-export function resolveDiscoveryReadingFeeds(customFeedUrls: string[]): DiscoveryFeedInput[] {
+export function resolveDiscoveryReadingFeeds(customFeedUrls: readonly unknown[]): DiscoveryFeedInput[] {
   const feedUrls = [...DEFAULT_DISCOVERY_FEEDS, ...sanitizeCustomFeedUrls(customFeedUrls)];
   return feedUrls.map((feedUrl) => {
     const source = discoverySourceByFeedUrl(feedUrl);
@@ -148,7 +149,7 @@ export async function customFeeds(db: D1Database): Promise<string[]> {
   return sanitizeCustomFeedUrls(await loadListKV(db, DISCOVERY_FEEDS_KEY, 6, []));
 }
 
-export async function setCustomFeeds(db: D1Database, feeds: string[]): Promise<void> {
+export async function setCustomFeeds(db: D1Database, feeds: readonly unknown[]): Promise<void> {
   await saveListKV(db, DISCOVERY_FEEDS_KEY, sanitizeCustomFeedUrls(feeds), 6);
 }
 
