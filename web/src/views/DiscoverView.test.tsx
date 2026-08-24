@@ -106,6 +106,22 @@ describe("DiscoverView", () => {
     expect(screen.getByRole("dialog", { name: "읽은 뒤 판단" })).toBeInTheDocument();
   });
 
+  it("shows an existing candidate decision in the reading action bar", async () => {
+    currentCandidate = { ...candidate, status: "WATCHED" };
+    render(<DiscoverView onNavigate={vi.fn()} />);
+    await userEvent.click(await screen.findByRole("button", { name: /자료 후보/ }));
+
+    expect(screen.getByText("현재 판단 · 관찰 중")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "판단 변경" }));
+    await userEvent.click(screen.getAllByRole("button", { name: "판단 변경" })[1]!);
+    await userEvent.click(screen.getByRole("button", { name: "관찰하기" }));
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+      "/api/discover/candidates/candidate-1/watch",
+      { method: "POST" },
+    ));
+  });
+
   it("maps 발전시키기 to keep plus a develop signal", async () => {
     const onNavigate = vi.fn();
     render(<DiscoverView onNavigate={onNavigate} />);

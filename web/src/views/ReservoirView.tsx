@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { QualityStatus, TextScope } from "@radar/shared/ingestion";
 import type { SourceAccess } from "../lib/sourceAccess";
 import { deriveSourceAccess } from "../lib/sourceAccess";
@@ -182,6 +182,7 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
   const [deepProfile, setDeepProfile] = useState<"precision" | "maximum">("precision");
   const [deepPending, setDeepPending] = useState(false);
   const [deepBlock, setDeepBlock] = useState<DeepAnalysisBlock | null>(null);
+  const detailRequest = useRef(0);
 
   const load = useCallback(async () => {
     setListError("");
@@ -209,6 +210,7 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
   }, [items]);
 
   function clearSelection() {
+    detailRequest.current += 1;
     setSelectedId(null);
     setDetail(null);
     setDetailError("");
@@ -218,7 +220,10 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
   }
 
   async function openDetail(id: string) {
+    const requestId = detailRequest.current + 1;
+    detailRequest.current = requestId;
     setSelectedId(id);
+    setDetail(null);
     setDecisionOpen(false);
     setDetailError("");
     setSearchHits(null);
@@ -228,10 +233,16 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
       const response = await fetch(`/api/reservoir/${id}`);
       if (!response.ok) throw new Error("detail_failed");
       const next = await response.json() as SourceDetail;
+      if (detailRequest.current !== requestId) return;
       setDetail(next);
       if (next.deepAnalysis?.profile) setDeepProfile(next.deepAnalysis.profile);
       await fetch("/api/signals", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceId: id, action: "view" }) });
-    } catch { setDetail(null); setDecisionOpen(false); setDetailError("자료 상세 내용을 불러오지 못했습니다."); }
+    } catch {
+      if (detailRequest.current !== requestId) return;
+      setDetail(null);
+      setDecisionOpen(false);
+      setDetailError("자료 상세 내용을 불러오지 못했습니다.");
+    }
   }
 
   async function signal(action: DecisionAction["id"]) {
@@ -356,7 +367,7 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
         readingKey={selectedId}
         mobilePane={selectedId ? "reading" : "index"}
         index={<SourceIndex title="저장소 자료" items={indexItems} selectedId={selectedId} onSelect={(id) => void openDetail(id)} />}
-      reading={detailError ? <StatusMessage kind="error" title={detailError} action={<button className="ui-button-secondary" onClick={() => selectedId && void openDetail(selectedId)}>다시 시도</button>} /> : document ? <><ReadingActionBar statusLabel={detail?.source.decisionStatus ? DECISION_STATUS_LABELS[detail.source.decisionStatus as DecisionAction["id"]] : null} pending={actionPending} onBack={clearSelection} onOpenDecision={() => setDecisionOpen(true)} /><div className="deep-analysis-controls" aria-label="심층 정리 실행"><label htmlFor="deep-analysis-profile">심층 정리 품질</label><select id="deep-analysis-profile" value={deepProfile} onChange={(event) => setDeepProfile(event.target.value as "precision" | "maximum")} disabled={deepPending || deepDisabled}><option value="precision">정밀 · 긴 본문 구조화</option><option value="maximum">최고 정밀 · 논거와 연결 검토</option></select><button type="button" className="ui-button" onClick={() => void runDeepAnalysis()} disabled={deepPending || deepDisabled}>{deepDisabled ? "원문 수집 필요" : deepPending ? "심층 정리 중…" : "심층 정리하기"}</button></div>{deepBlockReason && <p className="deep-analysis-blocked" role="status">{deepBlockReason}</p>}<ReadingPane document={document} deepAnalysis={detail?.deepAnalysis} deepAnalysisHistory={detail?.deepAnalysisHistory} onOpenDeepHistory={(id) => void openDeepHistory(id)} /></> : <StatusMessage kind="empty" title="읽을 자료를 선택하세요" description="왼쪽 목록에서 자료를 고르면 원문과 분석 내용을 함께 읽을 수 있습니다." />}
+      reading={detailError ? <><ReadingActionBar message="상세 내용을 불러오지 못했습니다." onBack={clearSelection} /><StatusMessage kind="error" title={detailError} action={<button className="ui-button-secondary" onClick={() => selectedId && void openDetail(selectedId)}>다시 시도</button>} /></> : document ? <><ReadingActionBar statusLabel={detail?.source.decisionStatus ? DECISION_STATUS_LABELS[detail.source.decisionStatus as DecisionAction["id"]] : null} pending={actionPending} onBack={clearSelection} onOpenDecision={() => setDecisionOpen(true)} /><div className="deep-analysis-controls" aria-label="심층 정리 실행"><label htmlFor="deep-analysis-profile">심층 정리 품질</label><select id="deep-analysis-profile" value={deepProfile} onChange={(event) => setDeepProfile(event.target.value as "precision" | "maximum")} disabled={deepPending || deepDisabled}><option value="precision">정밀 · 긴 본문 구조화</option><option value="maximum">최고 정밀 · 논거와 연결 검토</option></select><button type="button" className="ui-button" onClick={() => void runDeepAnalysis()} disabled={deepPending || deepDisabled}>{deepDisabled ? "원문 수집 필요" : deepPending ? "심층 정리 중…" : "심층 정리하기"}</button></div>{deepBlockReason && <p className="deep-analysis-blocked" role="status">{deepBlockReason}</p>}<ReadingPane document={document} deepAnalysis={detail?.deepAnalysis} deepAnalysisHistory={detail?.deepAnalysisHistory} onOpenDeepHistory={(id) => void openDeepHistory(id)} /></> : <StatusMessage kind="empty" title="읽을 자료를 선택하세요" description="왼쪽 목록에서 자료를 고르면 원문과 분석 내용을 함께 읽을 수 있습니다." />}
       />}
       {document && <DecisionBottomSheet document={document} decisionStatus={detail?.source.decisionStatus as DecisionAction["id"] | null} open={decisionOpen} pending={actionPending} pendingAction={pendingAction} error={decisionError} onClose={() => setDecisionOpen(false)} onAction={(action) => void signal(action)} secondaryAction={{ label: "다시 분석하기", onClick: reanalyze }}><div className="source-detail-extra"><div className="source-detail-extra__heading"><h3>자료 기록</h3><button className="ui-button-secondary" type="button" disabled={actionPending || !canonicalUrl} onClick={() => void refetch()}>다시 가져오기</button></div><p>{detail?.versions.length ?? 0}개 버전 · {detail?.signals.length ?? 0}개 판단 기록</p>{!canonicalUrl && <p>원문 주소가 없어 다시 가져올 수 없습니다.</p>}</div></DecisionBottomSheet>}
       {searchHits && <p className="table-note">검색 결과 {searchHits.length}개 · 검색 결과를 선택하면 같은 읽기 화면에서 확인합니다.</p>}

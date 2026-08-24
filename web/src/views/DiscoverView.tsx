@@ -13,7 +13,7 @@ import DiscoveryRunSummary from "../components/discovery/DiscoveryRunSummary";
 import FieldSignalList from "../components/discovery/FieldSignalList";
 import FieldSignalRunSummary from "../components/discovery/FieldSignalRunSummary";
 import PageHeader from "../components/layout/PageHeader";
-import DecisionBottomSheet from "../components/reading/DecisionBottomSheet";
+import DecisionBottomSheet, { DECISION_STATUS_LABELS } from "../components/reading/DecisionBottomSheet";
 import ReadingActionBar from "../components/reading/ReadingActionBar";
 import ReadingPane from "../components/reading/ReadingPane";
 import SourceIndex from "../components/reading/SourceIndex";
@@ -139,6 +139,15 @@ function toReadingDocument(candidate: Candidate): ReadingDocument {
     questions: [candidate.queryUsed ? `${candidate.queryUsed}와 이 자료는 어떤 관계를 갖는가?` : "이 자료가 지금의 작업과 어떤 관계를 갖는가?"],
     keywords: [],
   };
+}
+
+function candidateDecisionStatus(candidate: Candidate | null): DecisionAction["id"] | null {
+  if (!candidate) return null;
+  if (candidate.status === "KEPT") return "keep";
+  if (candidate.status === "WATCHED") return "watch";
+  if (candidate.status === "IGNORED") return "ignore";
+  if (candidate.status === "DEVELOPED") return "develop";
+  return null;
 }
 
 export default function DiscoverView({
@@ -432,6 +441,7 @@ export default function DiscoverView({
   }
 
   const selected = useMemo(() => candidates.find((candidate) => candidate.id === selectedId) ?? null, [candidates, selectedId]);
+  const selectedDecisionStatus = candidateDecisionStatus(selected);
   const document = selected && !(selected.status === "KEPT" && selected.sourceId) ? toReadingDocument(selected) : null;
 
   return (
@@ -460,10 +470,10 @@ export default function DiscoverView({
               readingKey={selectedId}
               mobilePane={selectedId ? "reading" : "index"}
               index={<SourceIndex title="발견 후보" items={candidates.map(toIndexItem)} selectedId={selectedId} onSelect={selectCandidate} />}
-              reading={document ? <><ReadingActionBar pending={busy} onBack={clearCandidateSelection} onOpenDecision={() => setDecisionOpen(true)} /><ReadingPane document={document} /></> : <StatusMessage kind="empty" title="읽을 후보를 선택하세요" description="왼쪽 목록에서 후보를 고르면 실제 접근 링크와 함께 읽기 질문을 확인할 수 있습니다." />}
+              reading={document ? <><ReadingActionBar statusLabel={selectedDecisionStatus ? DECISION_STATUS_LABELS[selectedDecisionStatus] : null} pending={busy} onBack={clearCandidateSelection} onOpenDecision={() => setDecisionOpen(true)} /><ReadingPane document={document} /></> : <StatusMessage kind="empty" title="읽을 후보를 선택하세요" description="왼쪽 목록에서 후보를 고르면 실제 접근 링크와 함께 읽기 질문을 확인할 수 있습니다." />}
             />
           )}
-          {document && <DecisionBottomSheet actions={DISCOVERY_ACTIONS} document={document} open={decisionOpen} pending={busy} pendingAction={pendingAction} error={decisionError} onClose={() => setDecisionOpen(false)} onAction={(action) => void act(document.id, action)} />}
+          {document && <DecisionBottomSheet actions={DISCOVERY_ACTIONS} document={document} decisionStatus={selectedDecisionStatus} open={decisionOpen} pending={busy} pendingAction={pendingAction} error={decisionError} onClose={() => setDecisionOpen(false)} onAction={(action) => void act(document.id, action)} />}
         </>
       )}
       {contentMode === "FIELD_SIGNAL" && (

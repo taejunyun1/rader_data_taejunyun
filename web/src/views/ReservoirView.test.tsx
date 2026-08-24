@@ -15,6 +15,12 @@ const sourceDetail = {
   versions: [],
   signals: [],
 };
+const sourceDetailB = {
+  ...sourceDetail,
+  source: { ...sourceDetail.source, id: "source-2", title: "자료 B" },
+  acquisition: { ...sourceDetail.acquisition, originalTextUrl: "/api/reservoir/source-2/original-text" },
+  analysis: { ...sourceDetail.analysis, summary: "두 번째 자료 분석" },
+};
 
 let deepAnalysisResult: { status: number; body: Record<string, unknown> };
 type TestSourceDetail = Omit<typeof sourceDetail, "source" | "acquisition"> & {
@@ -26,20 +32,29 @@ type TestSourceDetail = Omit<typeof sourceDetail, "source" | "acquisition"> & {
 };
 
 let currentSourceDetail: TestSourceDetail;
+let reservoirItems: Array<Record<string, unknown>>;
+let pendingSourceOneDetail: Promise<Response> | null;
+let sourceOneDetailFailure = false;
 
 beforeEach(() => {
   let requestedWatching = false;
   deepAnalysisResult = { status: 202, body: { job: { id: "deep-job" }, reused: false } };
   currentSourceDetail = sourceDetail;
+  reservoirItems = [{ id: "source-1", title: "자료 A", kind: "PAPER_ACADEMIC", reliability: "PRIMARY", status: "indexed", origin: "upload", year: 2025, canonicalUrl: "https://example.com/paper", createdAt: "2026-08-21", topics: "[\"사진\"]", keywordCount: 1, signalCount: 0, markedForNextResearch: 1, decisionStatus: null }];
+  pendingSourceOneDetail = null;
+  sourceOneDetailFailure = false;
   vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url === "/api/reservoir" || url.startsWith("/api/reservoir?")) {
       const decisionStatus = url.includes("decision=watching") ? "watch" : null;
       requestedWatching = decisionStatus === "watch";
-      return Promise.resolve(new Response(JSON.stringify({ items: [{ id: "source-1", title: "자료 A", kind: "PAPER_ACADEMIC", reliability: "PRIMARY", status: "indexed", origin: "upload", year: 2025, canonicalUrl: "https://example.com/paper", createdAt: "2026-08-21", topics: "[\"사진\"]", keywordCount: 1, signalCount: 0, markedForNextResearch: 1, decisionStatus }] })));
+      return Promise.resolve(new Response(JSON.stringify({ items: reservoirItems.map((item) => ({ ...item, decisionStatus })) })));
     }
     if (url === "/api/reservoir/topics") return Promise.resolve(new Response(JSON.stringify({ topics: [] })));
+    if (url === "/api/reservoir/source-1" && pendingSourceOneDetail) return pendingSourceOneDetail;
+    if (url === "/api/reservoir/source-1" && sourceOneDetailFailure) return Promise.resolve(new Response("", { status: 500 }));
     if (url === "/api/reservoir/source-1") return Promise.resolve(new Response(JSON.stringify(requestedWatching ? { ...currentSourceDetail, source: { ...currentSourceDetail.source, decisionStatus: "watch" } } : currentSourceDetail)));
+    if (url === "/api/reservoir/source-2") return Promise.resolve(new Response(JSON.stringify(sourceDetailB)));
     if (url === "/api/reservoir/source-1/deep-analysis" && init?.method === "POST") {
       return Promise.resolve(new Response(JSON.stringify(deepAnalysisResult.body), { status: deepAnalysisResult.status }));
     }
@@ -81,6 +96,39 @@ describe("ReservoirView", () => {
     expect(screen.getByText("읽을 자료를 선택하세요")).toBeInTheDocument();
     expect(item).not.toHaveAttribute("aria-current");
     expect(screen.queryByRole("button", { name: "판단하기" })).not.toBeInTheDocument();
+  });
+
+  it("ignores an earlier detail response after a newer selection is cleared", async () => {
+    let resolveSourceOneDetail: (response: Response) => void = () => undefined;
+    pendingSourceOneDetail = new Promise((resolve) => { resolveSourceOneDetail = resolve; });
+    reservoirItems = [
+      reservoirItems[0],
+      { ...reservoirItems[0], id: "source-2", title: "자료 B" },
+    ];
+    render(<ReservoirView />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+    await userEvent.click(screen.getByRole("button", { name: /자료 B/ }));
+    expect(await screen.findByText("두 번째 자료 분석")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "목록으로" }));
+
+    resolveSourceOneDetail(new Response(JSON.stringify(sourceDetail)));
+
+    await waitFor(() => expect(screen.getByText("읽을 자료를 선택하세요")).toBeInTheDocument());
+    expect(screen.queryByText("시스템이 정리한 내용")).not.toBeInTheDocument();
+    expect(screen.queryByText("자료 상세 내용을 불러오지 못했습니다.")).not.toBeInTheDocument();
+  });
+
+  it("keeps a mobile list return action visible when detail loading fails", async () => {
+    sourceOneDetailFailure = true;
+    render(<ReservoirView />);
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+
+    expect(await screen.findByText("자료 상세 내용을 불러오지 못했습니다.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "목록으로" }));
+
+    expect(screen.getByText("읽을 자료를 선택하세요")).toBeInTheDocument();
+    expect(screen.getByTestId("split-workspace")).toHaveAttribute("data-mobile-pane", "index");
   });
 
   it("records a develop signal", async () => {
