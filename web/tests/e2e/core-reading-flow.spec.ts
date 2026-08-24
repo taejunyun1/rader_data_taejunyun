@@ -130,7 +130,8 @@ async function installAcquisitionFixture(page: Page, fixture: AcquisitionFixture
 async function keepFixtureCandidate(page: Page, fixture: AcquisitionFixture) {
   await page.goto("/");
   await page.getByRole("button", { name: "발견", exact: true }).click();
-  await page.getByRole("option", { name: new RegExp(fixture.title) }).click();
+  await page.getByRole("button", { name: new RegExp(fixture.title) }).click();
+  await page.getByRole("button", { name: "판단하기" }).click();
   await page.getByRole("button", { name: "보관하기" }).click();
 }
 
@@ -178,21 +179,25 @@ test("dashboard to discover preserves the reading-first flow", async ({ page }) 
   await expect(page.getByRole("heading", { name: "상승 신호" })).toHaveCount(0);
   await page.getByRole("button", { name: "발견", exact: true }).click();
   await expect(page.getByRole("heading", { name: "발견", exact: true })).toBeVisible();
-  await expect(page.getByRole("option", { name: /발견 후보/ })).toBeVisible();
-  await page.getByRole("option", { name: /발견 후보/ }).click();
+  await expect(page.getByRole("button", { name: /발견 후보/ })).toBeVisible();
+  await page.getByRole("button", { name: /발견 후보/ }).click();
   await expect(page.getByText("분석 내용 없음")).toBeVisible();
-  await expect(page.getByRole("button", { name: "발전시키기" })).toBeVisible();
+  const decisionDialog = page.getByRole("dialog", { name: "읽은 뒤 판단" });
+  await expect(decisionDialog).toHaveCount(0);
+  await page.getByRole("button", { name: "판단하기" }).click();
+  await expect(decisionDialog).toBeVisible();
+  await expect(decisionDialog.getByRole("button", { name: "발전시키기" })).toBeVisible();
 });
 
 test("discover separates reading candidates from field signals", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "발견", exact: true }).click();
-  await expect(page.getByRole("option", { name: /발견 후보/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /발견 후보/ })).toBeVisible();
   await page.getByRole("tab", { name: "현장 신호" }).click();
   await expect(page.getByRole("heading", { name: "Call for Papers: Photography and Visual Culture" })).toBeVisible();
   await expect(page.getByText("CAA News", { exact: true })).toBeVisible();
   await page.getByRole("tab", { name: "읽을거리" }).click();
-  await expect(page.getByRole("option", { name: /발견 후보/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /발견 후보/ })).toBeVisible();
 });
 
 test("Discovery Keep acquires an HTML fixture before enabling deep analysis", async ({ page }) => {
@@ -214,7 +219,6 @@ test("Discovery Keep acquires an HTML fixture before enabling deep analysis", as
 
   await expect(page.getByText("원문 수집 · 완료")).toBeVisible();
   await expect(page.getByRole("heading", { name: "저장소", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "닫기", exact: true }).click();
   await expect(page.getByText("원문 저장됨 · 2,400자")).toBeVisible();
   await expect(page.getByText("원문 범위 FULLTEXT · 수집 방식 HTML_STATIC · 품질 READY")).toBeVisible();
   await expect(page.getByRole("button", { name: "심층 정리하기" })).toBeEnabled();
@@ -241,7 +245,6 @@ test("Discovery Keep exposes remote PDF toMarkdown provenance", async ({ page })
 
   await expect(page.getByText("원문 수집 · 완료")).toBeVisible();
   await expect(page.getByRole("heading", { name: "저장소", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "닫기", exact: true }).click();
   await expect(page.getByText("원문 범위 FULLTEXT · 수집 방식 PDF_REMOTE_TO_MARKDOWN · 품질 READY")).toBeVisible();
   await expect(page.getByRole("button", { name: "심층 정리하기" })).toBeEnabled();
   await page.getByText("저장된 원문 보기").click();
@@ -271,13 +274,15 @@ test("a JS-shell acquisition failure leaves the metadata-only source blocked fro
   await expect(jobCenter.getByText("원문 수집 · 실패")).toBeVisible();
   await expect(jobCenter.getByText("EXTRACTION_EMPTY")).toBeVisible();
   await page.getByRole("button", { name: "저장소", exact: true }).click();
-  await page.getByRole("option", { name: new RegExp(fixture.title) }).click();
-  const readingPane = page.locator("article.reading-pane");
+  await page.getByRole("button", { name: new RegExp(fixture.title) }).click();
+  const readingPane = page.getByRole("region", { name: "자료 읽기" });
   await expect(readingPane.getByText("원문 범위 METADATA_ONLY · 수집 방식 DISCOVERY_METADATA · 품질 REVIEW")).toBeVisible();
   await expect(readingPane.getByText("메타데이터만 저장됨", { exact: true })).not.toHaveAttribute("title", /.+/);
   await expect(readingPane.getByText("저장된 원문 보기")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "다시 가져오기" })).toBeEnabled();
-  await page.getByRole("button", { name: "닫기", exact: true }).click();
+  await page.getByRole("button", { name: "판단하기" }).click();
+  const decisionDialog = page.getByRole("dialog", { name: "읽은 뒤 판단" });
+  await expect(decisionDialog.getByRole("button", { name: "다시 가져오기" })).toBeEnabled();
+  await decisionDialog.getByRole("button", { name: "닫기", exact: true }).click();
   await expect(page.getByRole("button", { name: "원문 수집 필요" })).toBeDisabled();
   await expect(page.getByText(/메타데이터만 저장되어 심층 정리를 시작할 수 없습니다/)).toBeVisible();
 });
