@@ -24,6 +24,7 @@ export const RELIABILITY_LABELS: Record<string, string> = {
   PRIMARY: "1차 자료",
   SECONDARY: "2차 자료",
   TERTIARY: "3차 자료",
+  DISCOVERY: "발견 기반",
   UNKNOWN: "출처 미상",
 };
 

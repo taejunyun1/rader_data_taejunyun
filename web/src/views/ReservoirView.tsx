@@ -4,6 +4,7 @@ import type { SourceAccess } from "../lib/sourceAccess";
 import { deriveSourceAccess } from "../lib/sourceAccess";
 import { formatDateKo } from "../lib/ui";
 import { labelOf, ORIGIN_LABELS, PROVENANCE_LABELS, RELIABILITY_LABELS, SOURCE_KIND_LABELS } from "../lib/labels";
+import { formatSourceTitle } from "../lib/sourcePresentation";
 import PageHeader from "../components/layout/PageHeader";
 import StatusMessage from "../components/ui/StatusMessage";
 import DecisionBottomSheet from "../components/reading/DecisionBottomSheet";
@@ -122,7 +123,8 @@ function acquisitionBlockReason(acquisition: SourceAcquisitionView): string {
 function toIndexItem(item: ReservoirItem): SourceIndexItem {
   const status = decisionLabel(item.decisionStatus);
   const nextResearchTag = isMarkedForNextResearch(item.markedForNextResearch) ? "다음 리서치" : null;
-  return { id: item.id, title: item.titleKo?.trim() || item.title, meta: [KIND_LABELS[item.kind] ?? item.kind, labelOf(RELIABILITY_LABELS, item.reliability), item.year].filter(Boolean).join(" · "), tags: [status, nextResearchTag, ...safeTopics(item.topics)].filter((tag): tag is string => Boolean(tag)), access: deriveSourceAccess({ href: item.canonicalUrl }) };
+  const displayTitle = formatSourceTitle(item.titleKo?.trim() || item.title);
+  return { id: item.id, title: displayTitle, meta: [KIND_LABELS[item.kind] ?? item.kind, labelOf(RELIABILITY_LABELS, item.reliability), item.year].filter(Boolean).join(" · "), tags: [status, nextResearchTag, ...safeTopics(item.topics)].filter((tag): tag is string => Boolean(tag)), access: deriveSourceAccess({ href: item.canonicalUrl }) };
 }
 
 function toReadingDocument(detail: SourceDetail): ReadingDocument {
@@ -131,10 +133,14 @@ function toReadingDocument(detail: SourceDetail): ReadingDocument {
   const fragments = detail.analysis?.important_fragments ?? detail.fragments.map((fragment) => fragment.text);
   const questions = detail.analysis?.questions ?? detail.questions.map((question) => question.question);
   const keywords = detail.analysis?.keywords ?? detail.keywords.map((keyword) => keyword.keyword);
-  const rawTitle = String(source.title ?? "제목 없음");
-  const translatedTitle = typeof source.titleKo === "string" ? source.titleKo.trim() : "";
+  const rawTitle = formatSourceTitle(source.title);
+  const translatedTitle = typeof source.titleKo === "string" ? formatSourceTitle(source.titleKo, "") : "";
   const title = translatedTitle || rawTitle;
-  const originalTitle = typeof source.originalTitle === "string" ? source.originalTitle : translatedTitle && translatedTitle !== rawTitle ? rawTitle : undefined;
+  const originalTitle = typeof source.originalTitle === "string"
+    ? formatSourceTitle(source.originalTitle)
+    : translatedTitle && translatedTitle !== rawTitle
+      ? rawTitle
+      : undefined;
   const provenance = [labelOf(PROVENANCE_LABELS, source.provenanceClass, "원자료"), labelOf(RELIABILITY_LABELS, source.reliability)];
   const currentDecision = decisionLabel(source.decisionStatus as ReservoirItem["decisionStatus"]);
   if (currentDecision) provenance.push(currentDecision);

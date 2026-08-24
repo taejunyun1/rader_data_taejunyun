@@ -21,6 +21,7 @@ import type { DecisionAction, ReadingDocument, SourceIndexItem } from "../compon
 import StatusMessage from "../components/ui/StatusMessage";
 import { labelOf, PROVIDER_LABELS } from "../lib/labels";
 import { deriveSourceAccess } from "../lib/sourceAccess";
+import { formatSourceTitle } from "../lib/sourcePresentation";
 
 interface Candidate {
   id: string;
@@ -107,7 +108,7 @@ function candidateAccess(candidate: Candidate) {
 function toIndexItem(candidate: Candidate): SourceIndexItem {
   return {
     id: candidate.id,
-    title: candidate.titleKo?.trim() || candidate.title,
+    title: formatSourceTitle(candidate.titleKo?.trim() || candidate.title),
     meta: [
       candidate.discoveryLane === "COUNTER" ? "카운터" : "오리지널",
       "후보",
@@ -123,8 +124,12 @@ function toIndexItem(candidate: Candidate): SourceIndexItem {
 function toReadingDocument(candidate: Candidate): ReadingDocument {
   return {
     id: candidate.id,
-    title: candidate.titleKo?.trim() || candidate.title,
-    originalTitle: candidate.originalTitle?.trim() || (candidate.titleKo?.trim() ? candidate.title : undefined),
+    title: formatSourceTitle(candidate.titleKo?.trim() || candidate.title),
+    originalTitle: candidate.originalTitle?.trim()
+      ? formatSourceTitle(candidate.originalTitle)
+      : candidate.titleKo?.trim()
+        ? formatSourceTitle(candidate.title)
+        : undefined,
     byline: [candidate.authors, candidate.year, labelOf(PROVIDER_LABELS, candidate.provider)].filter(Boolean).map(String).join(" · "),
     provenance: `발견 후보 · ${candidate.discoveryLane === "COUNTER" ? "카운터 방향" : "오리지널 방향"} · ${candidate.queryUsed ? `검색어 ${candidate.queryUsed}` : "검색어 정보 없음"}`,
     access: candidateAccess(candidate),
