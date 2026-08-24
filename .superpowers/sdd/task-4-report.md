@@ -42,3 +42,10 @@
 - Judgment and reanalysis capture their starting interaction generation. Their completion, error, source refresh, selection clear, and list reload now run only while that interaction remains current, so a later source selection or return to the list is not overwritten. The normal same-source completion still refreshes the current source.
 - TDD record: added four deferred-response regressions for empty-search invalidation, failed view signaling, delayed judgment after a newer selection, and delayed reanalysis after returning to the list. The focused RED run failed in exactly those four cases; the GREEN run passed `21` tests.
 - Verification: full web Vitest passed (37 files, 249 tests); `pnpm typecheck` passed for shared, worker, and web. The prior budget-reservation report is preserved verbatim in `task-4-report-history.md`.
+
+## Review follow-up — 2026-08-24 (Discover candidate latest intent)
+
+- Discover candidate selection and list return now advance a shared candidate-intent generation and cancel obsolete pending UI/job tracking.
+- Candidate judgment completion rechecks its candidate ID and generation before recording follow-up develop signals, refreshing candidates, changing visible state, or navigating to Reservoir. A Keep acquisition completion applies the same current-intent check.
+- TDD record: added a deferred `develop` response regression; selecting a second candidate while the first judgment is pending now leaves the newer reading selection intact and prevents the old source signal/navigation. The pre-fix run failed because it navigated to `RESERVOIR`.
+- Verification: focused reading-flow Vitest passed (4 files, 43 tests); full web Vitest passed (37 files, 250 tests); `pnpm -r typecheck` passed for shared, worker, and web.

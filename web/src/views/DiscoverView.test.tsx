@@ -8,7 +8,10 @@ import FieldSignalRunSummary from "../components/discovery/FieldSignalRunSummary
 import DiscoverView from "./DiscoverView";
 
 const candidate = { id: "candidate-1", openalexId: "https://openalex.org/W1", title: "자료 후보", authors: "저자", year: 2026, relevanceScore: 0.82, status: "CANDIDATE", queryUsed: "사진 연구", provider: "openalex", externalUrl: "https://doi.org/10.0000/example", sourceId: null as string | null };
+const secondCandidate = { ...candidate, id: "candidate-2", title: "다음 후보", openalexId: "https://openalex.org/W2" };
 let currentCandidate = candidate;
+let candidateItems: typeof candidate[] | null = null;
+let pendingCandidateAction: Promise<Response> | null = null;
 function acquisitionJob(id: string, status: ResearchJobStatus): ResearchJob {
   return {
     id,
@@ -55,9 +58,11 @@ const fieldSignal = {
 beforeEach(() => {
   let fieldSignalStatus = "NEW";
   currentCandidate = candidate;
+  candidateItems = null;
+  pendingCandidateAction = null;
   vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
-    if (url === "/api/discover/candidates/candidate-1/keep" && init?.method === "POST") return Promise.resolve(new Response(JSON.stringify({ ok: true, status: "KEPT", sourceId: "source-1", jobId: "job-acquisition-1" })));
+    if (url === "/api/discover/candidates/candidate-1/keep" && init?.method === "POST") return pendingCandidateAction ?? Promise.resolve(new Response(JSON.stringify({ ok: true, status: "KEPT", sourceId: "source-1", jobId: "job-acquisition-1" })));
     if (url.startsWith("/api/discover/signals?") && !init?.method) {
       const requestedStatus = url.match(/status=([^&]+)/)?.[1] ?? "NEW";
       return Promise.resolve(new Response(JSON.stringify({
@@ -76,7 +81,7 @@ beforeEach(() => {
       fieldSignalStatus = "NEW";
       return Promise.resolve(new Response(JSON.stringify({ ok: true, status: "NEW" })));
     }
-    if (url.startsWith("/api/discover/candidates")) return Promise.resolve(new Response(JSON.stringify({ items: [currentCandidate] })));
+    if (url.startsWith("/api/discover/candidates")) return Promise.resolve(new Response(JSON.stringify({ items: candidateItems ?? [currentCandidate] })));
     if (url === "/api/discover/queries") return Promise.resolve(new Response(JSON.stringify({ queries: [] })));
     if (url === "/api/discover/feeds") return Promise.resolve(new Response(JSON.stringify({ feeds: [] })));
     if (url === "/api/settings/homepage") return Promise.resolve(new Response(JSON.stringify({ projects: [] })));
@@ -130,6 +135,27 @@ describe("DiscoverView", () => {
     await userEvent.click(screen.getByRole("button", { name: "발전시키기" }));
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/signals", expect.objectContaining({ method: "POST", body: JSON.stringify({ sourceId: "source-1", action: "develop" }) })));
     expect(onNavigate).toHaveBeenCalledWith("RESERVOIR");
+  });
+
+  it("ignores a late candidate judgment after selecting another candidate", async () => {
+    let resolveCandidateAction: (response: Response) => void = () => undefined;
+    pendingCandidateAction = new Promise<Response>((resolve) => {
+      resolveCandidateAction = resolve;
+    });
+    candidateItems = [candidate, secondCandidate];
+    const onNavigate = vi.fn();
+    render(<DiscoverView onNavigate={onNavigate} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /자료 후보/ }));
+    await userEvent.click(screen.getByRole("button", { name: "판단하기" }));
+    await userEvent.click(screen.getByRole("button", { name: "발전시키기" }));
+    await userEvent.click(screen.getByRole("button", { name: /다음 후보/ }));
+
+    resolveCandidateAction(new Response(JSON.stringify({ ok: true, status: "KEPT", sourceId: "source-1" })));
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "다음 후보" })).toBeInTheDocument());
+    expect(onNavigate).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalledWith("/api/signals", expect.anything());
   });
 
   it("tells the user that a kept candidate is being imported", async () => {
