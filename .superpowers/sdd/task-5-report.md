@@ -16,3 +16,9 @@ Review follow-up (2026-08-24):
 - Kept the mobile header sticky by removing only the conflicting `position: relative` override; its wrapped mobile layout remains unchanged.
 - Made `.topic-strip > .topic-chip` meet the 44px mobile touch-target contract and asserted the filter/topic strips' `overflow-x: auto` behavior.
 - Strengthened the desktop fixture with a selected long reading detail, then asserted the list scroll position changes while the reading pane remains at its initial scroll position.
+
+## Final whole-branch review follow-up (2026-08-24)
+
+- Reservoir detail selection now has a generation-guarded loading state. While a detail request is pending, the selected reading pane shows a loading status and keeps `목록으로` available; the empty unselected state and judgment entry do not appear until appropriate.
+- At 640px and below, the Reservoir search field and the deep-analysis select/button join the 44px touch-target contract. Desktop control sizing remains scoped to the existing 40px token.
+- Added a deferred-detail regression that verifies loading, mobile-pane selection, back action, and loaded transition remain coherent.

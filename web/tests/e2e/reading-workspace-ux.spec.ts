@@ -57,7 +57,7 @@ async function openReservoir(page: Page) {
   await page.getByRole("navigation").getByRole("button", { name: /저장소/ }).click();
 }
 
-test("reservoir keeps the selected reading pane stable while the list scrolls", async ({ page }) => {
+test("reservoir keeps the desktop workspace within the viewport while each pane scrolls independently", async ({ page }) => {
   await installWorkspaceFixture(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
@@ -67,14 +67,24 @@ test("reservoir keeps the selected reading pane stable while the list scrolls", 
   const readingPane = page.getByRole("region", { name: "자료 읽기" });
   await listPane.getByRole("button", { name: /자료 1 · 접근 경로 확인 필요/ }).click();
   await expect(readingPane.getByRole("heading", { name: "자료 1" })).toBeVisible();
-  const initialReadingScrollTop = await readingPane.evaluate((element) => element.scrollTop);
-  const listScrollTop = await listPane.evaluate((element) => {
-    element.scrollTop = element.scrollHeight;
-    return element.scrollTop;
-  });
+  const workspace = page.getByTestId("split-workspace");
+  const viewport = page.viewportSize();
+  const workspaceBox = await workspace.boundingBox();
+  expect(viewport).not.toBeNull();
+  expect(workspaceBox).not.toBeNull();
+  expect(workspaceBox!.y).toBeGreaterThan(72);
+  expect(workspaceBox!.y + workspaceBox!.height).toBeLessThanOrEqual(viewport!.height + 1);
 
-  expect(listScrollTop).toBeGreaterThan(0);
-  await expect.poll(() => readingPane.evaluate((element) => element.scrollTop)).toBe(initialReadingScrollTop);
+  await listPane.hover();
+  await page.mouse.wheel(0, 700);
+  await expect.poll(() => listPane.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await expect.poll(() => readingPane.evaluate((element) => element.scrollTop)).toBe(0);
+
+  const listScrollTop = await listPane.evaluate((element) => element.scrollTop);
+  await readingPane.hover();
+  await page.mouse.wheel(0, 700);
+  await expect.poll(() => readingPane.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await expect.poll(() => listPane.evaluate((element) => element.scrollTop)).toBe(listScrollTop);
   await expect(listPane).toHaveCSS("overflow-y", "auto");
   await expect(readingPane).toHaveCSS("overflow-y", "auto");
 });
@@ -101,6 +111,11 @@ test("mobile keeps the header sticky and filter controls horizontally scrollable
   await expect(page.locator(".topic-strip")).toHaveCSS("overflow-x", "auto");
   await expect(page.locator(".filter-button").first()).toHaveCSS("min-height", "44px");
   await expect(page.locator(".topic-strip > .topic-chip").first()).toHaveCSS("min-height", "44px");
+  await expect(page.locator(".reservoir-search")).toHaveCSS("min-height", "44px");
+
+  await page.getByRole("region", { name: "자료 목록" }).getByRole("button", { name: /자료 1 · 접근 경로 확인 필요/ }).click();
+  await expect(page.getByRole("combobox", { name: "심층 정리 품질" })).toHaveCSS("min-height", "44px");
+  await expect(page.getByRole("button", { name: "심층 정리하기" })).toHaveCSS("min-height", "44px");
 });
 
 test("mobile switches between list and reading without stacking both panes", async ({ page }) => {

@@ -206,6 +206,27 @@ describe("ReservoirView", () => {
     expect(screen.queryByText("자료 상세 내용을 불러오지 못했습니다.")).not.toBeInTheDocument();
   });
 
+  it("keeps the selected reading state coherent while detail loading is pending", async () => {
+    let resolveSourceOneDetail: (response: Response) => void = () => undefined;
+    pendingSourceOneDetail = new Promise((resolve) => { resolveSourceOneDetail = resolve; });
+    render(<ReservoirView />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+
+    expect(screen.getByTestId("split-workspace")).toHaveAttribute("data-mobile-pane", "reading");
+    expect(screen.getByRole("heading", { name: "자료 상세 내용을 불러오는 중…" })).toBeInTheDocument();
+    expect(screen.queryByText("읽을 자료를 선택하세요")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "목록으로" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "판단하기" })).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolveSourceOneDetail(new Response(JSON.stringify(sourceDetail)));
+    });
+
+    expect(await screen.findByText("시스템이 정리한 내용")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "자료 상세 내용을 불러오는 중…" })).not.toBeInTheDocument();
+  });
+
   it("ignores an active detail response after search clears the reading selection", async () => {
     let resolveSourceOneDetail: (response: Response) => void = () => undefined;
     pendingSourceOneDetail = new Promise((resolve) => { resolveSourceOneDetail = resolve; });
