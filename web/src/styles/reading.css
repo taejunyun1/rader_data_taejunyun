@@ -4,7 +4,8 @@
 .source-index__header { display: flex; align-items: center; justify-content: space-between; padding: 18px 16px 12px; border-bottom: 1px solid var(--color-line); }
 .source-index__header h2 { margin: 0; font-size: 12px; }
 .source-index__header span { color: var(--color-muted); font-family: var(--font-mono); font-size: 10px; }
-.source-index__list { display: grid; }
+.source-index__list { display: grid; margin: 0; padding: 0; list-style: none; }
+.source-index__list > li { min-width: 0; }
 .source-index__item { display: grid; gap: 5px; width: 100%; padding: 15px 16px; border: 0; border-bottom: 1px solid var(--color-line); background: transparent; color: var(--color-ink); text-align: left; }
 .source-index__item:hover, .source-index__item.is-selected { background: var(--color-surface); }
 .source-index__item.is-selected { box-shadow: inset 3px 0 0 var(--color-accent); }

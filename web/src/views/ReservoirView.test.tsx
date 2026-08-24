@@ -51,7 +51,7 @@ beforeEach(() => {
 describe("ReservoirView", () => {
   it("keeps the index visible while reading a source", async () => {
     render(<ReservoirView />);
-    await userEvent.click(await screen.findByRole("option", { name: /자료 A/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
     expect(screen.getByRole("dialog", { name: "읽은 뒤 판단" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "저장소 자료" })).toBeInTheDocument();
     expect(screen.getByText("시스템 해석")).toBeInTheDocument();
@@ -63,14 +63,14 @@ describe("ReservoirView", () => {
 
   it("records a develop signal", async () => {
     render(<ReservoirView />);
-    await userEvent.click(await screen.findByRole("option", { name: /자료 A/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
     await userEvent.click(screen.getByRole("button", { name: "발전시키기" }));
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/signals", expect.objectContaining({ method: "POST", body: JSON.stringify({ sourceId: "source-1", action: "develop" }) })));
   });
 
   it("runs deep analysis with the selected quality profile", async () => {
     render(<ReservoirView />);
-    await userEvent.click(await screen.findByRole("option", { name: /자료 A/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "심층 정리 품질" }), "maximum");
     await userEvent.click(screen.getByRole("button", { name: "심층 정리하기" }));
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/reservoir/source-1/deep-analysis", expect.objectContaining({ method: "POST", body: JSON.stringify({ profile: "maximum" }) })));
@@ -88,7 +88,7 @@ describe("ReservoirView", () => {
       },
     };
     render(<ReservoirView />);
-    await userEvent.click(await screen.findByRole("option", { name: /자료 A/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
     await userEvent.click(screen.getByRole("button", { name: "심층 정리하기" }));
 
     expect(await screen.findByText("메타데이터만 저장되어 심층 정리를 시작할 수 없습니다. 원문을 다시 가져온 뒤 시도해 주세요."))
@@ -98,7 +98,7 @@ describe("ReservoirView", () => {
 
   it("reanalyzes the current version without starting source acquisition", async () => {
     render(<ReservoirView />);
-    await userEvent.click(await screen.findByRole("option", { name: /자료 A/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
     await userEvent.click(screen.getByRole("button", { name: "다시 분석하기" }));
 
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/inbox/retry/source-1?analyze=1", { method: "POST" }));
@@ -108,7 +108,7 @@ describe("ReservoirView", () => {
   it("refetches the canonical source without reanalyzing the current version", async () => {
     const onJobCreated = vi.fn().mockResolvedValue(undefined);
     render(<ReservoirView onJobCreated={onJobCreated} />);
-    await userEvent.click(await screen.findByRole("option", { name: /자료 A/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
     await userEvent.click(screen.getByRole("button", { name: "다시 가져오기" }));
 
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/inbox/retry/source-1?fetch=1", { method: "POST" }));
@@ -119,7 +119,7 @@ describe("ReservoirView", () => {
   it("disables refetch when the source has no canonical URL", async () => {
     currentSourceDetail = { ...sourceDetail, source: { ...sourceDetail.source, canonicalUrl: null } };
     render(<ReservoirView />);
-    await userEvent.click(await screen.findByRole("option", { name: /자료 A/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
 
     expect(screen.getByRole("button", { name: "다시 가져오기" })).toBeDisabled();
   });
@@ -138,7 +138,7 @@ describe("ReservoirView", () => {
       },
     };
     render(<ReservoirView />);
-    await userEvent.click(await screen.findByRole("option", { name: /자료 A/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
 
     expect(screen.getByRole("button", { name: "원문 수집 필요" })).toBeDisabled();
     expect(screen.getByText(/METADATA_ONLY.*REVIEW.*92자/)).toBeInTheDocument();
@@ -148,7 +148,7 @@ describe("ReservoirView", () => {
   it("replaces decision buttons with the current status badge", async () => {
     render(<ReservoirView />);
     await userEvent.click(await screen.findByRole("button", { name: "관찰 중" }));
-    await userEvent.click(await screen.findByRole("option", { name: /자료 A/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
     expect(screen.getByText("현재 판단")).toBeInTheDocument();
     expect(screen.getAllByText("관찰 중").length).toBeGreaterThanOrEqual(2);
     expect(screen.getByRole("button", { name: "판단 변경" })).toBeInTheDocument();
