@@ -340,7 +340,7 @@
   `docs/PROJECT_CONTEXT.md`의 “Discovery 원격 원문 수집 계약”에 다음을 반영한다.
 
   - Inbox URL, URL reextract, legacy retry, Discovery acquisition, RSS는 같은 public URL/DNS/redirect/timeout/body-size safety boundary를 사용한다.
-  - raw HTML/PDF는 R2 우선 보존, PDF는 content type과 magic signature가 모두 충족될 때만 `toMarkdown`을 사용한다.
+  - raw HTML/PDF는 R2 우선 보존한다. `text/html`·`application/xhtml+xml`·`text/plain`은 `.pdf` URL보다 우선하고, PDF는 `application/pdf` + `%PDF-` signature 또는 PDF-like URL의 `application/octet-stream` + `%PDF-` signature일 때만 `toMarkdown`을 사용한다.
   - RSS body max 2 MiB와 unsafe custom feed 저장 거부.
   - `DEEP_ANALYSIS`는 실행 중 D1 reservation을 더한 월 budget으로 block하며, 완료/실패 시 reservation을 release하고 actual cost는 `ai_usage`에 남긴다.
 
@@ -380,7 +380,7 @@
   3. HTML을 반환하는 `.pdf` URL은 `HTML_STATIC`, 실제 PDF는 `PDF_REMOTE_TO_MARKDOWN`이며 raw R2 object가 있다.
   4. budget 여유가 한 job ceiling보다 작은 상태에서 두 deep-analysis job을 병렬 요청하면 하나만 실행되고 다른 하나는 `BLOCKED/monthly_budget_exhausted`가 된다.
 
-  Result: 이 단계는 인증된 Cloudflare terminal과 Access browser session이 필요해 Task 5 범위에서 실행하지 않았다. 로컬 검증만 수행했고 deploy는 사용자 지시 없이는 실행하지 않는다.
+  Result: 이 단계의 원격 migration/deploy/browser 검증은 인증된 Cloudflare terminal과 Access browser session이 필요해 아직 실행하지 않았다. 다만 로컬 migration 검증은 2026-08-24에 `pnpm db:migrate`를 escalated local Wrangler 환경에서 재실행했고 exit `0`, `Resource location: local`, `✅ No migrations to apply!`를 확인했다. 따라서 local migration checklist item만 이번 후속 수정에서 검증 완료로 유지하고, 원격 migration/deploy/browser checks는 계속 pending이다.
 
 - [x] **Step 4: 문서와 검증 결과를 커밋한다.**
 
@@ -396,6 +396,6 @@
 - [x] `worker/src/ingestion/extractUrl.ts`, `worker/src/lib/rss.ts`, `worker/src/routes/inbox.ts`에 raw external URL `fetch` 또는 redirect-follow/unbounded text read가 남아 있지 않다.
 - [x] private IP, hostname DNS private answer, private redirect, timeout, response limit, HTML disguised as PDF, invalid PDF signature, valid PDF/HTML이 각각 automated test로 덮인다.
 - [x] R2 raw-before-transform and existing source/version/retry API contracts are preserved.
-- [x] `0016` migration is additive and local D1 migration has passed.
+- [x] `0016` migration is additive and local D1 migration verification ran successfully (`pnpm db:migrate` → `✅ No migrations to apply!`).
 - [x] budget enforcement is one conditional insert, idempotent by research job id, and release happens on both success and error.
 - [x] `pnpm -r typecheck`, full Vitest, `pnpm build`, core E2E, `git diff --check` have passed before deploy.
