@@ -87,3 +87,11 @@
 - Reservoir topic-option requests now use a latest generation and abort cleanup. Starting any Reservoir list/filter reload invalidates prior topic responses, so old topic chips cannot replace options for the current result/filter set.
 - TDD record: added deferred NEW→SAVED list, delayed field-signal action after a filter change, and late topic-options regressions. The RED run failed on all three expected stale updates before implementation.
 - Verification: focused Discover/Reservoir Vitest passed (2 files, 49 tests); full web Vitest passed (37 files, 260 tests); `pnpm -r typecheck` passed for shared, worker, and web; `git diff --check` passed.
+
+## Review follow-up — 2026-08-24 (judgment filter and dialog focus)
+
+- Reservoir filter controls now advance a filter intent generation synchronously. A judgment captures that intent; changing kind, topic, or decision status invalidates its visible completion and prevents an old filter-captured reload from replacing the current list.
+- Discover candidate status and lane filters now share the same current-intent contract as candidate actions. Stale candidate completions cannot add develop signals, reload an earlier candidate filter, retain a Keep acquisition navigation intent, or navigate to Reservoir after filters change.
+- DecisionBottomSheet now focuses the existing-status `판단 변경` control on entry, moves focus to the first action when editing begins, and returns focus to the invoking control after close. New-status entry still focuses the first action.
+- TDD record: added deferred Reservoir judgment/filter and Discover candidate/status-filter regressions plus userEvent focus/return-focus coverage. The focused RED run failed on all three stale/focus behaviors before implementation.
+- Verification: focused Task 4 web Vitest passed (3 files, 55 tests); full web Vitest passed (37 files, 264 tests); `pnpm -r typecheck` passed for shared, worker, and web; `git diff --check` passed.

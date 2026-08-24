@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import DecisionBottomSheet from "./DecisionBottomSheet";
 import type { ReadingDocument } from "./types";
@@ -48,5 +49,42 @@ describe("DecisionBottomSheet", () => {
     await user.click(develop);
 
     expect(onAction).not.toHaveBeenCalled();
+  });
+
+  it("focuses an existing judgment's change action, then the first decision action, and returns focus on close", async () => {
+    const user = userEvent.setup();
+
+    function DialogHarness() {
+      const [open, setOpen] = useState(false);
+      return <>
+        <button type="button" onClick={() => setOpen(true)}>판단 열기</button>
+        <DecisionBottomSheet
+          document={document}
+          decisionStatus="watch"
+          open={open}
+          onAction={vi.fn()}
+          onClose={() => setOpen(false)}
+        />
+      </>;
+    }
+
+    render(<DialogHarness />);
+    const trigger = screen.getByRole("button", { name: "판단 열기" });
+    await user.click(trigger);
+
+    const change = screen.getByRole("button", { name: "판단 변경" });
+    expect(change).toHaveFocus();
+
+    await user.click(change);
+    expect(screen.getByRole("button", { name: "발전시키기" })).toHaveFocus();
+
+    await user.click(screen.getByRole("button", { name: "닫기" }));
+    expect(trigger).toHaveFocus();
+  });
+
+  it("keeps new-judgment initial focus on the first action", () => {
+    render(<DecisionBottomSheet document={document} onClose={vi.fn()} onAction={vi.fn()} />);
+
+    expect(screen.getByRole("button", { name: "발전시키기" })).toHaveFocus();
   });
 });

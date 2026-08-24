@@ -45,6 +45,7 @@ export default function DecisionBottomSheet({
 }: DecisionBottomSheetProps) {
   const dialogRef = useRef<HTMLElement | null>(null);
   const firstActionRef = useRef<HTMLButtonElement | null>(null);
+  const changeDecisionRef = useRef<HTMLButtonElement | null>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const [editingDecision, setEditingDecision] = useState(false);
 
@@ -66,8 +67,13 @@ export default function DecisionBottomSheet({
   }, [open]);
 
   useEffect(() => {
-    if (open) firstActionRef.current?.focus();
-  }, [open, readingDocument.id]);
+    if (!open) return;
+    if (decisionStatus && !editingDecision) {
+      changeDecisionRef.current?.focus();
+      return;
+    }
+    firstActionRef.current?.focus();
+  }, [decisionStatus, editingDecision, open, readingDocument.id]);
 
   if (!open || !globalThis.document.body) return null;
 
@@ -120,7 +126,7 @@ export default function DecisionBottomSheet({
         {decisionStatus && !editingDecision ? <div className={`decision-sheet__status decision-sheet__status--${decisionStatus}`}>
           <span>현재 판단</span>
           <strong>{DECISION_STATUS_LABELS[decisionStatus]}</strong>
-          <button type="button" disabled={pending} onClick={() => setEditingDecision(true)}>판단 변경</button>
+          <button ref={changeDecisionRef} type="button" disabled={pending} onClick={() => setEditingDecision(true)}>판단 변경</button>
         </div> : <div className="decision-sheet__actions">
           {actions.map((action, index) => (
             <button

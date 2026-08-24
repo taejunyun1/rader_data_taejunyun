@@ -62,6 +62,13 @@ interface DeepAnalysisBlock {
   charCount: number;
 }
 
+interface ReservoirFilterIntent {
+  kind: string;
+  topic: string;
+  decision: (typeof DECISION_FILTERS)[number]["value"];
+  generation: number;
+}
+
 const KINDS = ["", "PERSONAL_WORK", "PERSONAL_TEXT", "PAPER_ACADEMIC", "BOOK_ARTICLE", "ARTIST_ARTWORK", "TECHNICAL", "WEB", "NOTE", "DISCOVERY"];
 const KIND_LABELS: Record<string, string> = { "": "전체 유형", ...SOURCE_KIND_LABELS };
 const DECISION_FILTERS = [
@@ -188,29 +195,54 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
   const deepAnalysisRequest = useRef(0);
   const deepHistoryRequest = useRef(0);
   const topicRequest = useRef(0);
+  const filterIntentRef = useRef<ReservoirFilterIntent>({ kind: "", topic: "", decision: "active", generation: 0 });
 
-  const load = useCallback(async () => {
+  const isCurrentFilterIntent = useCallback((intent: ReservoirFilterIntent): boolean => (
+    filterIntentRef.current.kind === intent.kind
+    && filterIntentRef.current.topic === intent.topic
+    && filterIntentRef.current.decision === intent.decision
+    && filterIntentRef.current.generation === intent.generation
+  ), []);
+
+  const updateFilters = useCallback((nextValues: Pick<ReservoirFilterIntent, "kind" | "topic" | "decision">) => {
+    const current = filterIntentRef.current;
+    if (current.kind === nextValues.kind && current.topic === nextValues.topic && current.decision === nextValues.decision) return current;
+    const next = { ...nextValues, generation: current.generation + 1 };
+    filterIntentRef.current = next;
+    listRequest.current += 1;
+    topicRequest.current += 1;
+    actionRequest.current += 1;
+    setActionPending(false);
+    setPendingAction(null);
+    setKindFilter(next.kind);
+    setTopicFilter(next.topic);
+    setDecisionFilter(next.decision);
+    return next;
+  }, []);
+
+  const load = useCallback(async (intent: ReservoirFilterIntent = filterIntentRef.current) => {
+    if (!isCurrentFilterIntent(intent)) return;
     const requestId = listRequest.current + 1;
     listRequest.current = requestId;
     topicRequest.current += 1;
     setListError("");
     const params = new URLSearchParams();
-    if (kindFilter) params.set("kind", kindFilter);
-    if (topicFilter) params.set("topic", topicFilter);
-    params.set("decision", decisionFilter);
+    if (intent.kind) params.set("kind", intent.kind);
+    if (intent.topic) params.set("topic", intent.topic);
+    params.set("decision", intent.decision);
     try {
       const response = await fetch(`/api/reservoir${params.toString() ? `?${params}` : ""}`);
       if (!response.ok) throw new Error("list_failed");
       const data = await response.json() as { items?: ReservoirItem[]; nextResearch?: { markedCount: number; lastResearchAt: string | null } };
-      if (listRequest.current !== requestId) return;
+      if (listRequest.current !== requestId || !isCurrentFilterIntent(intent)) return;
       setItems(data.items ?? []);
       setNextResearch(data.nextResearch ?? null);
     } catch {
-      if (listRequest.current === requestId) setListError("저장소 자료를 불러오지 못했습니다.");
+      if (listRequest.current === requestId && isCurrentFilterIntent(intent)) setListError("저장소 자료를 불러오지 못했습니다.");
     }
-  }, [decisionFilter, kindFilter, topicFilter]);
+  }, [isCurrentFilterIntent]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(); }, [decisionFilter, kindFilter, load, topicFilter]);
   useEffect(() => {
     if (!focusSourceId) return;
     void openDetail(focusSourceId);
@@ -290,9 +322,12 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
     if (!detail) return;
     const sourceId = String(detail.source.id);
     const requestId = interactionRequest.current;
+    const filterIntent = filterIntentRef.current;
     const actionRequestId = actionRequest.current + 1;
     actionRequest.current = actionRequestId;
-    const isCurrent = () => interactionRequest.current === requestId && actionRequest.current === actionRequestId;
+    const isCurrent = () => interactionRequest.current === requestId
+      && actionRequest.current === actionRequestId
+      && isCurrentFilterIntent(filterIntent);
     setActionPending(true);
     setPendingAction(action);
     setDecisionError("");
@@ -308,7 +343,7 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
         const detailRequestId = await openDetail(sourceId, { preserveAction: true });
         if (actionRequest.current !== actionRequestId || interactionRequest.current !== detailRequestId) return;
       }
-      await load();
+      await load(filterIntent);
     } catch {
       if (isCurrent()) setDecisionError("분류를 저장하지 못했습니다. 다시 시도해 주세요.");
     }
@@ -457,10 +492,10 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
       <div className="reservoir-toolbar">
         <input className="reservoir-search" value={query} placeholder="제목, 저자, 질문으로 검색" onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void runSearch(); }} />
         <button className="ui-button-secondary" onClick={() => void runSearch()}>검색</button>
-        <div className="filter-strip">{KINDS.map((kind) => <button key={kind || "all"} className={`filter-button${kindFilter === kind ? " is-active" : ""}`} onClick={() => setKindFilter(kind)}>{KIND_LABELS[kind]}</button>)}</div>
-        <div className="filter-strip" aria-label="판단 상태 필터">{DECISION_FILTERS.map((filter) => <button key={filter.value} className={`filter-button${decisionFilter === filter.value ? " is-active" : ""}`} onClick={() => setDecisionFilter(filter.value)}>{filter.label}</button>)}</div>
+        <div className="filter-strip">{KINDS.map((kind) => <button key={kind || "all"} className={`filter-button${kindFilter === kind ? " is-active" : ""}`} onClick={() => updateFilters({ kind, topic: topicFilter, decision: decisionFilter })}>{KIND_LABELS[kind]}</button>)}</div>
+        <div className="filter-strip" aria-label="판단 상태 필터">{DECISION_FILTERS.map((filter) => <button key={filter.value} className={`filter-button${decisionFilter === filter.value ? " is-active" : ""}`} onClick={() => updateFilters({ kind: kindFilter, topic: topicFilter, decision: filter.value })}>{filter.label}</button>)}</div>
       </div>
-      {topics.length > 0 && <div className="topic-strip" aria-label="주제 필터">{topics.slice(0, 14).map((topic) => <button key={topic.topic} className={`topic-chip${topicFilter === topic.topic ? " is-active" : ""}`} onClick={() => setTopicFilter(topicFilter === topic.topic ? "" : topic.topic)}>{topic.topic} · {topic.count}</button>)}</div>}
+      {topics.length > 0 && <div className="topic-strip" aria-label="주제 필터">{topics.slice(0, 14).map((topic) => <button key={topic.topic} className={`topic-chip${topicFilter === topic.topic ? " is-active" : ""}`} onClick={() => updateFilters({ kind: kindFilter, topic: topicFilter === topic.topic ? "" : topic.topic, decision: decisionFilter })}>{topic.topic} · {topic.count}</button>)}</div>}
       {msg && <p className="reservoir-message" role="status">{msg}</p>}
       {listError ? <StatusMessage kind="error" title={listError} action={<button className="ui-button-secondary" onClick={() => void load()}>다시 시도</button>} /> : <SplitWorkspace
         readingKey={selectedId}

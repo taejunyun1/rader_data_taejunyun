@@ -381,6 +381,26 @@ describe("ReservoirView", () => {
     expect(screen.queryByText("시스템이 정리한 내용")).not.toBeInTheDocument();
   });
 
+  it("does not reload a stale filter after a pending judgment completes", async () => {
+    let resolveDecision: (response: Response) => void = () => undefined;
+    pendingDecisionSignal = new Promise((resolve) => { resolveDecision = resolve; });
+    render(<ReservoirView />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+    await userEvent.click(screen.getByRole("button", { name: "판단하기" }));
+    await userEvent.click(screen.getByRole("button", { name: "보관하기" }));
+    await userEvent.click(screen.getByRole("button", { name: "관찰 중" }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/reservoir?decision=watching"));
+    const activeLoadsBeforeCompletion = vi.mocked(fetch).mock.calls.filter(([url]) => url === "/api/reservoir?decision=active").length;
+
+    await act(async () => {
+      resolveDecision(new Response(JSON.stringify({ ok: true })));
+    });
+
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.filter(([url]) => url === "/api/reservoir?decision=active").length).toBe(activeLoadsBeforeCompletion));
+    expect(screen.getByRole("button", { name: "관찰 중" })).toHaveClass("is-active");
+  });
+
   it("runs deep analysis with the selected quality profile", async () => {
     render(<ReservoirView />);
     await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));

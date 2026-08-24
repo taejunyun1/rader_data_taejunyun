@@ -62,6 +62,18 @@ interface CandidateListRequest {
   controller: AbortController;
 }
 
+interface CandidateFilterIntent {
+  status: string;
+  lane: string;
+  generation: number;
+}
+
+interface KeptAcquisitionIntent extends CandidateIntent {
+  jobId: string;
+  filterIntent: CandidateFilterIntent;
+  actionGeneration: number;
+}
+
 interface FieldSignalFilterIntent {
   status: DiscoveryFieldSignalStatus;
   type: "" | DiscoveryFieldSignalType;
@@ -217,16 +229,18 @@ export default function DiscoverView({
   const [pendingFieldSignalId, setPendingFieldSignalId] = useState<string | null>(null);
   const [fieldSignalRunSummary, setFieldSignalRunSummary] = useState<DiscoveryFieldSignalRunDiagnostics | null>(null);
   const [fieldSignalsCollected, setFieldSignalsCollected] = useState(0);
-  const [keptAcquisitionIntent, setKeptAcquisitionIntent] = useState<CandidateIntent & { jobId: string } | null>(null);
+  const [keptAcquisitionIntent, setKeptAcquisitionIntent] = useState<KeptAcquisitionIntent | null>(null);
   const candidateIntentRef = useRef<CandidateIntent>({ candidateId: null, generation: 0 });
+  const candidateFilterIntentRef = useRef<CandidateFilterIntent>({ status: "CANDIDATE", lane: "", generation: 0 });
   const candidateListRequestRef = useRef<CandidateListRequest | null>(null);
-  const keptAcquisitionIntentRef = useRef<CandidateIntent & { jobId: string } | null>(null);
+  const keptAcquisitionIntentRef = useRef<KeptAcquisitionIntent | null>(null);
+  const candidateActionRequestRef = useRef(0);
   const canAutoSelectCandidateRef = useRef(true);
   const fieldSignalFilterIntentRef = useRef<FieldSignalFilterIntent>({ status: "NEW", type: "", generation: 0 });
   const fieldSignalListRequestRef = useRef<FieldSignalListRequest | null>(null);
   const fieldSignalActionRequestRef = useRef(0);
 
-  const replaceKeptAcquisitionIntent = useCallback((intent: CandidateIntent & { jobId: string } | null) => {
+  const replaceKeptAcquisitionIntent = useCallback((intent: KeptAcquisitionIntent | null) => {
     keptAcquisitionIntentRef.current = intent;
     setKeptAcquisitionIntent(intent);
   }, []);
@@ -241,6 +255,28 @@ export default function DiscoverView({
     candidateIntentRef.current.candidateId === intent.candidateId
     && candidateIntentRef.current.generation === intent.generation
   ), []);
+
+  const isCurrentCandidateFilterIntent = useCallback((intent: CandidateFilterIntent): boolean => (
+    candidateFilterIntentRef.current.status === intent.status
+    && candidateFilterIntentRef.current.lane === intent.lane
+    && candidateFilterIntentRef.current.generation === intent.generation
+  ), []);
+
+  const updateCandidateFilter = useCallback((status: string, lane: string) => {
+    const current = candidateFilterIntentRef.current;
+    if (current.status === status && current.lane === lane) return current;
+    const next = { status, lane, generation: current.generation + 1 };
+    candidateFilterIntentRef.current = next;
+    candidateListRequestRef.current?.controller.abort();
+    candidateActionRequestRef.current += 1;
+    replaceKeptAcquisitionIntent(null);
+    setBusy(false);
+    setPendingAction(null);
+    setDecisionError("");
+    setStatusFilter(status);
+    setLaneFilter(lane);
+    return next;
+  }, [replaceKeptAcquisitionIntent]);
 
   const beginCandidateListRequest = useCallback((): CandidateListRequest => {
     candidateListRequestRef.current?.controller.abort();
@@ -310,18 +346,18 @@ export default function DiscoverView({
     setPendingAction(null);
   }, [advanceCandidateIntent, replaceKeptAcquisitionIntent]);
 
-  const load = useCallback(async (intent?: CandidateIntent) => {
-    if (intent && !isCurrentCandidateIntent(intent)) return;
+  const load = useCallback(async (intent?: CandidateIntent, filterIntent: CandidateFilterIntent = candidateFilterIntentRef.current) => {
+    if ((intent && !isCurrentCandidateIntent(intent)) || !isCurrentCandidateFilterIntent(filterIntent)) return;
     const requestIntent = intent ?? candidateIntentRef.current;
     const request = beginCandidateListRequest();
     setListError("");
     try {
-      const response = await fetch(`/api/discover/candidates?status=${statusFilter}${laneFilter ? `&lane=${laneFilter}` : ""}`, {
+      const response = await fetch(`/api/discover/candidates?status=${filterIntent.status}${filterIntent.lane ? `&lane=${filterIntent.lane}` : ""}`, {
         signal: request.controller.signal,
       });
       if (!response.ok) throw new Error("candidates_failed");
       const data = await response.json() as { items?: Candidate[] };
-      if (!isCurrentCandidateListRequest(request) || !isCurrentCandidateIntent(requestIntent)) return;
+      if (!isCurrentCandidateListRequest(request) || !isCurrentCandidateIntent(requestIntent) || !isCurrentCandidateFilterIntent(filterIntent)) return;
       const next = data.items ?? [];
       setCandidates(next);
       const selectedCandidateId = candidateIntentRef.current.candidateId;
@@ -338,11 +374,11 @@ export default function DiscoverView({
         setSelectedId(next[0].id);
       }
     } catch (error) {
-      if (!isCurrentCandidateListRequest(request) || !isCurrentCandidateIntent(requestIntent)) return;
+      if (!isCurrentCandidateListRequest(request) || !isCurrentCandidateIntent(requestIntent) || !isCurrentCandidateFilterIntent(filterIntent)) return;
       if (error instanceof Error && error.name === "AbortError") return;
       setListError("발견 후보를 불러오지 못했습니다.");
     }
-  }, [beginCandidateListRequest, clearCandidateSelection, isCurrentCandidateIntent, isCurrentCandidateListRequest, laneFilter, statusFilter]);
+  }, [beginCandidateListRequest, clearCandidateSelection, isCurrentCandidateFilterIntent, isCurrentCandidateIntent, isCurrentCandidateListRequest]);
 
   const loadFieldSignals = useCallback(async (intent: FieldSignalFilterIntent = fieldSignalFilterIntentRef.current) => {
     if (!isCurrentFieldSignalFilterIntent(intent)) return;
@@ -366,7 +402,7 @@ export default function DiscoverView({
   useEffect(() => {
     void load();
     return () => candidateListRequestRef.current?.controller.abort();
-  }, [load]);
+  }, [laneFilter, load, statusFilter]);
 
   useEffect(() => {
     if (contentMode === "FIELD_SIGNAL") {
@@ -380,12 +416,14 @@ export default function DiscoverView({
     const keptAcquisition = jobs.find((job) => job.id === keptAcquisitionIntent.jobId && job.kind === "SOURCE_ACQUISITION");
     const resultRef = keptAcquisition?.resultRef;
     if (keptAcquisition?.status === "SUCCEEDED" && resultRef?.view === "RESERVOIR" && "acquisition" in resultRef && resultRef.acquisition) {
-      if (!isCurrentCandidateIntent(keptAcquisitionIntent)) return;
+      if (!isCurrentCandidateIntent(keptAcquisitionIntent)
+        || !isCurrentCandidateFilterIntent(keptAcquisitionIntent.filterIntent)
+        || candidateActionRequestRef.current !== keptAcquisitionIntent.actionGeneration) return;
       replaceKeptAcquisitionIntent(null);
       setMsg("원문 수집이 완료되었습니다. 저장소에서 확인하세요.");
       openReservoir(resultRef.sourceId);
     }
-  }, [isCurrentCandidateIntent, jobs, keptAcquisitionIntent, openReservoir, replaceKeptAcquisitionIntent]);
+  }, [isCurrentCandidateFilterIntent, isCurrentCandidateIntent, jobs, keptAcquisitionIntent, openReservoir, replaceKeptAcquisitionIntent]);
 
   useEffect(() => {
     const latest = jobs.find((job) => job.kind === "DISCOVERY_RUN");
@@ -449,7 +487,7 @@ export default function DiscoverView({
       if (!response.ok) throw new Error(data.error ?? "발견 실행을 시작하지 못했습니다.");
       await onJobCreated?.();
       setMsg(data.reused ? "이미 진행 중인 발견 수집을 계속합니다." : "발견 수집을 시작했습니다. 완료되면 상단 작업센터에서 후보를 확인할 수 있습니다.");
-      setStatusFilter("CANDIDATE");
+      updateCandidateFilter("CANDIDATE", candidateFilterIntentRef.current.lane);
       updateFieldSignalFilter("NEW", fieldSignalFilterIntentRef.current.type);
     } catch (error) {
       setMsg(error instanceof Error ? error.message : "발견 실행을 시작하지 못했습니다.");
@@ -464,7 +502,7 @@ export default function DiscoverView({
       return;
     }
     if (action === "OPEN_STATUS") {
-      setStatusFilter("KEPT");
+      updateCandidateFilter("KEPT", candidateFilterIntentRef.current.lane);
       setContentMode("READING");
       setMsg("보관됨 후보를 표시했습니다.");
       return;
@@ -475,7 +513,13 @@ export default function DiscoverView({
 
   async function act(id: string, action: DecisionAction["id"]) {
     const intent = candidateIntentRef.current;
+    const filterIntent = candidateFilterIntentRef.current;
     if (intent.candidateId !== id) return;
+    const actionGeneration = candidateActionRequestRef.current + 1;
+    candidateActionRequestRef.current = actionGeneration;
+    const isCurrent = () => isCurrentCandidateIntent(intent)
+      && isCurrentCandidateFilterIntent(filterIntent)
+      && candidateActionRequestRef.current === actionGeneration;
     setBusy(true);
     setPendingAction(action);
     setDecisionError("");
@@ -484,11 +528,11 @@ export default function DiscoverView({
       const response = await fetch(`/api/discover/candidates/${id}/${backendAction}`, { method: "POST" });
       const data = await response.json() as Partial<DiscoveryKeepResponse> & { error?: string };
       if (!response.ok) throw new Error(data.error ?? "분류 저장에 실패했습니다.");
-      if (!isCurrentCandidateIntent(intent)) return;
+      if (!isCurrent()) return;
       if (data.jobId) {
-        replaceKeptAcquisitionIntent({ ...intent, jobId: data.jobId });
+        replaceKeptAcquisitionIntent({ ...intent, jobId: data.jobId, filterIntent, actionGeneration });
         await onJobCreated?.();
-        if (!isCurrentCandidateIntent(intent)) return;
+        if (!isCurrent()) return;
       }
       if (action === "develop" && data.sourceId) {
         await fetch("/api/signals", {
@@ -496,7 +540,7 @@ export default function DiscoverView({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ sourceId: data.sourceId, action: "develop" }),
         });
-        if (!isCurrentCandidateIntent(intent)) return;
+        if (!isCurrent()) return;
         setMsg("발전시키기로 기록했습니다. 저장소에서 이어 읽습니다.");
         setDecisionOpen(false);
         openReservoir(data.sourceId);
@@ -510,12 +554,12 @@ export default function DiscoverView({
           : `${action === "watch" ? "관찰하기" : "제외하기"}로 기록했습니다.`);
         setDecisionOpen(false);
       }
-      await load(intent);
+      await load(intent, filterIntent);
     } catch (error) {
-      if (!isCurrentCandidateIntent(intent)) return;
+      if (!isCurrent()) return;
       setDecisionError(error instanceof Error ? error.message : "분류를 저장하지 못했습니다.");
     } finally {
-      if (isCurrentCandidateIntent(intent)) {
+      if (isCurrent()) {
         setBusy(false);
         setPendingAction(null);
       }
@@ -606,9 +650,9 @@ export default function DiscoverView({
         <>
           <div className="discovery-toolbar">
             <div className="filter-strip" aria-label="후보 상태 필터">
-              {STATUS_FILTERS.map((filter) => <button key={filter.value} className={`filter-button${statusFilter === filter.value ? " is-active" : ""}`} onClick={() => setStatusFilter(filter.value)}>{filter.label}</button>)}
+              {STATUS_FILTERS.map((filter) => <button key={filter.value} className={`filter-button${statusFilter === filter.value ? " is-active" : ""}`} onClick={() => updateCandidateFilter(filter.value, laneFilter)}>{filter.label}</button>)}
             </div>
-            <div className="filter-strip" aria-label="발견 방향 필터">{LANE_FILTERS.map((filter) => <button key={filter.value} className={`filter-button${laneFilter === filter.value ? " is-active" : ""}`} onClick={() => setLaneFilter(filter.value)}>{filter.label}</button>)}</div>
+            <div className="filter-strip" aria-label="발견 방향 필터">{LANE_FILTERS.map((filter) => <button key={filter.value} className={`filter-button${laneFilter === filter.value ? " is-active" : ""}`} onClick={() => updateCandidateFilter(statusFilter, filter.value)}>{filter.label}</button>)}</div>
             <span className="table-note">저장 키워드 {profile.original.keywords.length + profile.counter.keywords.length}개 · 관련도 0.65 이상 · 무료 원문/PDF · 최대 8개/회</span>
           </div>
           {runSummary && <DiscoveryRunSummary collected={runCollected} diagnostics={runSummary} onAction={handleSummaryAction} />}

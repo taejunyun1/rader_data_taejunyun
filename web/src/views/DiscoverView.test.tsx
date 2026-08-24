@@ -207,6 +207,35 @@ describe("DiscoverView", () => {
     expect(fetch).not.toHaveBeenCalledWith("/api/signals", expect.anything());
   });
 
+  it("does not apply a candidate judgment after its status filter changes", async () => {
+    let resolveCandidateAction: (response: Response) => void = () => undefined;
+    const candidateUrls: string[] = [];
+    pendingCandidateAction = new Promise<Response>((resolve) => {
+      resolveCandidateAction = resolve;
+    });
+    candidateListResponse = (url) => {
+      candidateUrls.push(url);
+      return Promise.resolve(new Response(JSON.stringify({ items: [candidate] })));
+    };
+    const onNavigate = vi.fn();
+    render(<DiscoverView onNavigate={onNavigate} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /자료 후보/ }));
+    await userEvent.click(screen.getByRole("button", { name: "판단하기" }));
+    await userEvent.click(screen.getByRole("button", { name: "발전시키기" }));
+    await userEvent.click(screen.getByRole("button", { name: "보관됨" }));
+    await waitFor(() => expect(candidateUrls).toContain("/api/discover/candidates?status=KEPT"));
+    const candidateLoadsBeforeCompletion = candidateUrls.filter((url) => url === "/api/discover/candidates?status=CANDIDATE").length;
+
+    await act(async () => {
+      resolveCandidateAction(new Response(JSON.stringify({ ok: true, status: "KEPT", sourceId: "source-1" })));
+    });
+
+    await waitFor(() => expect(candidateUrls.filter((url) => url === "/api/discover/candidates?status=CANDIDATE").length).toBe(candidateLoadsBeforeCompletion));
+    expect(onNavigate).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalledWith("/api/signals", expect.anything());
+  });
+
   it("tells the user that a kept candidate is being imported", async () => {
     render(<DiscoverView onNavigate={vi.fn()} />);
     await userEvent.click(await screen.findByRole("button", { name: /자료 후보/ }));
