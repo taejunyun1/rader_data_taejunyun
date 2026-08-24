@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResearchJob, ResearchJobStatus } from "@radar/shared";
@@ -13,6 +13,8 @@ let currentCandidate = candidate;
 let candidateItems: typeof candidate[] | null = null;
 let pendingCandidateAction: Promise<Response> | null = null;
 let candidateListResponse: ((url: string) => Promise<Response> | null) | null = null;
+let fieldSignalListResponse: ((url: string) => Promise<Response> | null) | null = null;
+let pendingFieldSignalAction: Promise<Response> | null = null;
 function acquisitionJob(id: string, status: ResearchJobStatus): ResearchJob {
   return {
     id,
@@ -62,10 +64,14 @@ beforeEach(() => {
   candidateItems = null;
   pendingCandidateAction = null;
   candidateListResponse = null;
+  fieldSignalListResponse = null;
+  pendingFieldSignalAction = null;
   vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url === "/api/discover/candidates/candidate-1/keep" && init?.method === "POST") return pendingCandidateAction ?? Promise.resolve(new Response(JSON.stringify({ ok: true, status: "KEPT", sourceId: "source-1", jobId: "job-acquisition-1" })));
     if (url.startsWith("/api/discover/signals?") && !init?.method) {
+      const deferred = fieldSignalListResponse?.(url);
+      if (deferred) return deferred;
       const requestedStatus = url.match(/status=([^&]+)/)?.[1] ?? "NEW";
       return Promise.resolve(new Response(JSON.stringify({
         items: requestedStatus === fieldSignalStatus ? [{ ...fieldSignal, status: fieldSignalStatus }] : [],
@@ -73,7 +79,7 @@ beforeEach(() => {
     }
     if (url === "/api/discover/signals/signal-1/save" && init?.method === "POST") {
       fieldSignalStatus = "SAVED";
-      return Promise.resolve(new Response(JSON.stringify({ ok: true, status: "SAVED" })));
+      return pendingFieldSignalAction ?? Promise.resolve(new Response(JSON.stringify({ ok: true, status: "SAVED" })));
     }
     if (url === "/api/discover/signals/signal-1/dismiss" && init?.method === "POST") {
       fieldSignalStatus = "DISMISSED";
@@ -365,6 +371,57 @@ describe("DiscoverView", () => {
     expect(screen.getByText("CAA News")).toBeVisible();
     expect(screen.getByText("마감 2026. 8. 31.")).toBeVisible();
     expect(screen.queryByRole("option", { name: /자료 후보/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps the newest field-signal filter results when an older load resolves late", async () => {
+    let resolveNew: (response: Response) => void = () => undefined;
+    const newSignals = new Promise<Response>((resolve) => { resolveNew = resolve; });
+    const savedSignal = { ...fieldSignal, id: "signal-saved", title: "Saved field signal", status: "SAVED" as const };
+    fieldSignalListResponse = (url) => (
+      url.includes("status=SAVED")
+        ? Promise.resolve(new Response(JSON.stringify({ items: [savedSignal] })))
+        : newSignals
+    );
+    render(<DiscoverView onNavigate={vi.fn()} />);
+
+    await userEvent.click(screen.getByRole("tab", { name: "현장 신호" }));
+    await userEvent.click(screen.getByRole("button", { name: "저장됨" }));
+    expect(await screen.findByRole("heading", { name: "Saved field signal" })).toBeInTheDocument();
+
+    await act(async () => {
+      resolveNew(new Response(JSON.stringify({ items: [fieldSignal] })));
+    });
+
+    expect(screen.getByRole("heading", { name: "Saved field signal" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: fieldSignal.title })).not.toBeInTheDocument();
+  });
+
+  it("ignores a field-signal action completion after the filter changes", async () => {
+    let resolveSave: (response: Response) => void = () => undefined;
+    let resolveStaleNewReload: (response: Response) => void = () => undefined;
+    const staleNewReload = new Promise<Response>((resolve) => { resolveStaleNewReload = resolve; });
+    const dismissedSignal = { ...fieldSignal, id: "signal-dismissed", title: "Dismissed field signal", status: "DISMISSED" as const };
+    let saveStarted = false;
+    pendingFieldSignalAction = new Promise<Response>((resolve) => { resolveSave = resolve; });
+    fieldSignalListResponse = (url) => {
+      if (url.includes("status=DISMISSED")) return Promise.resolve(new Response(JSON.stringify({ items: [dismissedSignal] })));
+      return saveStarted ? staleNewReload : Promise.resolve(new Response(JSON.stringify({ items: [fieldSignal] })));
+    };
+    render(<DiscoverView onNavigate={vi.fn()} />);
+
+    await userEvent.click(screen.getByRole("tab", { name: "현장 신호" }));
+    await userEvent.click(await screen.findByRole("button", { name: "신호 저장" }));
+    saveStarted = true;
+    await userEvent.click(screen.getByRole("button", { name: "제외됨" }));
+    expect(await screen.findByRole("heading", { name: "Dismissed field signal" })).toBeInTheDocument();
+
+    await act(async () => {
+      resolveSave(new Response(JSON.stringify({ ok: true, status: "SAVED" })));
+      resolveStaleNewReload(new Response(JSON.stringify({ items: [fieldSignal] })));
+    });
+
+    expect(screen.getByRole("heading", { name: "Dismissed field signal" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: fieldSignal.title })).not.toBeInTheDocument();
   });
 
   it("saves a field signal without promoting it to Reservoir", async () => {

@@ -187,10 +187,12 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
   const actionRequest = useRef(0);
   const deepAnalysisRequest = useRef(0);
   const deepHistoryRequest = useRef(0);
+  const topicRequest = useRef(0);
 
   const load = useCallback(async () => {
     const requestId = listRequest.current + 1;
     listRequest.current = requestId;
+    topicRequest.current += 1;
     setListError("");
     const params = new URLSearchParams();
     if (kindFilter) params.set("kind", kindFilter);
@@ -215,7 +217,19 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
     onFocusConsumed?.();
   }, [focusSourceId, onFocusConsumed]);
   useEffect(() => {
-    fetch("/api/reservoir/topics").then((r) => r.json() as Promise<{ topics?: { topic: string; count: number }[] }>).then((data) => setTopics(data.topics ?? [])).catch(() => setTopics([]));
+    const requestId = topicRequest.current + 1;
+    topicRequest.current = requestId;
+    const controller = new AbortController();
+    fetch("/api/reservoir/topics", { signal: controller.signal })
+      .then((r) => r.json() as Promise<{ topics?: { topic: string; count: number }[] }>)
+      .then((data) => {
+        if (topicRequest.current === requestId) setTopics(data.topics ?? []);
+      })
+      .catch((error) => {
+        if (topicRequest.current !== requestId || (error instanceof Error && error.name === "AbortError")) return;
+        setTopics([]);
+      });
+    return () => controller.abort();
   }, [items]);
 
   function startInteraction({ preserveAction = false }: { preserveAction?: boolean } = {}) {

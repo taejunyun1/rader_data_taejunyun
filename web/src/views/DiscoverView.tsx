@@ -62,6 +62,17 @@ interface CandidateListRequest {
   controller: AbortController;
 }
 
+interface FieldSignalFilterIntent {
+  status: DiscoveryFieldSignalStatus;
+  type: "" | DiscoveryFieldSignalType;
+  generation: number;
+}
+
+interface FieldSignalListRequest {
+  generation: number;
+  controller: AbortController;
+}
+
 const STATUS_FILTERS = [
   { value: "CANDIDATE", label: "새 후보" },
   { value: "KEPT", label: "보관됨" },
@@ -211,6 +222,9 @@ export default function DiscoverView({
   const candidateListRequestRef = useRef<CandidateListRequest | null>(null);
   const keptAcquisitionIntentRef = useRef<CandidateIntent & { jobId: string } | null>(null);
   const canAutoSelectCandidateRef = useRef(true);
+  const fieldSignalFilterIntentRef = useRef<FieldSignalFilterIntent>({ status: "NEW", type: "", generation: 0 });
+  const fieldSignalListRequestRef = useRef<FieldSignalListRequest | null>(null);
+  const fieldSignalActionRequestRef = useRef(0);
 
   const replaceKeptAcquisitionIntent = useCallback((intent: CandidateIntent & { jobId: string } | null) => {
     keptAcquisitionIntentRef.current = intent;
@@ -240,6 +254,39 @@ export default function DiscoverView({
 
   const isCurrentCandidateListRequest = useCallback((request: CandidateListRequest): boolean => (
     candidateListRequestRef.current?.generation === request.generation
+  ), []);
+
+  const isCurrentFieldSignalFilterIntent = useCallback((intent: FieldSignalFilterIntent): boolean => (
+    fieldSignalFilterIntentRef.current.status === intent.status
+    && fieldSignalFilterIntentRef.current.type === intent.type
+    && fieldSignalFilterIntentRef.current.generation === intent.generation
+  ), []);
+
+  const updateFieldSignalFilter = useCallback((status: DiscoveryFieldSignalStatus, type: "" | DiscoveryFieldSignalType) => {
+    const current = fieldSignalFilterIntentRef.current;
+    if (current.status === status && current.type === type) return current;
+    const next = { status, type, generation: current.generation + 1 };
+    fieldSignalFilterIntentRef.current = next;
+    fieldSignalListRequestRef.current?.controller.abort();
+    fieldSignalActionRequestRef.current += 1;
+    setPendingFieldSignalId(null);
+    setFieldSignalStatus(status);
+    setFieldSignalType(type);
+    return next;
+  }, []);
+
+  const beginFieldSignalListRequest = useCallback((): FieldSignalListRequest => {
+    fieldSignalListRequestRef.current?.controller.abort();
+    const request = {
+      generation: (fieldSignalListRequestRef.current?.generation ?? 0) + 1,
+      controller: new AbortController(),
+    };
+    fieldSignalListRequestRef.current = request;
+    return request;
+  }, []);
+
+  const isCurrentFieldSignalListRequest = useCallback((request: FieldSignalListRequest): boolean => (
+    fieldSignalListRequestRef.current?.generation === request.generation
   ), []);
 
   const openReservoir = useCallback((sourceId: string) => {
@@ -297,17 +344,24 @@ export default function DiscoverView({
     }
   }, [beginCandidateListRequest, clearCandidateSelection, isCurrentCandidateIntent, isCurrentCandidateListRequest, laneFilter, statusFilter]);
 
-  const loadFieldSignals = useCallback(async () => {
+  const loadFieldSignals = useCallback(async (intent: FieldSignalFilterIntent = fieldSignalFilterIntentRef.current) => {
+    if (!isCurrentFieldSignalFilterIntent(intent)) return;
+    const request = beginFieldSignalListRequest();
     setFieldSignalError("");
     try {
-      const response = await fetch(`/api/discover/signals?status=${fieldSignalStatus}${fieldSignalType ? `&type=${fieldSignalType}` : ""}`);
+      const response = await fetch(`/api/discover/signals?status=${intent.status}${intent.type ? `&type=${intent.type}` : ""}`, {
+        signal: request.controller.signal,
+      });
       if (!response.ok) throw new Error("field_signals_failed");
       const data = await response.json() as { items?: DiscoveryFieldSignal[] };
+      if (!isCurrentFieldSignalListRequest(request) || !isCurrentFieldSignalFilterIntent(intent)) return;
       setFieldSignals(data.items ?? []);
-    } catch {
+    } catch (error) {
+      if (!isCurrentFieldSignalListRequest(request) || !isCurrentFieldSignalFilterIntent(intent)) return;
+      if (error instanceof Error && error.name === "AbortError") return;
       setFieldSignalError("현장 신호를 불러오지 못했습니다.");
     }
-  }, [fieldSignalStatus, fieldSignalType]);
+  }, [beginFieldSignalListRequest, isCurrentFieldSignalFilterIntent, isCurrentFieldSignalListRequest]);
 
   useEffect(() => {
     void load();
@@ -318,7 +372,8 @@ export default function DiscoverView({
     if (contentMode === "FIELD_SIGNAL") {
       void loadFieldSignals();
     }
-  }, [contentMode, loadFieldSignals]);
+    return () => fieldSignalListRequestRef.current?.controller.abort();
+  }, [contentMode, fieldSignalStatus, fieldSignalType, loadFieldSignals]);
 
   useEffect(() => {
     if (!keptAcquisitionIntent) return;
@@ -395,7 +450,7 @@ export default function DiscoverView({
       await onJobCreated?.();
       setMsg(data.reused ? "이미 진행 중인 발견 수집을 계속합니다." : "발견 수집을 시작했습니다. 완료되면 상단 작업센터에서 후보를 확인할 수 있습니다.");
       setStatusFilter("CANDIDATE");
-      setFieldSignalStatus("NEW");
+      updateFieldSignalFilter("NEW", fieldSignalFilterIntentRef.current.type);
     } catch (error) {
       setMsg(error instanceof Error ? error.message : "발견 실행을 시작하지 못했습니다.");
     } finally {
@@ -468,16 +523,24 @@ export default function DiscoverView({
   }
 
   async function actOnFieldSignal(id: string, action: "save" | "dismiss" | "restore") {
+    const filterIntent = fieldSignalFilterIntentRef.current;
+    const requestId = fieldSignalActionRequestRef.current + 1;
+    fieldSignalActionRequestRef.current = requestId;
+    const isCurrent = () => (
+      fieldSignalActionRequestRef.current === requestId
+      && isCurrentFieldSignalFilterIntent(filterIntent)
+    );
     setPendingFieldSignalId(id);
     try {
       const response = await fetch(`/api/discover/signals/${id}/${action}`, { method: "POST" });
       if (!response.ok) throw new Error("field_signal_action_failed");
+      if (!isCurrent()) return;
       setMsg(action === "save" ? "현장 신호를 저장했습니다." : action === "dismiss" ? "현장 신호를 제외했습니다." : "현장 신호를 복구했습니다.");
-      await loadFieldSignals();
+      await loadFieldSignals(filterIntent);
     } catch {
-      setMsg("현장 신호 상태를 저장하지 못했습니다.");
+      if (isCurrent()) setMsg("현장 신호 상태를 저장하지 못했습니다.");
     } finally {
-      setPendingFieldSignalId(null);
+      if (fieldSignalActionRequestRef.current === requestId) setPendingFieldSignalId(null);
     }
   }
 
@@ -566,9 +629,9 @@ export default function DiscoverView({
         <>
           <div className="discovery-toolbar">
             <div className="filter-strip" aria-label="현장 신호 상태 필터">
-              {FIELD_SIGNAL_STATUS_FILTERS.map((filter) => <button key={filter.value} className={`filter-button${fieldSignalStatus === filter.value ? " is-active" : ""}`} onClick={() => setFieldSignalStatus(filter.value)}>{filter.label}</button>)}
+              {FIELD_SIGNAL_STATUS_FILTERS.map((filter) => <button key={filter.value} className={`filter-button${fieldSignalStatus === filter.value ? " is-active" : ""}`} onClick={() => updateFieldSignalFilter(filter.value, fieldSignalType)}>{filter.label}</button>)}
             </div>
-            <select aria-label="현장 신호 유형" value={fieldSignalType} onChange={(event) => setFieldSignalType(event.target.value as "" | DiscoveryFieldSignalType)}>
+            <select aria-label="현장 신호 유형" value={fieldSignalType} onChange={(event) => updateFieldSignalFilter(fieldSignalStatus, event.target.value as "" | DiscoveryFieldSignalType)}>
               {FIELD_SIGNAL_TYPE_FILTERS.map((filter) => <option key={filter.value} value={filter.value}>{filter.label}</option>)}
             </select>
             <span className="table-note">회당 최대 12개 · 출처당 최대 4개</span>

@@ -41,6 +41,7 @@ let pendingReanalysis: Promise<Response> | null;
 let pendingDeepAnalysis: Promise<Response> | null;
 let pendingRefetch: Promise<Response> | null;
 let pendingReservoirLists: Record<string, Promise<Response> | undefined>;
+let pendingTopicResponses: Array<Promise<Response>>;
 let viewSignalFailure = false;
 let sourceOneDetailFailure = false;
 
@@ -57,6 +58,7 @@ beforeEach(() => {
   pendingDeepAnalysis = null;
   pendingRefetch = null;
   pendingReservoirLists = {};
+  pendingTopicResponses = [];
   viewSignalFailure = false;
   sourceOneDetailFailure = false;
   vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -67,7 +69,7 @@ beforeEach(() => {
       requestedWatching = decisionStatus === "watch";
       return Promise.resolve(new Response(JSON.stringify({ items: reservoirItems.map((item) => ({ ...item, decisionStatus })) })));
     }
-    if (url === "/api/reservoir/topics") return Promise.resolve(new Response(JSON.stringify({ topics: [] })));
+    if (url === "/api/reservoir/topics") return pendingTopicResponses.shift() ?? Promise.resolve(new Response(JSON.stringify({ topics: [] })));
     if (url.startsWith("/api/search?") && pendingSearch) return pendingSearch;
     if (url === "/api/reservoir/source-1" && pendingSourceOneDetail) return pendingSourceOneDetail;
     if (url === "/api/reservoir/source-1" && sourceOneDetailFailure) return Promise.resolve(new Response("", { status: 500 }));
@@ -158,6 +160,29 @@ describe("ReservoirView", () => {
     expect(screen.getByRole("button", { name: /자료 B/ })).toHaveAttribute("aria-current", "true");
     expect(screen.queryByRole("button", { name: /자료 A/ })).not.toBeInTheDocument();
     expect(screen.getByText("8개 표시됨")).toBeInTheDocument();
+  });
+
+  it("keeps current topic options when an older topic response arrives late", async () => {
+    let resolveOldTopics: (response: Response) => void = () => undefined;
+    const oldTopics = new Promise<Response>((resolve) => { resolveOldTopics = resolve; });
+    pendingTopicResponses = [
+      oldTopics,
+      Promise.resolve(new Response(JSON.stringify({ topics: [{ topic: "초기 토픽", count: 1 }] }))),
+      Promise.resolve(new Response(JSON.stringify({ topics: [{ topic: "새 토픽", count: 2 }] }))),
+    ];
+    render(<ReservoirView />);
+
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => input === "/api/reservoir/topics")).toBe(true));
+    await userEvent.click(await screen.findByRole("button", { name: "관찰 중" }));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.filter(([input]) => input === "/api/reservoir/topics").length).toBeGreaterThanOrEqual(3));
+    expect(await screen.findByRole("button", { name: "새 토픽 · 2" })).toBeInTheDocument();
+
+    await act(async () => {
+      resolveOldTopics(new Response(JSON.stringify({ topics: [{ topic: "이전 토픽", count: 1 }] })));
+    });
+
+    expect(screen.getByRole("button", { name: "새 토픽 · 2" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "이전 토픽 · 1" })).not.toBeInTheDocument();
   });
 
   it("ignores an earlier detail response after a newer selection is cleared", async () => {

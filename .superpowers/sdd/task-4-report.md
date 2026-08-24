@@ -79,3 +79,11 @@
 - Judgment, reanalysis, and canonical refetch now retain an action generation across their own detail refresh, but navigation invalidates it. Their stale completion/error feedback and pending-state cleanup cannot affect a later source or list state.
 - TDD record: added deferred list-overlap, deep-analysis block/navigation, deep-analysis error/list-return, and refetch-error/navigation regressions. All four failed before the guards and pass after the change.
 - Verification: focused Task 4 web Vitest passed (4 files, 50 tests); full web Vitest passed (37 files, 257 tests); `pnpm typecheck` passed for shared, worker, and web.
+
+## Review follow-up — 2026-08-24 (field-signal and topic freshness)
+
+- Discover field-signal list requests now capture the active status/type filter intent, abort superseded requests, and apply list data or errors only when both the request generation and filter generation remain current.
+- Field-signal actions now capture the same filter intent and an action generation. Changing status/type invalidates an in-flight action's visible completion, pending item, message, and follow-up reload while preserving the normal same-filter save/dismiss/restore refresh.
+- Reservoir topic-option requests now use a latest generation and abort cleanup. Starting any Reservoir list/filter reload invalidates prior topic responses, so old topic chips cannot replace options for the current result/filter set.
+- TDD record: added deferred NEW→SAVED list, delayed field-signal action after a filter change, and late topic-options regressions. The RED run failed on all three expected stale updates before implementation.
+- Verification: focused Discover/Reservoir Vitest passed (2 files, 49 tests); full web Vitest passed (37 files, 260 tests); `pnpm -r typecheck` passed for shared, worker, and web; `git diff --check` passed.
