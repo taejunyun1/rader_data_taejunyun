@@ -80,6 +80,19 @@ describe("static HTML extraction", () => {
     expect(["PARTIAL", "EMPTY"]).toContain(result.scope);
     expect(result.warnings).toContain("js_shell");
   });
+
+  it("keeps article text nested in an unthinking photography grid", async () => {
+    const { extractStaticHtml } = await import("../../../worker/src/ingestion/extractHtml");
+    const { readFile } = await import("node:fs/promises");
+    const sourceHtml = await readFile("src/lib/fixtures/unthinking-photography-grid.html", "utf8");
+    const result = extractStaticHtml(
+      sourceHtml,
+      "https://unthinking.photography/imgexhaust/how-photography-was-reinvented-43-times",
+    );
+
+    expect(result.text).toContain("A timeline built by Lev Manovich");
+    expect(result.text).toContain("Trust in the image becomes cryptographic");
+  });
 });
 
 describe("remote acquisition", () => {

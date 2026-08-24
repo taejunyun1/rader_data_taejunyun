@@ -29,7 +29,7 @@ export function extractStaticHtml(html: string, url: string): HtmlExtractionResu
 
   const candidates = collectCandidates(sanitized);
   const best = candidates[0] ?? null;
-  const bodyHtml = extractTagFragment(sanitized, "body") ?? sanitized;
+  const bodyHtml = extractTagFragment(source, "body") ?? sanitized;
   const bodyText = fragmentToText(bodyHtml);
   const useBodyFallback = !best || best.meaningfulChars < 200;
   const selectedText = useBodyFallback ? bodyText : best.text;
