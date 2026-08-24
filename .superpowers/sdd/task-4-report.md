@@ -64,3 +64,10 @@
 - The first accepted list request still selects its first candidate by default. Once the user has selected or cleared a candidate, a later accepted list that no longer contains that ID uses the existing reset path: close judgment, clear selection, and do not auto-select another candidate.
 - TDD record: added a deferred `KEPT` filter response versus newer `CANDIDATE` reload regression. It failed before the guard because the late response cleared the selected second candidate; it passes after the change.
 - Verification: focused Task 4 web Vitest passed (4 files, 45 tests); full web Vitest passed (37 files, 252 tests); `pnpm typecheck` passed for shared, worker, and web.
+
+## Review follow-up — 2026-08-24 (Keep acquisition intent preservation)
+
+- A queued Keep acquisition now retains its exact candidate intent when the selected candidate disappears in the post-Keep candidate reload. The visible reading selection and judgment sheet still close; only the matching pending acquisition intent survives.
+- Ordinary candidate disappearance still clears the full candidate intent, and a later explicit selection clears the retained Keep intent. A stale or unrelated acquisition therefore cannot navigate to Reservoir.
+- TDD record: added the A Keep → B-only refreshed list → acquisition success → Reservoir navigation regression. It failed before the fix because reconciliation cleared the queued Keep intent.
+- Verification: focused DiscoverView Vitest passed (21 tests); full web Vitest passed (37 files, 253 tests); `pnpm --dir web run typecheck` passed.

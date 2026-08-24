@@ -209,7 +209,13 @@ export default function DiscoverView({
   const [keptAcquisitionIntent, setKeptAcquisitionIntent] = useState<CandidateIntent & { jobId: string } | null>(null);
   const candidateIntentRef = useRef<CandidateIntent>({ candidateId: null, generation: 0 });
   const candidateListRequestRef = useRef<CandidateListRequest | null>(null);
+  const keptAcquisitionIntentRef = useRef<CandidateIntent & { jobId: string } | null>(null);
   const canAutoSelectCandidateRef = useRef(true);
+
+  const replaceKeptAcquisitionIntent = useCallback((intent: CandidateIntent & { jobId: string } | null) => {
+    keptAcquisitionIntentRef.current = intent;
+    setKeptAcquisitionIntent(intent);
+  }, []);
 
   const advanceCandidateIntent = useCallback((candidateId: string | null): CandidateIntent => {
     const next = { candidateId, generation: candidateIntentRef.current.generation + 1 };
@@ -244,6 +250,19 @@ export default function DiscoverView({
     onNavigate("RESERVOIR");
   }, [onNavigate, onOpenReservoir]);
 
+  const clearCandidateSelection = useCallback(({ preserveKeptAcquisitionIntent = false }: { preserveKeptAcquisitionIntent?: boolean } = {}) => {
+    canAutoSelectCandidateRef.current = false;
+    if (!preserveKeptAcquisitionIntent) {
+      advanceCandidateIntent(null);
+      replaceKeptAcquisitionIntent(null);
+    }
+    setSelectedId(null);
+    setDecisionOpen(false);
+    setDecisionError("");
+    setBusy(false);
+    setPendingAction(null);
+  }, [advanceCandidateIntent, replaceKeptAcquisitionIntent]);
+
   const load = useCallback(async (intent?: CandidateIntent) => {
     if (intent && !isCurrentCandidateIntent(intent)) return;
     const requestIntent = intent ?? candidateIntentRef.current;
@@ -260,7 +279,10 @@ export default function DiscoverView({
       setCandidates(next);
       const selectedCandidateId = candidateIntentRef.current.candidateId;
       if (selectedCandidateId && !next.some((candidate) => candidate.id === selectedCandidateId)) {
-        clearCandidateSelection();
+        const pendingKeep = keptAcquisitionIntentRef.current;
+        const isExpectedKeepDisappearance = pendingKeep?.candidateId === selectedCandidateId
+          && isCurrentCandidateIntent(pendingKeep);
+        clearCandidateSelection({ preserveKeptAcquisitionIntent: isExpectedKeepDisappearance });
         return;
       }
       if (canAutoSelectCandidateRef.current && !selectedCandidateId && next[0]) {
@@ -273,7 +295,7 @@ export default function DiscoverView({
       if (error instanceof Error && error.name === "AbortError") return;
       setListError("발견 후보를 불러오지 못했습니다.");
     }
-  }, [beginCandidateListRequest, isCurrentCandidateIntent, isCurrentCandidateListRequest, laneFilter, statusFilter]);
+  }, [beginCandidateListRequest, clearCandidateSelection, isCurrentCandidateIntent, isCurrentCandidateListRequest, laneFilter, statusFilter]);
 
   const loadFieldSignals = useCallback(async () => {
     setFieldSignalError("");
@@ -304,11 +326,11 @@ export default function DiscoverView({
     const resultRef = keptAcquisition?.resultRef;
     if (keptAcquisition?.status === "SUCCEEDED" && resultRef?.view === "RESERVOIR" && "acquisition" in resultRef && resultRef.acquisition) {
       if (!isCurrentCandidateIntent(keptAcquisitionIntent)) return;
-      setKeptAcquisitionIntent(null);
+      replaceKeptAcquisitionIntent(null);
       setMsg("원문 수집이 완료되었습니다. 저장소에서 확인하세요.");
       openReservoir(resultRef.sourceId);
     }
-  }, [isCurrentCandidateIntent, jobs, keptAcquisitionIntent, openReservoir]);
+  }, [isCurrentCandidateIntent, jobs, keptAcquisitionIntent, openReservoir, replaceKeptAcquisitionIntent]);
 
   useEffect(() => {
     const latest = jobs.find((job) => job.kind === "DISCOVERY_RUN");
@@ -409,7 +431,7 @@ export default function DiscoverView({
       if (!response.ok) throw new Error(data.error ?? "분류 저장에 실패했습니다.");
       if (!isCurrentCandidateIntent(intent)) return;
       if (data.jobId) {
-        setKeptAcquisitionIntent({ ...intent, jobId: data.jobId });
+        replaceKeptAcquisitionIntent({ ...intent, jobId: data.jobId });
         await onJobCreated?.();
         if (!isCurrentCandidateIntent(intent)) return;
       }
@@ -459,17 +481,6 @@ export default function DiscoverView({
     }
   }
 
-  function clearCandidateSelection() {
-    canAutoSelectCandidateRef.current = false;
-    advanceCandidateIntent(null);
-    setSelectedId(null);
-    setDecisionOpen(false);
-    setDecisionError("");
-    setBusy(false);
-    setPendingAction(null);
-    setKeptAcquisitionIntent(null);
-  }
-
   function selectCandidate(id: string) {
     const candidate = candidates.find((item) => item.id === id);
     canAutoSelectCandidateRef.current = false;
@@ -479,7 +490,7 @@ export default function DiscoverView({
     setDecisionOpen(false);
     setBusy(false);
     setPendingAction(null);
-    setKeptAcquisitionIntent(null);
+    replaceKeptAcquisitionIntent(null);
     if (candidate?.status === "KEPT" && candidate.sourceId) {
       openReservoir(candidate.sourceId);
     }

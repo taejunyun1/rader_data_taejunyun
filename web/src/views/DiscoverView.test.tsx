@@ -241,6 +241,35 @@ describe("DiscoverView", () => {
     expect(onNavigate).toHaveBeenCalledWith("RESERVOIR");
   });
 
+  it("keeps the queued acquisition intent when Keep removes its selected candidate", async () => {
+    const onNavigate = vi.fn();
+    const onJobCreated = vi.fn().mockResolvedValue(undefined);
+    let candidateLoadCount = 0;
+    candidateListResponse = () => Promise.resolve(new Response(JSON.stringify({
+      items: ++candidateLoadCount === 1 ? [candidate] : [secondCandidate],
+    })));
+    const { rerender } = render(
+      <DiscoverView onNavigate={onNavigate} jobs={[]} onJobCreated={onJobCreated} />,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: /자료 후보/ }));
+    await userEvent.click(screen.getByRole("button", { name: "판단하기" }));
+    await userEvent.click(screen.getByRole("button", { name: "보관하기" }));
+
+    await waitFor(() => expect(screen.getByText("읽을 후보를 선택하세요")).toBeInTheDocument());
+    expect(screen.queryByRole("dialog", { name: "읽은 뒤 판단" })).not.toBeInTheDocument();
+
+    rerender(
+      <DiscoverView
+        onNavigate={onNavigate}
+        jobs={[acquisitionJob("job-acquisition-1", "SUCCEEDED")]}
+        onJobCreated={onJobCreated}
+      />,
+    );
+
+    await waitFor(() => expect(onNavigate).toHaveBeenCalledWith("RESERVOIR"));
+  });
+
   it("refreshes jobs before refreshing candidates after Keep queues acquisition", async () => {
     let finishJobRefresh: () => void = () => undefined;
     const onJobCreated = vi.fn(() => new Promise<void>((resolve) => {
