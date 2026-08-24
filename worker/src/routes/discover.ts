@@ -211,8 +211,7 @@ discover.get("/feeds", async (c) => {
 discover.put("/feeds", async (c) => {
   const body = (await c.req.json<{ feeds?: string[] }>().catch(() => null)) as { feeds?: string[] } | null;
   if (!body?.feeds || !Array.isArray(body.feeds)) return c.json({ error: "feeds_required" }, 400);
-  const clean = body.feeds.map((f) => String(f).trim()).filter((f) => /^https?:\/\//.test(f)).slice(0, 6);
-  await setCustomFeeds(c.env.DB, clean);
+  await setCustomFeeds(c.env.DB, body.feeds);
   return c.json({ feeds: await customFeeds(c.env.DB) });
 });
 

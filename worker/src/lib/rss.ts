@@ -1,5 +1,15 @@
 import { cleanDiscoverySourceText } from "@radar/shared/discovery";
 import type { DiscoveryProviderResult } from "@radar/shared/discoveryRun";
+import {
+  fetchRemoteText,
+  RemoteFetchError,
+  type DnsResolver,
+} from "../ingestion/fetchRemoteDocument";
+
+interface FeedFetchOptions {
+  resolveDns?: DnsResolver;
+  fetchImpl?: typeof fetch;
+}
 
 export interface FeedItem {
   title: string;
@@ -9,21 +19,20 @@ export interface FeedItem {
   summary: string | null;
 }
 
-export async function fetchFeed(url: string, limit = 5): Promise<DiscoveryProviderResult<FeedItem>> {
+export async function fetchFeed(
+  url: string,
+  limit = 5,
+  options: FeedFetchOptions = {},
+): Promise<DiscoveryProviderResult<FeedItem>> {
   const startedAt = Date.now();
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), 12_000);
   try {
-    const res = await fetch(url, {
-      headers: { "User-Agent": "ResearchRadar/1.0 (personal research tool)" },
-      signal: ac.signal,
-      redirect: "follow",
+    const res = await fetchRemoteText(url, {
+      maxResponseBytes: 2 * 1024 * 1024,
+      resolveDns: options.resolveDns,
+      fetchImpl: options.fetchImpl,
     });
-    if (!res.ok) {
-      return { status: "HTTP_ERROR", items: [], errorCode: `HTTP_${res.status}`, elapsedMs: Date.now() - startedAt };
-    }
-    const ct = res.headers.get("content-type") ?? "";
-    const body = await res.text();
+    const body = new TextDecoder().decode(res.body);
+    const ct = res.contentType;
     if (/xml|rss|atom/i.test(ct) || body.includes("<rss") || body.includes("<feed")) {
       if (!/<(?:rss|feed)[\s>]/i.test(body)) {
         return { status: "PARSE_ERROR", items: [], errorCode: "INVALID_XML", elapsedMs: Date.now() - startedAt };
@@ -33,6 +42,9 @@ export async function fetchFeed(url: string, limit = 5): Promise<DiscoveryProvid
     }
     return { status: "PARSE_ERROR", items: [], errorCode: "UNSUPPORTED_FEED_FORMAT", elapsedMs: Date.now() - startedAt };
   } catch (error) {
+    if (error instanceof RemoteFetchError) {
+      return mapRemoteFetchError(error, startedAt);
+    }
     const isTimeout = error instanceof Error && error.name === "AbortError";
     return {
       status: isTimeout ? "TIMEOUT" : "HTTP_ERROR",
@@ -40,9 +52,46 @@ export async function fetchFeed(url: string, limit = 5): Promise<DiscoveryProvid
       errorCode: isTimeout ? "TIMEOUT" : "NETWORK_ERROR",
       elapsedMs: Date.now() - startedAt,
     };
-  } finally {
-    clearTimeout(timer);
   }
+}
+
+function mapRemoteFetchError(
+  error: RemoteFetchError,
+  startedAt: number,
+): DiscoveryProviderResult<FeedItem> {
+  if (error.code === "FETCH_TIMEOUT") {
+    return {
+      status: "TIMEOUT",
+      items: [],
+      errorCode: "TIMEOUT",
+      elapsedMs: Date.now() - startedAt,
+    };
+  }
+
+  if (error.code === "HTTP_4XX" || error.code === "HTTP_5XX") {
+    return {
+      status: "HTTP_ERROR",
+      items: [],
+      errorCode: error.status ? `HTTP_${error.status}` : error.code,
+      elapsedMs: Date.now() - startedAt,
+    };
+  }
+
+  if (error.code === "REDIRECT_BLOCKED" || error.code === "SIZE_LIMIT" || error.code === "UNSUPPORTED_CONTENT_TYPE") {
+    return {
+      status: "HTTP_ERROR",
+      items: [],
+      errorCode: error.code,
+      elapsedMs: Date.now() - startedAt,
+    };
+  }
+
+  return {
+    status: "HTTP_ERROR",
+    items: [],
+    errorCode: "NETWORK_ERROR",
+    elapsedMs: Date.now() - startedAt,
+  };
 }
 
 function parseFeedXml(xml: string): FeedItem[] {

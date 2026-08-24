@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { collectDiscoveryCandidates, resolveDiscoveryReadingFeeds } from "../../../worker/src/discovery/run";
+import {
+  collectDiscoveryCandidates,
+  resolveDiscoveryReadingFeeds,
+  sanitizeCustomFeedUrls,
+} from "../../../worker/src/discovery/run";
 import { selectDiscoveryCandidatesByLane } from "@radar/shared/discovery";
 
 describe("discovery pipeline accounting", () => {
@@ -148,6 +152,31 @@ describe("discovery pipeline accounting", () => {
       sourceId: "custom:https://custom.example/photo-feed.xml",
       accessPolicy: "UNKNOWN",
     });
+  });
+
+  it("keeps only public custom HTTP feeds while preserving curated-feed removal and the six-feed cap", () => {
+    expect(sanitizeCustomFeedUrls([
+      "https://custom.example/feed.xml",
+      "http://127.0.0.1/feed",
+      "http://[::1]/feed",
+      "https://localhost/feed",
+      "ftp://custom.example/feed.xml",
+      "not a url",
+      "https://unthinking.photography/feed",
+      "https://custom.example/feed-2.xml",
+      "https://custom.example/feed-3.xml",
+      "https://custom.example/feed-4.xml",
+      "https://custom.example/feed-5.xml",
+      "https://custom.example/feed-6.xml",
+      "https://custom.example/feed-7.xml",
+    ])).toEqual([
+      "https://custom.example/feed.xml",
+      "https://custom.example/feed-2.xml",
+      "https://custom.example/feed-3.xml",
+      "https://custom.example/feed-4.xml",
+      "https://custom.example/feed-5.xml",
+      "https://custom.example/feed-6.xml",
+    ]);
   });
 
   it("balances RSS picks by source before taking a second item from the same feed", () => {

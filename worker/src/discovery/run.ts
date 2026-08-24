@@ -1,6 +1,7 @@
 import { searchWorks, type OpenAlexWork } from "../lib/openalex";
 import { searchArxiv, type ArxivWork } from "../lib/arxiv";
 import { fetchFeed, type FeedItem } from "../lib/rss";
+import { normalizePublicHttpUrl } from "../ingestion/fetchRemoteDocument";
 import { uuid } from "../ingestion/ids";
 import { DEFAULT_DISCOVERY_FEEDS, discoverySourceByFeedUrl, discoverySourceById } from "@radar/shared";
 import {
@@ -125,8 +126,8 @@ export async function customQueries(db: D1Database): Promise<string[]> {
 export function sanitizeCustomFeedUrls(feeds: string[]): string[] {
   return [...new Set(
     feeds
-      .map((feed) => feed.trim())
-      .filter((feed) => /^https?:\/\//.test(feed))
+      .map((feed) => normalizePublicHttpUrl(feed))
+      .filter((feed): feed is string => Boolean(feed))
       .filter((feed) => discoverySourceByFeedUrl(feed) === null),
   )].slice(0, 6);
 }

@@ -79,6 +79,32 @@ export async function fetchRemoteText(
   }
 }
 
+export function normalizePublicHttpUrl(value: string): string | null {
+  const candidate = value.trim();
+  if (!candidate) return null;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    return null;
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return null;
+  }
+
+  if (parsed.username || parsed.password) {
+    return null;
+  }
+
+  if (isBlockedHostname(parsed.hostname)) {
+    return null;
+  }
+
+  return parsed.toString();
+}
+
 async function fetchRemoteBytes(
   url: string,
   policy: RemoteFetchPolicy,
@@ -143,21 +169,10 @@ async function fetchWithRedirects(
 }
 
 async function validateRemoteUrl(url: string, resolveDns: DnsResolver, signal: AbortSignal): Promise<string> {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw new RemoteFetchError("REDIRECT_BLOCKED");
-  }
+  const normalized = normalizePublicHttpUrl(url);
+  if (!normalized) throw new RemoteFetchError("REDIRECT_BLOCKED");
 
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new RemoteFetchError("REDIRECT_BLOCKED");
-  }
-
-  if (isBlockedHostname(parsed.hostname)) {
-    throw new RemoteFetchError("REDIRECT_BLOCKED");
-  }
-
+  const parsed = new URL(normalized);
   if (!(await hostnameResolvesPublicly(parsed.hostname, resolveDns, signal))) {
     throw new RemoteFetchError("REDIRECT_BLOCKED");
   }
