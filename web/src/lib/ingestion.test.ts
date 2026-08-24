@@ -237,6 +237,32 @@ describe("ingestion normalization", () => {
     expect(db.activatedVersionIds).toEqual([]);
   });
 
+  it("activates the first recovered acquisition even when it is metadata-only", async () => {
+    const mod = await import("../../../worker/src/ingestion/versioning");
+
+    expect(typeof mod.appendAcquisitionVersion).toBe("function");
+    if (typeof mod.appendAcquisitionVersion !== "function") return;
+
+    const db = createVersioningDb({
+      sourceId: "failed-url-source",
+      activeVersionId: null,
+      activeVersion: null,
+    });
+
+    const result = await mod.appendAcquisitionVersion(db, {
+      sourceId: "failed-url-source",
+      r2Key: "originals/failed-url-source/recovered.html",
+      extractedText: "짧지만 실제로 수집된 웹 본문입니다.",
+      inputFormat: "URL_HTML",
+      textScope: "METADATA_ONLY",
+      extractionMethod: "HTML_STATIC",
+      finalUrl: "https://example.com/recovered",
+    });
+
+    expect(db.source.activeVersionId).toBe(result.versionId);
+    expect(db.activatedVersionIds).toEqual([result.versionId]);
+  });
+
   it("retries version reservation without changing the acquisition identity", async () => {
     const mod = await import("../../../worker/src/ingestion/versioning");
 

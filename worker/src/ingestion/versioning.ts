@@ -92,6 +92,7 @@ function shouldActivateAcquisitionVersion(input: {
     incomingOrigin: input.incomingOrigin,
   });
   if (!decision.activateIncoming) return false;
+  if (!input.activeVersion) return true;
   if (input.textScope === "FULLTEXT") return input.qualityStatus === "READY";
   if (input.textScope === "PARTIAL") {
     const activeMeaningfulChars = meaningfulCharsFromReport(
