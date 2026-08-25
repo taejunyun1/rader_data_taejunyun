@@ -93,6 +93,64 @@ describe("static HTML extraction", () => {
     expect(result.text).toContain("A timeline built by Lev Manovich");
     expect(result.text).toContain("Trust in the image becomes cryptographic");
   });
+
+  it("extracts deterministic visual candidates from stored article HTML and records rejection signals", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const { extractStaticHtml } = await import("../../../worker/src/ingestion/extractHtml");
+    const { inspectHtmlVisualCandidates } = await import("../../../worker/src/visual/extraction/html");
+    const sourceHtml = await readFile("tests/fixtures/visual/article-with-figures.html", "utf8");
+
+    const extracted = extractStaticHtml(sourceHtml, "https://example.com/articles/visuals?ref=feed");
+    const result = inspectHtmlVisualCandidates(
+      sourceHtml,
+      "https://example.com/articles/visuals?ref=feed",
+      extracted.selectedFragmentHtml,
+    );
+
+    expect(result.candidates).toHaveLength(2);
+    expect(result.candidates).toEqual([
+      expect.objectContaining({
+        sourceUrl: "https://example.com/images/infrared-floor.jpg?size=large",
+        sourceSetUrls: ["https://example.com/images/infrared-floor.jpg?size=large"],
+        alt: "Infrared installation view",
+        figureLabel: "Figure 1",
+        caption: "Infrared installation view from the exhibition floor.",
+        declaredWidth: 1200,
+        declaredHeight: 800,
+      }),
+      expect.objectContaining({
+        sourceUrl: "https://cdn.example.com/images/detail-crop.jpg?size=medium",
+        sourceSetUrls: [],
+        alt: "Printed wall label",
+        figureLabel: "Figure 2",
+        caption: "Printed wall label beside the projection.",
+        declaredWidth: 120,
+        declaredHeight: 90,
+        signals: expect.arrayContaining(["review_small_context"]),
+      }),
+    ]);
+    expect(result.candidates[0]?.nearbyText).toContain("floor projection");
+    expect(result.rejected).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceUrl: "https://example.com/assets/logo-mark.svg",
+          signals: expect.arrayContaining(["container:header", "repeated_logo"]),
+        }),
+        expect.objectContaining({
+          sourceUrl: "https://example.com/assets/share-x.png",
+          signals: expect.arrayContaining(["container:nav", "decorative_icon"]),
+        }),
+        expect.objectContaining({
+          sourceUrl: "https://tracker.example/pixel.gif?open=1",
+          signals: expect.arrayContaining(["tracker_pixel"]),
+        }),
+        expect.objectContaining({
+          sourceUrl: "https://ads.example.com/banner.jpg",
+          signals: expect.arrayContaining(["container:aside", "ad_related"]),
+        }),
+      ]),
+    );
+  });
 });
 
 describe("remote acquisition", () => {
@@ -597,6 +655,122 @@ describe("source acquisition workflow", () => {
     expect(fixture.updateIngestJob).toHaveBeenNthCalledWith(1, db, "source-1", "received", null);
     expect(fixture.updateIngestJob).toHaveBeenNthCalledWith(2, db, "source-1", "failed", "source_version_store_failed");
   });
+
+  it("enqueues visual extraction only after the acquired version becomes active", async () => {
+    const fixture = setupResearchJobWorkflowFixture();
+    fixture.acquireRemoteSource.mockResolvedValue({
+      kind: "HTML",
+      r2Key: "originals/source-1/acq-job-visual.html",
+      extractedText: "충분히 긴 본문 텍스트입니다. 시각 후보 추출을 이어서 진행할 수 있습니다.",
+      title: "Title",
+      contentType: "text/html",
+      finalUrl: "https://example.com/article",
+      warnings: [],
+      textScope: "FULLTEXT",
+      extractionMethod: "HTML_STATIC",
+    });
+    fixture.appendAcquisitionVersion.mockResolvedValue({
+      versionId: "acq-job-visual",
+      version: 2,
+      qualityStatus: "READY",
+    });
+    fixture.getActiveVersion
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: "acq-job-visual", version: 2 });
+
+    const { executeSourceAcquisitionJob, db } = await loadSourceAcquisitionRunner(fixture);
+    const result = await executeSourceAcquisitionJob({
+      env: { DB: db } as Env,
+      job: {
+        id: "job-visual",
+        input: { sourceId: "source-1", url: "https://example.com/article" },
+      },
+      updateProgress: fixture.updateJobProgress,
+    });
+
+    expect(fixture.enqueueResearchJob).toHaveBeenCalledWith(
+      expect.objectContaining({ DB: db }),
+      { kind: "VISUAL_EXTRACTION", input: { sourceId: "source-1", sourceVersionId: "acq-job-visual" } },
+      "system:source-acquisition",
+    );
+    expect(result.result.versionId).toBe("acq-job-visual");
+  });
+
+  it("keeps acquisition successful when visual extraction enqueue fails and records a warning", async () => {
+    const fixture = setupResearchJobWorkflowFixture();
+    fixture.acquireRemoteSource.mockResolvedValue({
+      kind: "HTML",
+      r2Key: "originals/source-1/acq-job-warning.html",
+      extractedText: "충분히 긴 본문 텍스트입니다. 후속 시각 추출 enqueue 실패를 재현합니다.",
+      title: "Title",
+      contentType: "text/html",
+      finalUrl: "https://example.com/article",
+      warnings: [],
+      textScope: "FULLTEXT",
+      extractionMethod: "HTML_STATIC",
+    });
+    fixture.appendAcquisitionVersion.mockResolvedValue({
+      versionId: "acq-job-warning",
+      version: 2,
+      qualityStatus: "READY",
+    });
+    fixture.getActiveVersion
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: "acq-job-warning", version: 2 });
+    fixture.enqueueResearchJob.mockRejectedValue(new Error("visual_enqueue_failed"));
+
+    const { executeSourceAcquisitionJob, db } = await loadSourceAcquisitionRunner(fixture);
+    const result = await executeSourceAcquisitionJob({
+      env: { DB: db } as Env,
+      job: {
+        id: "job-warning",
+        input: { sourceId: "source-1", url: "https://example.com/article" },
+      },
+      updateProgress: fixture.updateJobProgress,
+    });
+
+    expect(fixture.updateIngestJob).toHaveBeenNthCalledWith(2, db, "source-1", "extracted", null);
+    expect(result.result).toMatchObject({
+      sourceId: "source-1",
+      versionId: "acq-job-warning",
+      warnings: ["visual_extraction_enqueue_failed:visual_enqueue_failed"],
+    });
+  });
+
+  it("does not enqueue visual extraction when the acquired version is not active", async () => {
+    const fixture = setupResearchJobWorkflowFixture();
+    fixture.acquireRemoteSource.mockResolvedValue({
+      kind: "HTML",
+      r2Key: "originals/source-1/acq-job-review.html",
+      extractedText: "짧지만 실제로 수집된 텍스트입니다.",
+      title: "Title",
+      contentType: "text/html",
+      finalUrl: "https://example.com/article",
+      warnings: [],
+      textScope: "PARTIAL",
+      extractionMethod: "HTML_STATIC",
+    });
+    fixture.appendAcquisitionVersion.mockResolvedValue({
+      versionId: "acq-job-review",
+      version: 2,
+      qualityStatus: "REVIEW",
+    });
+    fixture.getActiveVersion
+      .mockResolvedValueOnce({ id: "version-1", version: 1 })
+      .mockResolvedValueOnce({ id: "version-1", version: 1 });
+
+    const { executeSourceAcquisitionJob, db } = await loadSourceAcquisitionRunner(fixture);
+    await executeSourceAcquisitionJob({
+      env: { DB: db } as Env,
+      job: {
+        id: "job-review",
+        input: { sourceId: "source-1", url: "https://example.com/article" },
+      },
+      updateProgress: fixture.updateJobProgress,
+    });
+
+    expect(fixture.enqueueResearchJob).not.toHaveBeenCalled();
+  });
 });
 
 describe("manual URL extraction compatibility", () => {
@@ -757,6 +931,7 @@ function setupResearchJobWorkflowFixture() {
     appendAcquisitionVersion: vi.fn(),
     updateIngestJob: vi.fn(),
     updateJobProgress: vi.fn(),
+    enqueueResearchJob: vi.fn().mockResolvedValue({ job: { id: "visual-job" }, reused: false }),
   };
 }
 
@@ -771,6 +946,9 @@ async function loadSourceAcquisitionRunner(fixture: ReturnType<typeof setupResea
   vi.doMock("../../../worker/src/ingestion/versioning", () => ({
     appendAcquisitionVersion: fixture.appendAcquisitionVersion,
     getActiveVersion: fixture.getActiveVersion,
+  }));
+  vi.doMock("../../../worker/src/jobs/enqueue", () => ({
+    enqueueResearchJob: fixture.enqueueResearchJob,
   }));
   const db = {
     prepare() {

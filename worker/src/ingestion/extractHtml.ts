@@ -10,6 +10,7 @@ export interface HtmlExtractionResult {
   description: string | null;
   siteName: string | null;
   text: string;
+  selectedFragmentHtml: string | null;
   warnings: string[];
   scope: TextScope;
   method: "HTML_STATIC";
@@ -53,6 +54,7 @@ export function extractStaticHtml(html: string, url: string): HtmlExtractionResu
     description,
     siteName,
     text: normalized.normalizedText.slice(0, 300_000),
+    selectedFragmentHtml: best?.html ?? null,
     warnings: [...warnings],
     scope,
     method: "HTML_STATIC",

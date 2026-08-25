@@ -146,6 +146,19 @@ describe("ingestion normalization", () => {
     expect(typeof mod.appendAcquisitionVersion).toBe("function");
   });
 
+  it("exposes the selected content fragment without changing extracted text behavior", async () => {
+    const { extractStaticHtml } = await import("../../../worker/src/ingestion/extractHtml");
+
+    const result = extractStaticHtml(
+      `<header>메뉴</header><main><article><h1>제목</h1><p>${"본문 ".repeat(260)}</p></article></main><footer>푸터</footer>`,
+      "https://example.com/post",
+    );
+
+    expect(result.text).toContain("본문");
+    expect(result.selectedFragmentHtml).toContain("<article>");
+    expect(result.selectedFragmentHtml).not.toContain("<header>");
+  });
+
   it("keeps a partial acquisition active only when it improves meaningful text", async () => {
     const mod = await import("../../../worker/src/ingestion/versioning");
 

@@ -3,6 +3,7 @@ import type { QualityStatus, TextScope } from "@radar/shared/ingestion";
 import { acquireRemoteSource, RemoteAcquisitionError } from "../ingestion/acquireRemoteSource";
 import { updateIngestJob } from "../ingestion/store";
 import { appendAcquisitionVersion, getActiveVersion } from "../ingestion/versioning";
+import { enqueueResearchJob } from "../jobs/enqueue";
 
 export interface SourceAcquisitionJobLike {
   id: string;
@@ -15,6 +16,7 @@ export interface SourceAcquisitionStepResult {
     textScope: TextScope;
     versionId: string;
     charCount: number;
+    warnings?: string[];
   };
   resultRef: ResearchJobResultRef;
 }
@@ -41,16 +43,19 @@ export async function executeSourceAcquisitionJob(input: ExecuteSourceAcquisitio
   const versionId = buildSourceAcquisitionVersionId(job.id);
   const sourceId = job.input.sourceId;
   const existing = await findReusableAcquisitionVersion(env.DB, sourceId, versionId);
+  const warnings: string[] = [];
 
   if (existing) {
     await updateProgress(env.DB, job.id, 75, "이미 저장된 원문 버전을 확인하는 중");
     await updateIngestJob(env.DB, sourceId, existing.qualityStatus === "READY" ? "extracted" : "failed", existing.qualityStatus === "READY" ? null : "text_not_ready");
+    if (existing.qualityStatus === "READY") await enqueueVisualExtractionIfActive(env, sourceId, existing.versionId, warnings);
     return {
       result: {
         sourceId,
         textScope: existing.textScope,
         versionId: existing.versionId,
         charCount: existing.charCount,
+        ...(warnings.length ? { warnings } : {}),
       },
       resultRef: { view: "RESERVOIR", sourceId, acquisition: true },
     };
@@ -98,12 +103,14 @@ export async function executeSourceAcquisitionJob(input: ExecuteSourceAcquisitio
   }
 
   await updateIngestJob(env.DB, sourceId, stored.qualityStatus === "READY" ? "extracted" : "failed", stored.qualityStatus === "READY" ? null : "text_not_ready");
+  if (stored.qualityStatus === "READY") await enqueueVisualExtractionIfActive(env, sourceId, stored.versionId, warnings);
   return {
     result: {
       sourceId,
       textScope: acquired.textScope,
       versionId: stored.versionId,
       charCount: acquired.extractedText.length,
+      ...(warnings.length ? { warnings } : {}),
     },
     resultRef: { view: "RESERVOIR", sourceId, acquisition: true },
   };
@@ -144,5 +151,25 @@ async function tryUpdateIngestJobFailed(db: D1Database, sourceId: string, error:
     await updateIngestJob(db, sourceId, "failed", error);
   } catch {
     // The acquisition or version-store error remains the workflow's primary failure.
+  }
+}
+
+async function enqueueVisualExtractionIfActive(
+  env: Env,
+  sourceId: string,
+  sourceVersionId: string,
+  warnings: string[],
+): Promise<void> {
+  const activeVersion = await getActiveVersion(env.DB, sourceId);
+  if (!activeVersion || activeVersion.id !== sourceVersionId) return;
+  try {
+    await enqueueResearchJob(
+      env,
+      { kind: "VISUAL_EXTRACTION", input: { sourceId, sourceVersionId } },
+      "system:source-acquisition",
+    );
+  } catch (error) {
+    const message = error instanceof Error && error.message ? error.message : "visual_extraction_enqueue_failed";
+    warnings.push(`visual_extraction_enqueue_failed:${message}`);
   }
 }
