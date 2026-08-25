@@ -62,4 +62,55 @@ describe("JobCenter", () => {
     await userEvent.click(screen.getByRole("button", { name: "결과 보기" }));
     expect(onResult).toHaveBeenCalledWith(resultRef);
   });
+
+  it("distinguishes web extraction, pdf extraction, and review-needed extraction jobs", async () => {
+    const onResult = vi.fn();
+    render(<JobCenter
+      jobs={[
+        job({
+          id: "job-web",
+          kind: "VISUAL_EXTRACTION",
+          result: {
+            sourceId: "source-1",
+            extractionRunId: "run-web",
+            counts: { selected: 2, review: 0, filtered: 3, unavailable: 0 },
+            diagnostics: { sourceKind: "HTML" },
+          },
+          resultRef: { view: "VISUAL", sourceId: "source-1", extractionRunId: "run-web" },
+        }),
+        job({
+          id: "job-pdf",
+          kind: "VISUAL_EXTRACTION",
+          result: {
+            sourceId: "source-2",
+            extractionRunId: "run-pdf",
+            counts: { selected: 1, review: 0, filtered: 1, unavailable: 0 },
+            diagnostics: { sourceKind: "PDF" },
+          },
+          resultRef: { view: "VISUAL", sourceId: "source-2", extractionRunId: "run-pdf" },
+        }),
+        job({
+          id: "job-review",
+          kind: "VISUAL_EXTRACTION",
+          result: {
+            sourceId: "source-3",
+            extractionRunId: "run-review",
+            counts: { selected: 1, review: 2, filtered: 0, unavailable: 0 },
+            diagnostics: { sourceKind: "HTML" },
+          },
+          resultRef: { view: "VISUAL", sourceId: "source-3", extractionRunId: "run-review" },
+        }),
+      ]}
+      onDismiss={vi.fn()}
+      onRetry={vi.fn()}
+      onResult={onResult}
+    />);
+
+    expect(screen.getByText("웹 이미지 추출 · 완료")).toBeInTheDocument();
+    expect(screen.getByText("PDF 이미지 추출 · 완료")).toBeInTheDocument();
+    expect(screen.getByText("일부 이미지 확인 필요 · 완료")).toBeInTheDocument();
+
+    await userEvent.click(screen.getAllByRole("button", { name: "결과 보기" })[0]);
+    expect(onResult).toHaveBeenCalledWith({ view: "RESERVOIR", sourceId: "source-1", acquisition: true });
+  });
 });

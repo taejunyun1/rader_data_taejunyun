@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type SyntheticEvent } from "react";
+import { useEffect, useRef, useState, type ReactNode, type SyntheticEvent } from "react";
 import SourceAccessBadge, { SourceAcquisitionBadge } from "./SourceAccessBadge";
 import ProvenanceNotice from "./ProvenanceNotice";
 import type { ReadingDocument } from "./types";
@@ -44,7 +44,7 @@ function StoredOriginalText({ url, initialText }: { url: string; initialText?: s
   );
 }
 
-export default function ReadingPane({ document, deepAnalysis, deepAnalysisHistory = [], onOpenDeepHistory }: { document: ReadingDocument; deepAnalysis?: DeepAnalysisViewModel | null; deepAnalysisHistory?: { id: string; model?: string; createdAt: string; costUsd?: number }[]; onOpenDeepHistory?: (id: string) => void }) {
+export default function ReadingPane({ document, deepAnalysis, deepAnalysisHistory = [], onOpenDeepHistory, supplementary }: { document: ReadingDocument; deepAnalysis?: DeepAnalysisViewModel | null; deepAnalysisHistory?: { id: string; model?: string; createdAt: string; costUsd?: number }[]; onOpenDeepHistory?: (id: string) => void; supplementary?: ReactNode }) {
   const acquisitionProvenance = document.acquisition
     ? `원문 범위 ${document.acquisition.textScope} · 수집 방식 ${document.acquisition.extractionMethod} · 품질 ${document.acquisition.qualityStatus}`
     : undefined;
@@ -65,6 +65,7 @@ export default function ReadingPane({ document, deepAnalysis, deepAnalysisHistor
         {document.acquisition?.originalTextUrl
           ? <StoredOriginalText url={document.acquisition.originalTextUrl} initialText={document.originalText} />
           : null}
+        {supplementary}
         <section className="reading-section">
           <p className="reading-section__label">시스템 해석</p>
           {document.summary ? <p className="reading-section__summary">{document.summary}</p> : <p className="reading-section__empty"><strong>분석 내용 없음</strong><span>원문을 읽고 직접 판단해 주세요.</span></p>}

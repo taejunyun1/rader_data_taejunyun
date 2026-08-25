@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { VisualAnalysisSummary, VisualAssetDetail } from "@radar/shared";
 import PdfCropPreview from "./PdfCropPreview";
 import VisualAnalysisEditor from "./VisualAnalysisEditor";
@@ -11,6 +11,7 @@ interface VisualInspectorProps {
   onClose: () => void;
   onRetry: () => Promise<void>;
   onSaveAnalysis: (payload: unknown) => Promise<void>;
+  supplementaryContent?: ReactNode;
 }
 
 type AnalysisTab = "userVerified" | "autoSuggestion";
@@ -88,7 +89,7 @@ function previewMode(asset: VisualAssetDetail): "pdf" | "link" | "image" | "none
   return "none";
 }
 
-export default function VisualInspector({ asset, loading, error, compact, onClose, onRetry, onSaveAnalysis }: VisualInspectorProps) {
+export default function VisualInspector({ asset, loading, error, compact, onClose, onRetry, onSaveAnalysis, supplementaryContent }: VisualInspectorProps) {
   const [tab, setTab] = useState<AnalysisTab>("autoSuggestion");
   const [editing, setEditing] = useState(false);
 
@@ -230,6 +231,7 @@ export default function VisualInspector({ asset, loading, error, compact, onClos
               )}
             </>
           )}
+          {supplementaryContent}
         </>
       )}
     </aside>

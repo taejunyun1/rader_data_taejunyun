@@ -33,6 +33,21 @@ interface ReservoirPdfExtraction {
   nextPageNumber: number | null;
 }
 
+interface ReservoirVisualExtractionRun {
+  id: string;
+  status: string;
+  totalUnits: number;
+  uploadedUnits: number;
+  processedUnits: number;
+  selectedCount: number;
+  reviewCount: number;
+  filteredCount: number;
+  unavailableCount: number;
+  errorCode: string | null;
+  error: string | null;
+  finishedAt: string | null;
+}
+
 async function researchCycleMeta(db: D1Database): Promise<ResearchCycleMeta> {
   const latest = await db.prepare("SELECT created_at FROM distill_sessions ORDER BY created_at DESC LIMIT 1").first<{ created_at: string }>();
   return {
@@ -100,6 +115,33 @@ async function activePdfExtraction(db: D1Database, versionId: string | null): Pr
     remainingPages,
     nextPageNumber,
   };
+}
+
+async function latestVisualExtractionRun(
+  db: D1Database,
+  versionId: string | null,
+  sourceKind: "WEB" | "PDF",
+): Promise<ReservoirVisualExtractionRun | null> {
+  if (!versionId) return null;
+  const sql = sourceKind === "PDF"
+    ? `SELECT id, status, total_units AS totalUnits, uploaded_units AS uploadedUnits,
+              processed_units AS processedUnits, selected_count AS selectedCount,
+              review_count AS reviewCount, filtered_count AS filteredCount,
+              unavailable_count AS unavailableCount, error_code AS errorCode,
+              error, finished_at AS finishedAt
+       FROM visual_extraction_runs
+       WHERE parent_version_id = ? AND origin_kind = 'PDF_PAGE_CROP'
+       ORDER BY created_at DESC LIMIT 1`
+    : `SELECT id, status, total_units AS totalUnits, uploaded_units AS uploadedUnits,
+              processed_units AS processedUnits, selected_count AS selectedCount,
+              review_count AS reviewCount, filtered_count AS filteredCount,
+              unavailable_count AS unavailableCount, error_code AS errorCode,
+              error, finished_at AS finishedAt
+       FROM visual_extraction_runs
+       WHERE parent_version_id = ? AND origin_kind IN ('WEB_EMBED', 'DISCOVERY_EMBED')
+       ORDER BY created_at DESC LIMIT 1`;
+  const row = await db.prepare(sql).bind(versionId).first<ReservoirVisualExtractionRun>();
+  return row ?? null;
 }
 
 reservoir.get("/", async (c) => {
@@ -346,6 +388,11 @@ reservoir.get("/:sourceId", async (c) => {
     acquisitionHasNormalizedText,
   });
   const pdfExtraction = await activePdfExtraction(c.env.DB, typeof source.activeVersionId === "string" ? source.activeVersionId : null);
+  const visualExtractionRun = await latestVisualExtractionRun(
+    c.env.DB,
+    typeof source.activeVersionId === "string" ? source.activeVersionId : null,
+    source.inputFormat === "PDF_TEXT" || source.inputFormat === "PDF_SCAN" ? "PDF" : "WEB",
+  );
 
   const [analysis, deepAnalysis, deepHistory, kws, qs, frags, versions, sigs, visuals] = await Promise.all([
     c.env.DB
@@ -396,6 +443,7 @@ reservoir.get("/:sourceId", async (c) => {
     source,
     acquisition,
     pdfExtraction,
+    visualExtractionRun,
     analysis: analysisPayload,
     analysisMeta: analysis.results?.[0]
       ? { model: analysis.results[0].model, promptVersion: analysis.results[0].prompt_version, createdAt: analysis.results[0].created_at }

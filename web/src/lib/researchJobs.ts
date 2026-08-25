@@ -18,6 +18,38 @@ export function jobLabel(kind: ResearchJobKind): string {
   })[kind];
 }
 
+function visualExtractionSourceKind(job: ResearchJob): "HTML" | "PDF" | null {
+  const result = job.result;
+  if (!result || typeof result !== "object") return null;
+  const diagnostics = (result as { diagnostics?: unknown }).diagnostics;
+  if (!diagnostics || typeof diagnostics !== "object") return null;
+  const sourceKind = (diagnostics as { sourceKind?: unknown }).sourceKind;
+  return sourceKind === "HTML" || sourceKind === "PDF" ? sourceKind : null;
+}
+
+function visualExtractionReviewCount(job: ResearchJob): number {
+  const result = job.result;
+  if (!result || typeof result !== "object") return 0;
+  const counts = (result as { counts?: unknown }).counts;
+  if (!counts || typeof counts !== "object") return 0;
+  return Number((counts as { review?: unknown }).review ?? 0);
+}
+
+export function jobTitle(job: ResearchJob): string {
+  if (job.kind !== "VISUAL_EXTRACTION") return jobLabel(job.kind);
+  if (visualExtractionReviewCount(job) > 0) return "일부 이미지 확인 필요";
+  if (visualExtractionSourceKind(job) === "PDF") return "PDF 이미지 추출";
+  if (visualExtractionSourceKind(job) === "HTML") return "웹 이미지 추출";
+  return jobLabel(job.kind);
+}
+
+export function jobResultTarget(job: ResearchJob): ResearchJobResultRef | null {
+  if (job.resultRef?.view === "VISUAL" && "sourceId" in job.resultRef && typeof job.resultRef.sourceId === "string") {
+    return { view: "RESERVOIR", sourceId: job.resultRef.sourceId, acquisition: true };
+  }
+  return job.resultRef;
+}
+
 export function normalizeResearchJob(value: unknown): ResearchJob | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;

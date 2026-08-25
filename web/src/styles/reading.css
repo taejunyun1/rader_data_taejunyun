@@ -114,6 +114,21 @@
 @media (prefers-reduced-motion: reduce) { .decision-sheet { animation: none; } }
 
 .visual-workspace { display: grid; gap: 16px; }
+.visual-extraction-status { display: grid; gap: 6px; margin: 14px 0 18px; padding: 14px 16px; border: 1px solid var(--color-line); border-radius: var(--radius-md); background: var(--color-soft); }
+.visual-extraction-status h3, .filtered-visuals__item strong { margin: 0; font-size: 14px; }
+.visual-extraction-status p:not(.reading-section__label), .filtered-visuals__item p { margin: 0; color: var(--color-muted); font-size: 11px; line-height: 1.6; }
+.filtered-visuals { display: grid; gap: 12px; margin-bottom: 16px; }
+.filtered-visuals__body { display: grid; gap: 12px; padding: 14px 16px; border: 1px solid var(--color-line); border-radius: var(--radius-md); background: var(--color-soft); }
+.filtered-visuals__summary { display: flex; flex-wrap: wrap; gap: 8px; color: var(--color-muted); font-size: 10px; }
+.filtered-visuals__summary span { padding: 4px 8px; border: 1px solid var(--color-line); border-radius: 999px; background: var(--color-surface); }
+.filtered-visuals__list { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.filtered-visuals__item { display: grid; gap: 10px; padding-top: 10px; border-top: 1px solid var(--color-line); }
+.filtered-visuals__item:first-child { padding-top: 0; border-top: 0; }
+.filtered-visuals__actions, .visual-assignment__options { display: flex; flex-wrap: wrap; gap: 8px; }
+.visual-assignment { display: grid; gap: 6px; }
+.visual-assignment > span { color: var(--color-muted); font-size: 10px; }
+.visual-assignment input { min-height: 38px; padding: 8px 10px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-surface); color: var(--color-ink); font: inherit; }
+.visual-assignment__options .ui-button-secondary.is-active { border-color: var(--color-accent); background: var(--color-accent-soft); color: var(--color-accent); }
 .visual-workspace--inspecting { grid-template-columns: minmax(0, 1fr) minmax(320px, 420px); align-items: start; }
 .visual-asset-grid { align-content: start; max-height: 72vh; overflow-y: auto; scrollbar-gutter: stable; }
 .visual-asset-card__button { display: grid; width: 100%; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; }

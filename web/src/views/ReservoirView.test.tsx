@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PdfVisualExtractionResult } from "../lib/pdfVisualExtraction";
@@ -15,6 +15,11 @@ vi.mock("../lib/pdfVisualExtraction", () => ({
 }));
 
 import ReservoirView from "./ReservoirView";
+
+function setViewport(width: number) {
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+  window.dispatchEvent(new Event("resize"));
+}
 
 const sourceDetail = {
   source: { id: "source-1", title: "자료 A", authors: "저자", kind: "PAPER_ACADEMIC", reliability: "PRIMARY", origin: "upload", year: 2025, canonicalUrl: "https://example.com/paper" as string | null, provenanceClass: "SOURCE", createdAt: "2026-08-21", markedForNextResearch: 1, inputFormat: "PDF_TEXT", activeVersionId: "version-source-1" },
@@ -106,6 +111,27 @@ const visualDetail: VisualAssetDetail = {
   extractionRun: null,
 };
 
+const unassignedVisualSummary: VisualAssetSummary = {
+  ...visualSummary,
+  id: "asset-unassigned",
+  parentSourceId: null,
+  parentVersionId: null,
+  originKind: "PERSONAL_UPLOAD",
+  sourceUrl: null,
+  caption: "개인 업로드 이미지",
+  storageState: "ARCHIVAL",
+  rightsStatus: "PERSONAL",
+};
+
+const unassignedVisualDetail: VisualAssetDetail = {
+  ...visualDetail,
+  ...unassignedVisualSummary,
+  autoSuggestion: unassignedVisualSummary.analysis,
+  userVerified: null,
+  rightsBasis: "개인 작업 업로드",
+  rightsReviewedAt: "2026-08-25T11:05:00.000Z",
+};
+
 let deepAnalysisResult: { status: number; body: Record<string, unknown> };
 type TestSourceDetail = Omit<typeof sourceDetail, "source" | "acquisition"> & {
   source: Omit<typeof sourceDetail.source, "canonicalUrl"> & { canonicalUrl: string | null };
@@ -130,8 +156,11 @@ let viewSignalFailure = false;
 let sourceOneDetailFailure = false;
 let pdfExtractionResult: PdfVisualExtractionResult;
 let currentVisualDetail: VisualAssetDetail;
+let currentUnassignedVisualDetail: VisualAssetDetail;
+let currentUnassignedVisuals: VisualAssetSummary[];
 
 beforeEach(() => {
+  setViewport(1280);
   let requestedWatching = false;
   deepAnalysisResult = { status: 202, body: { job: { id: "deep-job" }, reused: false } };
   currentSourceDetail = sourceDetail;
@@ -148,6 +177,8 @@ beforeEach(() => {
   viewSignalFailure = false;
   sourceOneDetailFailure = false;
   currentVisualDetail = visualDetail;
+  currentUnassignedVisualDetail = unassignedVisualDetail;
+  currentUnassignedVisuals = [];
   pdfExtractionResult = {
     runId: "run-visual-1",
     status: "QUEUED",
@@ -174,7 +205,25 @@ beforeEach(() => {
     if (url === "/api/reservoir/source-1" && sourceOneDetailFailure) return Promise.resolve(new Response("", { status: 500 }));
     if (url === "/api/reservoir/source-1") return Promise.resolve(new Response(JSON.stringify(requestedWatching ? { ...currentSourceDetail, source: { ...currentSourceDetail.source, decisionStatus: "watch" } } : currentSourceDetail)));
     if (url === "/api/reservoir/source-2") return Promise.resolve(new Response(JSON.stringify(sourceDetailB)));
+    if (url === "/api/visual-assets?unassigned=1") return Promise.resolve(new Response(JSON.stringify({ items: currentUnassignedVisuals })));
     if (url === "/api/visual-assets/asset-1") return Promise.resolve(new Response(JSON.stringify({ asset: currentVisualDetail })));
+    if (url === "/api/visual-assets/asset-unassigned") return Promise.resolve(new Response(JSON.stringify({ asset: currentUnassignedVisualDetail })));
+    if (url === "/api/visual-assets/asset-unassigned/assignment" && init?.method === "PATCH") {
+      currentUnassignedVisuals = [];
+      currentUnassignedVisualDetail = {
+        ...currentUnassignedVisualDetail,
+        parentSourceId: "source-1",
+        parentVersionId: "version-source-1",
+      };
+      return Promise.resolve(new Response(JSON.stringify({
+        asset: {
+          ...unassignedVisualSummary,
+          parentSourceId: "source-1",
+          parentVersionId: "version-source-1",
+          updatedAt: "2026-08-25T11:06:00.000Z",
+        },
+      })));
+    }
     const deepHistoryMatch = url.match(/^\/api\/reservoir\/source-1\/deep-analysis\/(analysis-[12])$/);
     if (deepHistoryMatch && pendingDeepHistory[deepHistoryMatch[1]]) return pendingDeepHistory[deepHistoryMatch[1]];
     if (url === "/api/reservoir/source-1/deep-analysis" && init?.method === "POST") {
@@ -747,6 +796,88 @@ describe("ReservoirView", () => {
     expect(screen.getAllByText("관찰 중").length).toBeGreaterThanOrEqual(2);
     expect(screen.getAllByRole("button", { name: "판단 변경" })).toHaveLength(2);
     expect(screen.queryByRole("button", { name: "보관하기" })).not.toBeInTheDocument();
+  });
+
+  it("assigns an unassigned personal visual to a chosen source and synchronizes both panels", async () => {
+    currentUnassignedVisuals = [unassignedVisualSummary];
+    currentSourceDetail = {
+      ...sourceDetail,
+      visuals: [],
+    };
+    render(<ReservoirView />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+    expect(await screen.findByText("시스템이 정리한 내용")).toBeInTheDocument();
+
+    const unassignedSection = screen.getByLabelText("연결되지 않은 시각 자료");
+    await userEvent.click(within(unassignedSection).getByRole("button", { name: /개인 업로드 이미지/ }));
+
+    const combobox = await screen.findByRole("combobox", { name: "연결할 자료 검색" });
+    await userEvent.type(combobox, "자료 A");
+    await userEvent.click(screen.getByRole("button", { name: "자료 A에 연결" }));
+    await userEvent.click(screen.getByRole("button", { name: "이 자료에 연결" }));
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+      "/api/visual-assets/asset-unassigned/assignment",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ sourceId: "source-1" }),
+      }),
+    ));
+
+    await waitFor(() => {
+      expect(screen.queryByLabelText("연결되지 않은 시각 자료")).not.toBeInTheDocument();
+    });
+    expect(screen.getByRole("region", { name: "시각 자료" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /개인 업로드 이미지/ })).toBeInTheDocument();
+  });
+
+  it("keeps source selection, index scroll, reading scroll, and focus when the visual inspector closes", async () => {
+    currentSourceDetail = {
+      ...sourceDetail,
+      visuals: [visualSummary],
+    };
+    render(<ReservoirView />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+    const indexRegion = screen.getByRole("region", { name: "자료 목록" });
+    const readingRegion = screen.getByRole("region", { name: "자료 읽기" });
+    indexRegion.scrollTop = 140;
+    readingRegion.scrollTop = 220;
+
+    const visualCard = await screen.findByRole("button", { name: /도판 1/ });
+    await userEvent.click(visualCard);
+    expect(await screen.findByRole("complementary", { name: "시각 자료 상세" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "닫기" }));
+
+    await waitFor(() => expect(visualCard).toHaveFocus());
+    expect(screen.getByRole("button", { name: /자료 A/ })).toHaveAttribute("aria-current", "true");
+    expect(indexRegion.scrollTop).toBe(140);
+    expect(readingRegion.scrollTop).toBe(220);
+  });
+
+  it("keeps source selection, index scroll, reading scroll, and focus when the pdf progress sheet closes", async () => {
+    setViewport(640);
+    render(<ReservoirView />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+    const indexRegion = screen.getByRole("region", { name: "자료 목록" });
+    const readingRegion = screen.getByRole("region", { name: "자료 읽기" });
+    indexRegion.scrollTop = 110;
+    readingRegion.scrollTop = 260;
+
+    const trigger = screen.getByRole("button", { name: "시각 자료 찾기" });
+    trigger.focus();
+    await userEvent.click(trigger);
+
+    const dialog = await screen.findByRole("dialog", { name: "PDF 시각 자료 추출" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "닫기" }));
+
+    await waitFor(() => expect(trigger).toHaveFocus());
+    expect(screen.getByRole("button", { name: /자료 A/ })).toHaveAttribute("aria-current", "true");
+    expect(indexRegion.scrollTop).toBe(110);
+    expect(readingRegion.scrollTop).toBe(260);
   });
 
   it("opens the visual inspector from the reservoir reading panel and shows the verified analysis by default", async () => {

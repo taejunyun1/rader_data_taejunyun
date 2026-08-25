@@ -219,6 +219,49 @@ visualAssets.patch("/:id/assignment", async (c) => {
   return c.json({ asset: await loadAssetSummary(c.env.DB, visualAssetId) });
 });
 
+visualAssets.patch("/:id/selection", async (c) => {
+  const visualAssetId = c.req.param("id");
+  const asset = await getVisualAsset(c.env.DB, visualAssetId);
+  if (!asset) return c.json({ error: "not_found" }, 404);
+  const body = await c.req.json<{ selectionStatus?: unknown }>().catch(() => ({} as { selectionStatus?: unknown }));
+  const selectionStatus = body.selectionStatus === "REVIEW" || body.selectionStatus === "SELECTED"
+    ? body.selectionStatus
+    : null;
+  if (!selectionStatus) return c.json({ error: "selection_status_invalid" }, 400);
+  if (asset.selectionStatus !== "DECORATIVE" && asset.selectionStatus !== "DUPLICATE") {
+    return c.json({ error: "selection_override_not_allowed" }, 409);
+  }
+
+  const now = new Date().toISOString();
+  const nextReason = selectionStatus === "SELECTED"
+    ? "사용자가 필터링된 이미지를 선택 목록으로 복구함"
+    : "사용자가 필터링된 이미지를 검토 목록으로 복구함";
+  const preservedDecision = `${asset.selectionStatus}:${asset.selectionReason ?? "auto_decision_missing"}`;
+
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      `UPDATE visual_assets
+       SET selection_status = ?,
+           selection_reason = ?,
+           updated_at = ?
+       WHERE id = ?`
+    ).bind(selectionStatus, nextReason, now, visualAssetId),
+    c.env.DB.prepare(
+      `INSERT INTO visual_relations
+       (id, from_visual_asset_id, to_visual_asset_id, relation_kind, created_by, description, related_source_id, related_thread_id, created_at)
+       VALUES (?, ?, NULL, 'SELECTION_OVERRIDE', 'USER', ?, ?, NULL, ?)`
+    ).bind(
+      uuid(),
+      visualAssetId,
+      `selection override preserved ${preservedDecision}`,
+      asset.parentSourceId,
+      now,
+    ),
+  ]);
+
+  return c.json({ asset: await loadAssetSummary(c.env.DB, visualAssetId) });
+});
+
 visualAssets.patch("/:id/rights", async (c) => {
   const visualAssetId = c.req.param("id");
   const asset = await getVisualAsset(c.env.DB, visualAssetId);

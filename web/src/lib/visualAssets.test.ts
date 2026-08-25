@@ -1504,6 +1504,59 @@ describe("visual asset routes", () => {
     });
   });
 
+  it("recovers decorative or duplicate assets without erasing the original automated decision audit", async () => {
+    const fixture = createVisualAssetRouteFixture();
+    fixture.insertSource({ id: "source-1", activeVersionId: "version-source-1" });
+    fixture.insertSourceVersion({ id: "version-source-1", sourceId: "source-1", version: 1 });
+    fixture.insertAsset({
+      id: "asset-recover",
+      parentSourceId: "source-1",
+      parentVersionId: "version-source-1",
+      selectionStatus: "DUPLICATE",
+      selectionReason: "visual-filter-v1:duplicate_exact",
+      originKind: "WEB_EMBED",
+    });
+    fixture.insertAsset({
+      id: "asset-existing",
+      parentSourceId: "source-1",
+      parentVersionId: "version-source-1",
+      originKind: "WEB_EMBED",
+    });
+    fixture.insertRelation({
+      id: "relation-duplicate",
+      fromVisualAssetId: "asset-recover",
+      toVisualAssetId: "asset-existing",
+      relationKind: "DUPLICATE_OF",
+      createdBy: "SYSTEM",
+      description: "자동 중복 판정",
+    });
+
+    const { default: visualAssets } = await import("../../../worker/src/routes/visualAssets");
+    const response = await visualAssets.request("/asset-recover/selection", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ selectionStatus: "REVIEW" }),
+    }, fixture.env);
+
+    expect(response.status).toBe(200);
+    expect(fixture.assetRow("asset-recover")).toMatchObject({
+      selection_status: "REVIEW",
+    });
+    const relations = fixture.relationRowsFor("asset-recover");
+    expect(relations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "relation-duplicate",
+        relation_kind: "DUPLICATE_OF",
+        description: "자동 중복 판정",
+      }),
+      expect.objectContaining({
+        relation_kind: "SELECTION_OVERRIDE",
+        created_by: "USER",
+        description: expect.stringContaining("visual-filter-v1:duplicate_exact"),
+      }),
+    ]));
+  });
+
   it("requires a non-empty basis for PERMITTED rights and records the rights review timestamp", async () => {
     const fixture = createVisualAssetRouteFixture();
     fixture.insertSource({ id: "source-1", activeVersionId: "version-source-1" });
@@ -2396,6 +2449,9 @@ function createVisualAssetRouteFixture() {
     },
     operationRowsFor(visualAssetId: string) {
       return sqlite.prepare("SELECT * FROM visual_asset_operations WHERE visual_asset_id = ? ORDER BY created_at ASC").all(visualAssetId) as Record<string, unknown>[];
+    },
+    relationRowsFor(visualAssetId: string) {
+      return sqlite.prepare("SELECT * FROM visual_relations WHERE from_visual_asset_id = ? ORDER BY created_at ASC, id ASC").all(visualAssetId) as Record<string, unknown>[];
     },
     jobRows() {
       return sqlite.prepare("SELECT * FROM research_jobs ORDER BY created_at ASC, id ASC").all() as Record<string, unknown>[];

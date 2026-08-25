@@ -90,6 +90,29 @@ function buildSummary(overrides: Partial<VisualAssetSummary> = {}): VisualAssetS
   };
 }
 
+function buildExtractionRun(overrides: Partial<VisualAssetDetail["extractionRun"]> = {}) {
+  return {
+    id: "run-1",
+    parentSourceId: "source-1",
+    parentVersionId: "version-1",
+    originKind: "WEB_EMBED" as const,
+    status: "SUCCEEDED" as const,
+    totalUnits: 3,
+    uploadedUnits: 3,
+    processedUnits: 3,
+    selectedCount: 1,
+    reviewCount: 1,
+    filteredCount: 1,
+    unavailableCount: 0,
+    errorCode: null,
+    error: null,
+    createdAt: "2026-08-25T10:12:00.000Z",
+    updatedAt: "2026-08-25T10:13:00.000Z",
+    finishedAt: "2026-08-25T10:14:00.000Z",
+    ...overrides,
+  };
+}
+
 function buildDetail(overrides: Partial<VisualAssetDetail> = {}): VisualAssetDetail {
   return {
     ...buildSummary(),
@@ -388,5 +411,121 @@ describe("Visual workspace", () => {
     await userEvent.click(screen.getByRole("button", { name: "닫기" }));
 
     await waitFor(() => expect(card).toHaveFocus());
+  });
+
+  it("shows extraction state guidance for web and pdf sources before visible assets are ready", () => {
+    const { rerender } = render(
+      <VisualAssetPanel
+        assets={[]}
+        extractionContext={{ sourceKind: "WEB", run: null }}
+      />,
+    );
+
+    expect(screen.getByText("시각 자료 확인 중")).toBeInTheDocument();
+    expect(screen.getByText("저장된 웹 원문에서 연구 가치가 있는 이미지를 추리는 중입니다.")).toBeInTheDocument();
+
+    rerender(
+      <VisualAssetPanel
+        assets={[]}
+        extractionContext={{ sourceKind: "PDF", run: null }}
+      />,
+    );
+
+    expect(screen.getByText("PDF 시각 자료는 직접 시작해야 합니다.")).toBeInTheDocument();
+    expect(screen.getByText("PDF는 브라우저에서 페이지를 나눠 올려야 해서 자동으로 시작하지 않습니다.")).toBeInTheDocument();
+  });
+
+  it("distinguishes empty and status states for no images, all filtered, review needed, rights-safe link-only, and failures", () => {
+    const { rerender } = render(
+      <VisualAssetPanel
+        assets={[]}
+        extractionContext={{ sourceKind: "WEB", run: buildExtractionRun({ totalUnits: 0, processedUnits: 0, selectedCount: 0, reviewCount: 0, filteredCount: 0, unavailableCount: 0 }) }}
+      />,
+    );
+    expect(screen.getByText("이미지 없음")).toBeInTheDocument();
+
+    rerender(
+      <VisualAssetPanel
+        assets={[
+          buildSummary({ id: "filtered-1", selectionStatus: "DECORATIVE", selectionReason: "visual-filter-v1:decorative_signal" }),
+          buildSummary({ id: "filtered-2", selectionStatus: "DUPLICATE", selectionReason: "visual-filter-v1:duplicate_exact" }),
+        ]}
+        extractionContext={{ sourceKind: "WEB", run: buildExtractionRun({ selectedCount: 0, reviewCount: 0, filteredCount: 2 }) }}
+      />,
+    );
+    expect(screen.getByText("모두 필터됨")).toBeInTheDocument();
+
+    rerender(
+      <VisualAssetPanel
+        assets={[buildSummary({ id: "review-1", selectionStatus: "REVIEW" })]}
+        extractionContext={{ sourceKind: "WEB", run: buildExtractionRun({ selectedCount: 0, reviewCount: 1, filteredCount: 0 }) }}
+      />,
+    );
+    expect(screen.getByText("일부 확인 필요")).toBeInTheDocument();
+
+    rerender(
+      <VisualAssetPanel
+        assets={[buildSummary({ id: "link-only-1", storageState: "LINK_ONLY", rightsStatus: "UNKNOWN", selectionStatus: "SELECTED" })]}
+        extractionContext={{ sourceKind: "WEB", run: buildExtractionRun({ selectedCount: 1, reviewCount: 0, filteredCount: 0 }) }}
+      />,
+    );
+    expect(screen.getByText("권리 때문에 링크만 보존")).toBeInTheDocument();
+
+    rerender(
+      <VisualAssetPanel
+        assets={[buildSummary({ id: "failed-1", processingStatus: "FAILED", analysis: null })]}
+        extractionContext={{ sourceKind: "WEB", run: buildExtractionRun({ status: "FAILED", error: "workflow_runtime_failed" }) }}
+      />,
+    );
+    expect(screen.getByRole("heading", { name: "처리 실패" })).toBeInTheDocument();
+  });
+
+  it("hides filtered assets behind a disclosure and recovers decorative or duplicate items through explicit user action", async () => {
+    vi.mocked(fetch).mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/visual-assets/asset-review") return Promise.resolve(new Response(JSON.stringify({ asset: buildDetail({ id: "asset-review", selectionStatus: "REVIEW" }) })));
+      if (url === "/api/visual-assets/asset-dup/selection" && init?.method === "PATCH") {
+        return Promise.resolve(new Response(JSON.stringify({
+          asset: buildSummary({
+            id: "asset-dup",
+            caption: "중복 후보",
+            selectionStatus: "REVIEW",
+            selectionReason: "사용자가 필터링된 이미지를 검토 목록으로 복구함",
+          }),
+        })));
+      }
+      return Promise.resolve(new Response(JSON.stringify({})));
+    });
+
+    render(
+      <VisualAssetPanel
+        assets={[
+          buildSummary({ id: "asset-review", selectionStatus: "REVIEW", caption: "검토 필요 이미지" }),
+          buildSummary({ id: "asset-dup", selectionStatus: "DUPLICATE", selectionReason: "visual-filter-v1:duplicate_exact", caption: "중복 후보" }),
+          buildSummary({ id: "asset-deco", selectionStatus: "DECORATIVE", selectionReason: "visual-filter-v1:decorative_signal", caption: "장식 이미지" }),
+          buildSummary({ id: "asset-unavailable", selectionStatus: "UNAVAILABLE", selectionReason: "visual-filter-v1:unavailable_fetch_timeout", caption: "열 수 없는 이미지" }),
+        ]}
+        extractionContext={{ sourceKind: "WEB", run: buildExtractionRun({ selectedCount: 0, reviewCount: 1, filteredCount: 3, unavailableCount: 1 }) }}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /검토 필요 이미지/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /중복 후보/ })).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "필터링된 이미지 3개" }));
+    expect(screen.getByText("중복 1개")).toBeInTheDocument();
+    expect(screen.getByText("장식/광고 1개")).toBeInTheDocument();
+    expect(screen.getByText("열 수 없음 1개")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "중복 후보 검토 목록으로 복구" }));
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+      "/api/visual-assets/asset-dup/selection",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ selectionStatus: "REVIEW" }),
+      }),
+    ));
+    expect(await screen.findByRole("button", { name: /중복 후보/ })).toBeInTheDocument();
   });
 });
