@@ -1,10 +1,22 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { PdfVisualExtractionResult } from "../lib/pdfVisualExtraction";
+
+const pdfExtractionMocks = vi.hoisted(() => ({
+  startOrResumePdfVisualExtraction: vi.fn(),
+  cancelPdfVisualExtraction: vi.fn(),
+}));
+
+vi.mock("../lib/pdfVisualExtraction", () => ({
+  startOrResumePdfVisualExtraction: pdfExtractionMocks.startOrResumePdfVisualExtraction,
+  cancelPdfVisualExtraction: pdfExtractionMocks.cancelPdfVisualExtraction,
+}));
+
 import ReservoirView from "./ReservoirView";
 
 const sourceDetail = {
-  source: { id: "source-1", title: "자료 A", authors: "저자", kind: "PAPER_ACADEMIC", reliability: "PRIMARY", origin: "upload", year: 2025, canonicalUrl: "https://example.com/paper" as string | null, provenanceClass: "SOURCE", createdAt: "2026-08-21", markedForNextResearch: 1 },
+  source: { id: "source-1", title: "자료 A", authors: "저자", kind: "PAPER_ACADEMIC", reliability: "PRIMARY", origin: "upload", year: 2025, canonicalUrl: "https://example.com/paper" as string | null, provenanceClass: "SOURCE", createdAt: "2026-08-21", markedForNextResearch: 1, inputFormat: "PDF_TEXT", activeVersionId: "version-source-1" },
   acquisition: { textScope: "FULLTEXT" as const, extractionMethod: "HTML_STATIC", qualityStatus: "READY", charCount: 2_400, acquisitionLabel: "원문 수집 완료", canDeepAnalyze: true, originalTextUrl: "/api/reservoir/source-1/original-text" as string | null },
   analysis: { summary: "시스템이 정리한 내용", keywords: ["사진"], questions: ["어떻게 읽을까"], important_fragments: ["원문 문장"] },
   deepAnalysis: null,
@@ -17,7 +29,7 @@ const sourceDetail = {
 };
 const sourceDetailB = {
   ...sourceDetail,
-  source: { ...sourceDetail.source, id: "source-2", title: "자료 B" },
+  source: { ...sourceDetail.source, id: "source-2", title: "자료 B", activeVersionId: "version-source-2" },
   acquisition: { ...sourceDetail.acquisition, originalTextUrl: "/api/reservoir/source-2/original-text" },
   analysis: { ...sourceDetail.analysis, summary: "두 번째 자료 분석" },
 };
@@ -44,6 +56,7 @@ let pendingReservoirLists: Record<string, Promise<Response> | undefined>;
 let pendingTopicResponses: Array<Promise<Response>>;
 let viewSignalFailure = false;
 let sourceOneDetailFailure = false;
+let pdfExtractionResult: PdfVisualExtractionResult;
 
 beforeEach(() => {
   let requestedWatching = false;
@@ -61,6 +74,18 @@ beforeEach(() => {
   pendingTopicResponses = [];
   viewSignalFailure = false;
   sourceOneDetailFailure = false;
+  pdfExtractionResult = {
+    runId: "run-visual-1",
+    status: "QUEUED",
+    totalPages: 85,
+    uploadedPages: 40,
+    remainingPages: 45,
+    nextPageNumber: 41,
+  };
+  pdfExtractionMocks.startOrResumePdfVisualExtraction.mockReset();
+  pdfExtractionMocks.startOrResumePdfVisualExtraction.mockResolvedValue(pdfExtractionResult);
+  pdfExtractionMocks.cancelPdfVisualExtraction.mockReset();
+  pdfExtractionMocks.cancelPdfVisualExtraction.mockResolvedValue(undefined);
   vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url === "/api/reservoir" || url.startsWith("/api/reservoir?")) {
@@ -583,6 +608,7 @@ describe("ReservoirView", () => {
   it("preserves the acquisition deep-analysis block before a paid request", async () => {
     currentSourceDetail = {
       ...sourceDetail,
+      source: { ...sourceDetail.source, inputFormat: "URL_HTML", activeVersionId: "version-source-1" },
       acquisition: {
         ...sourceDetail.acquisition,
         textScope: "METADATA_ONLY",
@@ -599,6 +625,41 @@ describe("ReservoirView", () => {
     expect(screen.getByRole("button", { name: "원문 수집 필요" })).toBeDisabled();
     expect(screen.getByText(/METADATA_ONLY.*REVIEW.*92자/)).toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalledWith("/api/reservoir/source-1/deep-analysis", expect.anything());
+  });
+
+  it("shows pdf visual extraction controls without disturbing the current reading pane", async () => {
+    render(<ReservoirView />);
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+
+    expect(screen.getByRole("button", { name: "시각 자료 찾기" })).toBeInTheDocument();
+    expect(screen.getByText("시스템이 정리한 내용")).toBeInTheDocument();
+  });
+
+  it("starts pdf visual extraction and then offers continue from the checkpoint", async () => {
+    render(<ReservoirView />);
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+    await userEvent.click(screen.getByRole("button", { name: "시각 자료 찾기" }));
+
+    await waitFor(() => expect(pdfExtractionMocks.startOrResumePdfVisualExtraction).toHaveBeenCalledWith(expect.objectContaining({
+      sourceId: "source-1",
+      versionId: "version-source-1",
+      originalUrl: "/api/reservoir/source-1/original?version=version-source-1",
+    })));
+    expect(await screen.findByText("40 / 85페이지 업로드됨")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "계속" })).toBeInTheDocument();
+    expect(screen.getByText("시스템이 정리한 내용")).toBeInTheDocument();
+  });
+
+  it("hides pdf visual extraction controls for non-pdf sources", async () => {
+    currentSourceDetail = {
+      ...sourceDetail,
+      source: { ...sourceDetail.source, inputFormat: "URL_HTML", activeVersionId: "version-source-1" },
+    };
+    render(<ReservoirView />);
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+
+    expect(screen.queryByRole("button", { name: "시각 자료 찾기" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "계속" })).not.toBeInTheDocument();
   });
 
   it("replaces decision buttons with the current status badge", async () => {

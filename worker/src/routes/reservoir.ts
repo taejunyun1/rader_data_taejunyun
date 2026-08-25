@@ -5,6 +5,7 @@ import { parseDeepProfile, DEEP_PROFILES } from "../analysis/deepProfiles";
 import { monthSpendUsd } from "../lib/openai";
 import { enqueueResearchJob } from "../jobs/enqueue";
 import { listVisualAssets } from "../visual/store";
+import { loadReservoirPdfOriginal } from "./visualExtraction";
 
 const reservoir = new Hono<{ Bindings: Env }>();
 const MAX_SOURCE_TEXT_CHARS = 500_000;
@@ -21,6 +22,15 @@ interface AcquisitionColumns {
 interface ResearchCycleMeta {
   lastResearchAt: string | null;
   markSince: string;
+}
+
+interface ReservoirPdfExtraction {
+  runId: string;
+  status: string;
+  totalPages: number;
+  uploadedPages: number;
+  remainingPages: number;
+  nextPageNumber: number | null;
 }
 
 async function researchCycleMeta(db: D1Database): Promise<ResearchCycleMeta> {
@@ -56,6 +66,39 @@ function sourceAcquisitionView(sourceId: string, row: AcquisitionColumns) {
     canDeepAnalyze: readiness.ok,
     originalTextUrl: hasNormalizedText ? `/api/reservoir/${sourceId}/original-text` : null,
     ...(row.acquisitionError ? { acquisitionError: row.acquisitionError } : {}),
+  };
+}
+
+async function activePdfExtraction(db: D1Database, versionId: string | null): Promise<ReservoirPdfExtraction | null> {
+  if (!versionId) return null;
+  const run = await db.prepare(
+    `SELECT id, status, total_units AS totalUnits
+     FROM visual_extraction_runs
+     WHERE parent_version_id = ? AND origin_kind = 'PDF_PAGE_CROP'
+     ORDER BY created_at DESC LIMIT 1`
+  ).bind(versionId).first<{ id: string; status: string; totalUnits: number }>();
+  if (!run) return null;
+  const units = await db.prepare(
+    `SELECT unit_number AS unitNumber, status
+     FROM visual_extraction_units
+     WHERE run_id = ? AND status <> 'DELETED'
+     ORDER BY unit_number ASC`
+  ).bind(run.id).all<{ unitNumber: number; status: string }>();
+  const uploadedPages = (units.results ?? []).map((unit) => unit.unitNumber);
+  const totalPages = Number(run.totalUnits ?? 0);
+  const remainingPages = totalPages > 0
+    ? Array.from({ length: totalPages }, (_, index) => index + 1).filter((pageNumber) => !uploadedPages.includes(pageNumber)).length
+    : 0;
+  const nextPageNumber = totalPages > 0
+    ? Array.from({ length: totalPages }, (_, index) => index + 1).find((pageNumber) => !uploadedPages.includes(pageNumber)) ?? null
+    : null;
+  return {
+    runId: run.id,
+    status: run.status,
+    totalPages,
+    uploadedPages: uploadedPages.length,
+    remainingPages,
+    nextPageNumber,
   };
 }
 
@@ -238,6 +281,23 @@ reservoir.get("/:sourceId/original-text", async (c) => {
   });
 });
 
+reservoir.get("/:sourceId/original", async (c) => {
+  const versionId = c.req.query("version")?.trim() ?? "";
+  if (!versionId) return c.json({ error: "version_required" }, 400);
+  const row = await loadReservoirPdfOriginal(c.env.DB, c.req.param("sourceId"), versionId);
+  if (!row) return c.json({ error: "original_not_available" }, 404);
+  const object = await c.env.ORIGINALS.get(row.active_r2_key!);
+  if (!object?.body) return c.json({ error: "original_not_available" }, 404);
+  return new Response(object.body, {
+    headers: {
+      "Content-Type": "application/pdf",
+      "Cache-Control": "private, no-store",
+      "Content-Disposition": `inline; filename="${safePdfDownloadName(row.title ?? "original")}"`,
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+});
+
 reservoir.get("/:sourceId", async (c) => {
   const id = c.req.param("sourceId");
   const cycle = await researchCycleMeta(c.env.DB);
@@ -247,6 +307,7 @@ reservoir.get("/:sourceId", async (c) => {
               sources.canonical_url AS canonicalUrl, sources.doi, sources.reliability,
               sources.provenance_class AS provenanceClass, sources.status, sources.origin,
               sources.origins_json AS origins, sources.r2_key AS r2Key, sources.topics,
+              sources.input_format AS inputFormat, sources.active_version_id AS activeVersionId,
               sources.metadata_json AS metadata, sources.created_at AS createdAt, sources.updated_at AS updatedAt,
               active.text_scope AS acquisitionTextScope,
               active.extraction_method AS acquisitionExtractionMethod,
@@ -284,6 +345,7 @@ reservoir.get("/:sourceId", async (c) => {
     acquisitionError,
     acquisitionHasNormalizedText,
   });
+  const pdfExtraction = await activePdfExtraction(c.env.DB, typeof source.activeVersionId === "string" ? source.activeVersionId : null);
 
   const [analysis, deepAnalysis, deepHistory, kws, qs, frags, versions, sigs, visuals] = await Promise.all([
     c.env.DB
@@ -333,6 +395,7 @@ reservoir.get("/:sourceId", async (c) => {
   return c.json({
     source,
     acquisition,
+    pdfExtraction,
     analysis: analysisPayload,
     analysisMeta: analysis.results?.[0]
       ? { model: analysis.results[0].model, promptVersion: analysis.results[0].prompt_version, createdAt: analysis.results[0].created_at }
@@ -350,5 +413,9 @@ reservoir.get("/:sourceId", async (c) => {
     visuals: visuals.items,
   });
 });
+
+function safePdfDownloadName(title: string): string {
+  return `${title.replace(/[^a-zA-Z0-9가-힣._-]+/g, "_").slice(0, 100) || "original"}.pdf`;
+}
 
 export default reservoir;
