@@ -124,6 +124,19 @@ Discovery 현장 신호는 CAA News·Association for Art History·ICP 공식 RSS
 - RSS title/summary는 `cleanDiscoverySourceText`에서 CDATA wrapper, XML entity, HTML tag, 중복 공백을 정리한 뒤 관련성·중복 판정에 사용한다. 사용자 custom feed는 저장 시점에도 같은 public URL boundary를 거쳐 localhost/private/non-HTTP(S)/malformed 값을 거부하고, 본문 2 MiB 초과 feed는 `SIZE_LIMIT`로 처리한다.
 - historical backfill은 `POST /api/settings/backfill-discovery`로만 실행한다. `origin LIKE 'discovery:%'`이고 active version이 `FULLTEXT`가 아니거나 1,000자 미만인 자료를 오래된 순으로 회당 최대 10건 선택하며, canonical URL이 없거나 active dedupe job이 있으면 skip한다. 이 backfill과 Keep acquisition에는 자동 cron이 없다. 기존 주간 Discovery 후보/현장 신호 수집 cron은 그대로 별도 운영한다.
 
+### 4-2. Visual Reservoir 추출·권리·보존 경계
+
+- 시각 추출 대상은 세 종류뿐이다. 저장된 원격 HTML source는 `HTML_STATIC`, 저장된 원격 PDF source는 `PDF_REMOTE_TO_MARKDOWN`, 개인 업로드 이미지는 `PERSONAL_UPLOAD`/`USER_UPLOAD` provenance로 취급한다. JS 렌더링 웹페이지, 로그인 우회, live browser scraping, 외부 작품 이미지의 임의 영구 저장은 Task 10 범위가 아니다.
+- HTML 시각 추출은 이미 raw body를 R2에 보존한 source version에서만 시작한다. `<img>`/`<picture>` 등 정적 후보만 다루며, 광고·tracking pixel·반복 로고·장식 이미지는 기본 목록에서 제외할 수 있지만 원본 provenance와 제외 이유는 남긴다. “0건”은 정상 결과이고 실패와 같은 상태로 합치지 않는다.
+- PDF 시각 추출은 page 단위 unit, crop temp object, bbox provenance를 유지한다. 진행 상태는 page checkpoint 기준으로 이어지며, page/crop temp object는 성공 직후 즉시 삭제를 시도하고 남은 terminal-run temp object는 24시간 cleanup 대상이다. 활성 run 또는 최근 run의 temp object는 정리 대상이 아니다.
+- 개인 이미지는 업로드 raw object를 원본으로 보존한 뒤 분석/요약/연결을 진행한다. 실패한 개인 이미지는 같은 asset/job에서 retry할 수 있지만, retry가 새 권리나 새 source 연결을 자동 생성하지는 않는다.
+- rights gate는 `LINK_ONLY`, `PERMITTED`, `USER_OWNED`, `UNKNOWN` 중심으로 운영한다. 외부 권리 불명 또는 증빙 없는 자산은 기본적으로 `LINK_ONLY`이며 persistent `CAPSULE`/`ORIGINAL` 보존을 자동 승격하지 않는다. `PERMITTED` 전환에는 명시적 근거가 필요하고, 근거 없이 deep visual analysis나 장기 보존을 허용하지 않는다.
+- retention/storage transition은 `ORIGINAL`, `CAPSULE`, `TEXT_ONLY`, `LINK_ONLY`를 분리 보존한다. 개인/허용 자산은 기본적으로 Original + Capsule을 유지할 수 있지만, `TEXT_ONLY` 전환은 명시 확인이 필요하고 외부 rights-gated 자산에는 허용되지 않는다. delete/transition 실패는 operation log와 기존 asset state를 남겨 복구·재시도 가능해야 한다.
+- suggestion 상태는 `AUTO_SUGGESTION`과 `USER_VERIFIED`를 분리 저장한다. 사용자의 검토 없이 모델 제안을 확정 상태로 덮어쓰지 않는다. source assignment도 미연결 asset을 특정 source에 연결하는 조작일 뿐, 권리 상태나 provenance를 묵시적으로 바꾸지 않는다.
+- retry 경계는 단계별이다. 개인 이미지 retry는 실패 asset/job를 다시 처리하고, PDF/HTML extraction retry는 기존 stored source를 다시 추출한다. fetch retry, analyze retry, visual retry를 혼동해 한 번의 버튼으로 원격 재수집·재분석·권리 전환을 모두 수행하지 않는다.
+- filter 경계는 기본 노출 목록을 안전하게 줄이기 위한 UX 계약이다. 광고·tracking·중복·장식으로 분류된 후보는 기본 리스트에서 숨길 수 있지만, 복구 경로와 필터 이유를 제공해야 한다. 필터는 source provenance를 삭제하지 않으며, 사용자가 복구한 자산은 이후 review/assignment 흐름에 정상 진입해야 한다.
+- 운영 진단은 정상 0건, 일부 unit 실패, 권리 차단, 월 예산 차단, filtered recovery, cleanup failure를 서로 다른 상태로 설명해야 한다. Job Center/inspection payload에는 run 상태, 추출/중복/filtered/rights-gated/cleanup-failure count, bbox/page provenance, retry 가능 단계가 남아야 한다. 월 예산 차단은 `monthly_budget_exhausted`, 심층 분석 gate 미충족은 `deep_analysis_text_not_ready` 또는 visual review fallback으로 분리 기록한다.
+
 ## 5. 작업 시 반드시 확인할 설계 경계
 
 ### Radar synthesis 실행 주체
