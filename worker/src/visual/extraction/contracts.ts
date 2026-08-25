@@ -40,6 +40,16 @@ export interface VisualExtractionRunRow {
   createdAt: string;
   updatedAt: string;
   finishedAt: string | null;
+  visionCallLimit: number;
+  visionReservationUsd: number;
+  visionBudgetReserved: boolean;
+  visionBudgetBlocked: number;
+  visionSlotsUsed: number;
+  visionAttempted: number;
+  visionCompleted: number;
+  visionFailed: number;
+  visionBlocked: number;
+  visionCapBlocked: number;
 }
 
 export interface VisualExtractionUnitRow {

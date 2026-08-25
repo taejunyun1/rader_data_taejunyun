@@ -1,0 +1,10 @@
+ALTER TABLE visual_extraction_runs ADD COLUMN vision_call_limit INTEGER NOT NULL DEFAULT 80 CHECK (vision_call_limit > 0);
+ALTER TABLE visual_extraction_runs ADD COLUMN vision_reservation_usd REAL NOT NULL DEFAULT 0 CHECK (vision_reservation_usd >= 0);
+ALTER TABLE visual_extraction_runs ADD COLUMN vision_budget_reserved INTEGER NOT NULL DEFAULT 0 CHECK (vision_budget_reserved IN (0, 1));
+ALTER TABLE visual_extraction_runs ADD COLUMN vision_budget_blocked INTEGER NOT NULL DEFAULT 0 CHECK (vision_budget_blocked >= 0);
+ALTER TABLE visual_extraction_runs ADD COLUMN vision_slots_used INTEGER NOT NULL DEFAULT 0 CHECK (vision_slots_used >= 0);
+ALTER TABLE visual_extraction_runs ADD COLUMN vision_attempted INTEGER NOT NULL DEFAULT 0 CHECK (vision_attempted >= 0);
+ALTER TABLE visual_extraction_runs ADD COLUMN vision_completed INTEGER NOT NULL DEFAULT 0 CHECK (vision_completed >= 0);
+ALTER TABLE visual_extraction_runs ADD COLUMN vision_failed INTEGER NOT NULL DEFAULT 0 CHECK (vision_failed >= 0);
+ALTER TABLE visual_extraction_runs ADD COLUMN vision_blocked INTEGER NOT NULL DEFAULT 0 CHECK (vision_blocked >= 0);
+ALTER TABLE visual_extraction_runs ADD COLUMN vision_cap_blocked INTEGER NOT NULL DEFAULT 0 CHECK (vision_cap_blocked >= 0);

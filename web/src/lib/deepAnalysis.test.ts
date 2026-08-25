@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { chunkText, keepVerbatimQuotes, validateDeepPayload } from "../../../worker/src/analysis/deepPrompt";
+import { createVisualExtractionVisionGate, type VisualExtractionVisionGate } from "../../../worker/src/visual/extraction/visionBudget";
 
 vi.mock("cloudflare:workers", () => ({ WorkflowEntrypoint: class {} }));
 
@@ -588,12 +589,14 @@ describe("visual extraction workflow", () => {
 
   it("reuses one extraction reservation and call gate across workflow step retries", async () => {
     let attempts = 0;
+    let extractionGate: VisualExtractionVisionGate | undefined;
     const modelCall = vi.fn().mockResolvedValue("ok");
     const { ResearchJobWorkflow } = await loadDeepAnalysisWorkflow({
       extractionReservationResults: [{ ok: true, reservationId: "reservation-extraction-retry", amountUsd: 0.8 }],
       visualExtractionRunner: async (_env, extractionInput) => {
         attempts += 1;
-        await extractionInput.visionGate.execute(modelCall);
+        extractionGate ??= createVisualExtractionVisionGate(extractionInput.visionBudget);
+        await extractionGate.execute(modelCall);
         if (attempts === 1) throw new Error("transient_extraction_failure");
         return {
           sourceId: "source-retry",
@@ -606,7 +609,7 @@ describe("visual extraction workflow", () => {
             sourceKind: "PDF",
             limits: { htmlCandidates: 40, htmlFetch: 12, pdfPages: 40 },
             blocked: { htmlCandidates: 0, htmlFetch: 0, pdfPages: 0 },
-            vision: extractionInput.visionGate.snapshot(),
+            vision: extractionGate.snapshot(),
           },
         };
       },
@@ -1130,19 +1133,9 @@ async function loadDeepAnalysisWorkflow(input: {
       sourceId: string;
       sourceVersionId: string;
       extractionRunId?: string;
-      visionGate: {
-        execute<T>(callback: () => Promise<T>): Promise<T>;
-        snapshot(): {
-          callLimit: number;
-          reservationUsd: number;
-          budgetReserved: boolean;
-          budgetBlocked: boolean;
-          attempted: number;
-          completed: number;
-          failed: number;
-          blocked: number;
-          capBlocked: number;
-        };
+      visionBudget: {
+        budgetReserved: boolean;
+        reservationUsd: number;
       };
     },
   ) => Promise<NonNullable<typeof input.visualExtractionResults>[number]>;
@@ -1202,9 +1195,9 @@ async function loadDeepAnalysisWorkflow(input: {
       sourceId: string;
       sourceVersionId: string;
       extractionRunId?: string;
-      visionGate: {
-        execute<T>(callback: () => Promise<T>): Promise<T>;
-        snapshot(): unknown;
+      visionBudget: {
+        budgetReserved: boolean;
+        reservationUsd: number;
       };
     }) => {
       if (input.visualExtractionRunner) return input.visualExtractionRunner(_env, _jobInput as never);

@@ -25,7 +25,8 @@ Implemented the seven backend Important findings from the final review on `main`
 
 4. **VISUAL_EXTRACTION budget and call cap**
    - Added one extraction-wide budget reservation derived from the existing `$0.01` visual reservation and the internal 80-call ceiling.
-   - Every extraction vision invocation uses one shared request gate; workflow-step retries reuse that gate.
+   - Persisted the reservation, call slots, cumulative request/completion/failure/block diagnostics, and the 80-call limit on each extraction run in D1.
+   - Workflow retries/reconstruction pass the serializable reservation result; the extraction runner rebuilds its gate from the durable run state and atomically claims each vision slot before invoking the model.
    - Budget or cap denial prevents the model call, leaves the candidate in `REVIEW`, and records attempted/completed/failed/blocked/cap usage diagnostics.
    - Reservations are released on success and failure; a budget denial does not block the extraction job.
 
@@ -47,6 +48,7 @@ Implemented the seven backend Important findings from the final review on `main`
 ### Runtime
 
 - `worker/wrangler.jsonc`
+- `worker/migrations/0019_visual_extraction_vision_budget.sql`
 - `worker/src/analysis/budgetReservation.ts`
 - `worker/src/ingestion/acquireRemoteSource.ts`
 - `worker/src/ingestion/fetchRemoteDocument.ts`
@@ -79,6 +81,7 @@ Implemented the seven backend Important findings from the final review on `main`
 ## Verification
 
 - Focused backend/web Vitest suites: passing.
+- Follow-up focused suites (`visualAssets`, `deepAnalysis`, `pdfVisualExtraction`): 92 tests passed, including D1-backed gate reconstruction across two attempts with exactly 80 model calls and cumulative diagnostics.
 - Workspace typecheck (`shared`, `worker`, `web`): passing.
 - `git diff --check`: passing.
 - Full web Vitest suite: 393 passed, 4 failed in the unchanged `src/views/DiscoverView.test.tsx` modal flow. Running that file alone reproduces the same four failures. Those UI failures are outside this backend remediation scope and were not modified.
@@ -86,6 +89,7 @@ Implemented the seven backend Important findings from the final review on `main`
 ## Limitations and operational notes
 
 - No deploy, D1 migration application, live R2 operation, or live Cloudflare subrequest was performed.
+- Migration `0019_visual_extraction_vision_budget.sql` is committed but has not been applied to a live D1 database.
 - `global_fetch_strictly_public` is covered by configuration and fetch-boundary tests; live platform enforcement requires the next authorized deployment/runtime verification.
 - Extraction still processes at most 40 PDF page units per invocation. Pages beyond that limit remain represented by the preserved total/checkpoint and stay retryable; the client now uploads all chunks instead of silently truncating after page 40.
 - Independent subagent review was unavailable in this session; the scoped diff received a manual security and Cloudflare Workers best-practices review.

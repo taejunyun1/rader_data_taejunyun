@@ -16,9 +16,25 @@ export interface VisualExtractionVisionDiagnostics {
   capBlocked: number;
 }
 
+export interface VisualExtractionVisionPersistenceState {
+  diagnostics: VisualExtractionVisionDiagnostics;
+  slotsUsed: number;
+}
+
+export interface VisualExtractionVisionPersistence {
+  load(): Promise<VisualExtractionVisionPersistenceState>;
+  seed(input: { budgetReserved: boolean; reservationUsd: number }): Promise<VisualExtractionVisionPersistenceState>;
+  recordRequest(): Promise<VisualExtractionVisionPersistenceState>;
+  claimSlot(): Promise<{ claimed: boolean; state: VisualExtractionVisionPersistenceState }>;
+  recordBlocked(reason: VisualExtractionVisionBlockReason): Promise<VisualExtractionVisionPersistenceState>;
+  recordCompleted(): Promise<VisualExtractionVisionPersistenceState>;
+  recordFailed(): Promise<VisualExtractionVisionPersistenceState>;
+}
+
 export interface VisualExtractionVisionGate {
   execute<T>(modelCall: () => Promise<T>): Promise<T>;
   snapshot(): VisualExtractionVisionDiagnostics;
+  refresh(): Promise<VisualExtractionVisionDiagnostics>;
 }
 
 export class VisualExtractionVisionBlockedError extends Error {
@@ -29,50 +45,109 @@ export class VisualExtractionVisionBlockedError extends Error {
 }
 
 export function createVisualExtractionVisionGate(input: {
-  budgetReserved: boolean;
-  reservationUsd: number;
+  budgetReserved?: boolean;
+  reservationUsd?: number;
   callLimit?: number;
+  initialState?: VisualExtractionVisionPersistenceState;
+  persistence?: VisualExtractionVisionPersistence;
 }): VisualExtractionVisionGate {
-  const callLimit = input.callLimit ?? VISUAL_EXTRACTION_VISION_CALL_LIMIT;
-  let attempted = 0;
-  let completed = 0;
-  let failed = 0;
-  let blocked = 0;
-  let capBlocked = 0;
+  let state: VisualExtractionVisionPersistenceState = input.initialState ?? {
+    diagnostics: {
+      callLimit: input.callLimit ?? VISUAL_EXTRACTION_VISION_CALL_LIMIT,
+      reservationUsd: input.reservationUsd ?? 0,
+      budgetReserved: input.budgetReserved ?? false,
+      budgetBlocked: !(input.budgetReserved ?? false),
+      attempted: 0,
+      completed: 0,
+      failed: 0,
+      blocked: 0,
+      capBlocked: 0,
+    },
+    slotsUsed: 0,
+  };
+
+  const update = (next: VisualExtractionVisionPersistenceState): void => {
+    state = next;
+  };
+
+  const localPersistence: VisualExtractionVisionPersistence = {
+    async load() {
+      return state;
+    },
+    async seed(seedInput) {
+      update({
+        diagnostics: {
+          ...state.diagnostics,
+          reservationUsd: Math.max(state.diagnostics.reservationUsd, seedInput.reservationUsd),
+          budgetReserved: state.diagnostics.budgetReserved || seedInput.budgetReserved,
+          budgetBlocked: state.diagnostics.budgetBlocked && !seedInput.budgetReserved,
+        },
+        slotsUsed: state.slotsUsed,
+      });
+      return state;
+    },
+    async recordRequest() {
+      update({ ...state, diagnostics: { ...state.diagnostics, attempted: state.diagnostics.attempted + 1 } });
+      return state;
+    },
+    async claimSlot() {
+      if (!state.diagnostics.budgetReserved || state.slotsUsed >= state.diagnostics.callLimit) {
+        return { claimed: false, state };
+      }
+      update({ ...state, slotsUsed: state.slotsUsed + 1 });
+      return { claimed: true, state };
+    },
+    async recordBlocked(reason) {
+      update({
+        ...state,
+        diagnostics: {
+          ...state.diagnostics,
+          blocked: state.diagnostics.blocked + 1,
+          budgetBlocked: state.diagnostics.budgetBlocked || reason === "monthly_budget_exhausted",
+          capBlocked: state.diagnostics.capBlocked + (reason === "visual_extraction_call_limit" ? 1 : 0),
+        },
+      });
+      return state;
+    },
+    async recordCompleted() {
+      update({ ...state, diagnostics: { ...state.diagnostics, completed: state.diagnostics.completed + 1 } });
+      return state;
+    },
+    async recordFailed() {
+      update({ ...state, diagnostics: { ...state.diagnostics, failed: state.diagnostics.failed + 1 } });
+      return state;
+    },
+  };
+  const persistence = input.persistence ?? localPersistence;
 
   return {
     async execute<T>(modelCall: () => Promise<T>): Promise<T> {
-      attempted += 1;
-      if (!input.budgetReserved) {
-        blocked += 1;
+      update(await persistence.recordRequest());
+      if (!state.diagnostics.budgetReserved) {
+        update(await persistence.recordBlocked("monthly_budget_exhausted"));
         throw new VisualExtractionVisionBlockedError("monthly_budget_exhausted");
       }
-      if (attempted - blocked > callLimit) {
-        blocked += 1;
-        capBlocked += 1;
+      const slot = await persistence.claimSlot();
+      update(slot.state);
+      if (!slot.claimed) {
+        update(await persistence.recordBlocked("visual_extraction_call_limit"));
         throw new VisualExtractionVisionBlockedError("visual_extraction_call_limit");
       }
       try {
         const result = await modelCall();
-        completed += 1;
+        update(await persistence.recordCompleted());
         return result;
       } catch (error) {
-        failed += 1;
+        update(await persistence.recordFailed());
         throw error;
       }
     },
     snapshot(): VisualExtractionVisionDiagnostics {
-      return {
-        callLimit,
-        reservationUsd: input.reservationUsd,
-        budgetReserved: input.budgetReserved,
-        budgetBlocked: !input.budgetReserved,
-        attempted,
-        completed,
-        failed,
-        blocked,
-        capBlocked,
-      };
+      return { ...state.diagnostics };
+    },
+    async refresh(): Promise<VisualExtractionVisionDiagnostics> {
+      update(await persistence.load());
+      return { ...state.diagnostics };
     },
   };
 }

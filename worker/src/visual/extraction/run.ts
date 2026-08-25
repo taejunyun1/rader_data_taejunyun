@@ -8,7 +8,7 @@ import { sha256Hex, uuid } from "../../ingestion/ids";
 import { inspectHtmlVisualCandidates } from "./html";
 import { fetchRemoteImage, RemoteImageFetchError } from "./fetchImage";
 import { buildLinkOnlyVisualDraft, filterVisualCandidate, unavailableVisualDecision, type ExistingVisualFingerprint } from "./filter";
-import { ExtractionStore } from "./store";
+import { createVisualExtractionVisionPersistence, ExtractionStore } from "./store";
 import { buildPdfVisionPrompt, parsePdfPageCandidates, type PdfPageCandidate } from "./pdf";
 import {
   createVisualExtractionVisionGate,
@@ -64,6 +64,10 @@ export interface RunVisualExtractionInput {
   sourceVersionId: string;
   extractionRunId?: string;
   visionGate?: VisualExtractionVisionGate;
+  visionBudget?: {
+    budgetReserved: boolean;
+    reservationUsd: number;
+  };
 }
 
 export interface LoadedSourceForExtraction {
@@ -174,7 +178,7 @@ export async function runVisualExtraction(
     runPdfExtraction: runPdfVisualExtraction,
   },
 ): Promise<VisualExtractionRunResult> {
-  const runInput = input.visionGate
+  const runInput = input.visionGate || input.visionBudget
     ? input
     : { ...input, visionGate: createVisualExtractionVisionGate({ budgetReserved: false, reservationUsd: 0 }) };
   const source = await deps.loadSource(env, runInput);
@@ -318,6 +322,7 @@ async function runHtmlVisualExtraction(env: Env, input: RunVisualExtractionInput
       originKind: "WEB_EMBED",
     });
   await markRunRunning(env.DB, run.id);
+  await initializeExtractionVisionGate(env, input, run.id);
 
   const diagnostics: VisualExtractionDiagnostics = {
     sourceKind: "HTML",
@@ -333,6 +338,7 @@ async function runHtmlVisualExtraction(env: Env, input: RunVisualExtractionInput
     : [];
 
   if (!source.r2Key || (input.extractionRunId && existingUnits.length === 0)) {
+    await extractionVisionGate(input).refresh();
     await reconcileCumulativeExtractionState(env.DB, run.id, source, counts, outcomeCounts, diagnostics);
     await ExtractionStore.finishRun(env.DB, { runId: run.id, counts, status: "SUCCEEDED" });
     return {
@@ -454,7 +460,7 @@ async function runHtmlVisualExtraction(env: Env, input: RunVisualExtractionInput
   }
 
   const status = failedUnits > 0 ? "PARTIAL" : "SUCCEEDED";
-  diagnostics.vision = extractionVisionGate(input).snapshot();
+  diagnostics.vision = await extractionVisionGate(input).refresh();
   await reconcileCumulativeExtractionState(env.DB, run.id, source, counts, outcomeCounts, diagnostics);
   await ExtractionStore.finishRun(env.DB, { runId: run.id, counts, status });
   logVisualExtractionDiagnostic({
@@ -482,6 +488,7 @@ async function runPdfVisualExtraction(env: Env, input: RunVisualExtractionInput,
       originKind: "PDF_PAGE_CROP",
     });
   await markRunRunning(env.DB, run.id);
+  await initializeExtractionVisionGate(env, input, run.id);
 
   const diagnostics: VisualExtractionDiagnostics = {
     sourceKind: "PDF",
@@ -656,7 +663,7 @@ async function runPdfVisualExtraction(env: Env, input: RunVisualExtractionInput,
   }
 
   const status = failedUnits > 0 ? "PARTIAL" : "SUCCEEDED";
-  diagnostics.vision = extractionVisionGate(input).snapshot();
+  diagnostics.vision = await extractionVisionGate(input).refresh();
   await reconcileCumulativeExtractionState(env.DB, run.id, source, counts, outcomeCounts, diagnostics);
   await ExtractionStore.finishRun(env.DB, { runId: run.id, counts, status });
   logVisualExtractionDiagnostic({
@@ -679,6 +686,16 @@ async function markRunRunning(db: D1Database, runId: string): Promise<void> {
   await db.prepare("UPDATE visual_extraction_runs SET status = 'RUNNING', updated_at = ? WHERE id = ?")
     .bind(new Date().toISOString(), runId)
     .run();
+}
+
+async function initializeExtractionVisionGate(env: Env, input: RunVisualExtractionInput, runId: string): Promise<void> {
+  if (input.visionGate) return;
+  const persistence = createVisualExtractionVisionPersistence(env.DB, runId);
+  await persistence.seed(input.visionBudget ?? { budgetReserved: false, reservationUsd: 0 });
+  input.visionGate = createVisualExtractionVisionGate({
+    persistence,
+    initialState: await persistence.load(),
+  });
 }
 
 async function ensureExistingRun(
@@ -741,13 +758,31 @@ async function reconcileCumulativeExtractionState(
       `SELECT selected_count AS selectedCount,
               review_count AS reviewCount,
               filtered_count AS filteredCount,
-              unavailable_count AS unavailableCount
+              unavailable_count AS unavailableCount,
+              vision_call_limit AS visionCallLimit,
+              vision_reservation_usd AS visionReservationUsd,
+              vision_budget_reserved AS visionBudgetReserved,
+              vision_budget_blocked AS visionBudgetBlocked,
+              vision_attempted AS visionAttempted,
+              vision_completed AS visionCompleted,
+              vision_failed AS visionFailed,
+              vision_blocked AS visionBlocked,
+              vision_cap_blocked AS visionCapBlocked
        FROM visual_extraction_runs WHERE id = ?`
     ).bind(runId).first<{
       selectedCount: number;
       reviewCount: number;
       filteredCount: number;
       unavailableCount: number;
+      visionCallLimit?: number;
+      visionReservationUsd?: number;
+      visionBudgetReserved?: number;
+      visionBudgetBlocked?: number;
+      visionAttempted?: number;
+      visionCompleted?: number;
+      visionFailed?: number;
+      visionBlocked?: number;
+      visionCapBlocked?: number;
     }>(),
     loadPriorExtractionResult(db, runId, diagnostics),
   ]);
@@ -766,6 +801,19 @@ async function reconcileCumulativeExtractionState(
   outcomeCounts.rightsGated = persisted.outcomeCounts.rightsGated;
   outcomeCounts.cleanupFailures += priorResult?.outcomeCounts.cleanupFailures ?? 0;
   Object.assign(diagnostics, mergeVisualExtractionDiagnostics(priorResult?.diagnostics ?? null, diagnostics));
+  if (runRow && runRow.visionCallLimit != null) {
+    diagnostics.vision = {
+      callLimit: Number(runRow.visionCallLimit),
+      reservationUsd: Number(runRow.visionReservationUsd ?? 0),
+      budgetReserved: Number(runRow.visionBudgetReserved ?? 0) === 1,
+      budgetBlocked: Number(runRow.visionBudgetBlocked ?? 0) > 0 || Number(runRow.visionBudgetReserved ?? 0) === 0,
+      attempted: Number(runRow.visionAttempted ?? 0),
+      completed: Number(runRow.visionCompleted ?? 0),
+      failed: Number(runRow.visionFailed ?? 0),
+      blocked: Number(runRow.visionBlocked ?? 0),
+      capBlocked: Number(runRow.visionCapBlocked ?? 0),
+    };
+  }
 }
 
 async function loadPriorExtractionResult(

@@ -25,7 +25,6 @@ import { analyzeVisualAsset } from "../visual/analyzer";
 import { markVisualProcessingError } from "../visual/store";
 import { enqueueResearchJob } from "../jobs/enqueue";
 import { runVisualExtraction, type VisualExtractionDiagnostics } from "../visual/extraction/run";
-import { createVisualExtractionVisionGate, type VisualExtractionVisionGate } from "../visual/extraction/visionBudget";
 
 class JobBlockedError extends Error {
   constructor(public readonly code: string, message: string) {
@@ -93,14 +92,10 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
           },
         )
         : null;
-      const extractionVisionGate = extractionBudget
-        ? createVisualExtractionVisionGate(extractionBudget)
-        : undefined;
-
       const result = await step.do<WorkflowStepResult>(
         `execute-${job.kind.toLowerCase()}`,
         { retries: { limit: 1, delay: "5 seconds", backoff: "exponential" }, timeout: "15 minutes" },
-        async () => this.execute(job, extractionVisionGate),
+        async () => this.execute(job, extractionBudget ?? undefined),
       );
 
       if (job.kind === "VISUAL_TRANSFORM") {
@@ -152,7 +147,10 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
     }
   }
 
-  private async execute(job: ResearchJob, extractionVisionGate?: VisualExtractionVisionGate): Promise<WorkflowStepResult> {
+  private async execute(
+    job: ResearchJob,
+    extractionBudget?: { budgetReserved: boolean; reservationUsd: number },
+  ): Promise<WorkflowStepResult> {
     if (job.kind === "DISCOVERY_RUN") {
       await updateJobProgress(this.env.DB, job.id, 20, "발견 방향을 읽는 중");
       const input = job.input as { divergence: number; profile: Parameters<typeof runDiscovery>[1] extends number ? never : { original: { keywords: string[]; strength: number }; counter: { keywords: string[]; strength: number }; updatedAt: string } };
@@ -242,8 +240,8 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
       }
       await updateJobProgress(this.env.DB, job.id, 30, "시각 후보를 정리하는 중");
       const input = job.input as { sourceId: string; sourceVersionId: string; extractionRunId?: string };
-      if (!extractionVisionGate) throw new Error("visual_extraction_vision_gate_missing");
-      const extracted = await runVisualExtraction(this.env, { ...input, visionGate: extractionVisionGate });
+      if (!extractionBudget) throw new Error("visual_extraction_budget_missing");
+      const extracted = await runVisualExtraction(this.env, { ...input, visionBudget: extractionBudget });
       return {
         result: {
           sourceId: extracted.sourceId,

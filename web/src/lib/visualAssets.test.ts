@@ -29,6 +29,15 @@ describe("visual extraction migration", () => {
 
     expect(migrationSql).not.toMatch(/^\s*(?:BEGIN|COMMIT)\s*;/im);
   });
+
+  it("adds durable visual vision budget counters without transaction wrappers", () => {
+    const migrationSql = readFileSync(join(process.cwd(), "../worker/migrations/0019_visual_extraction_vision_budget.sql"), "utf8");
+
+    expect(migrationSql).not.toMatch(/^\s*(?:BEGIN|COMMIT)\s*;/im);
+    expect(migrationSql).toContain("vision_slots_used");
+    expect(migrationSql).toContain("vision_attempted");
+    expect(migrationSql).toContain("DEFAULT 80");
+  });
 });
 
 describe("visual extraction vision budget", () => {
@@ -77,6 +86,59 @@ describe("visual extraction vision budget", () => {
       failed: 0,
       blocked: 1,
       capBlocked: 1,
+    });
+  });
+
+  it("reconstructs the vision gate from the durable extraction run after a workflow restart", async () => {
+    const { ExtractionStore, createVisualExtractionVisionPersistence } = await import(
+      "../../../worker/src/visual/extraction/store"
+    );
+    const { createVisualExtractionVisionGate } = await import(
+      "../../../worker/src/visual/extraction/visionBudget"
+    );
+    const db = createExtractionDb();
+    const run = await ExtractionStore.createOrResumeRun(db, {
+      parentSourceId: "source-restart",
+      parentVersionId: "version-restart",
+      originKind: "PDF_PAGE_CROP",
+    });
+    const persistence = createVisualExtractionVisionPersistence(db, run.id);
+    await persistence.seed({ budgetReserved: true, reservationUsd: 0.8 });
+    const modelCall = vi.fn().mockResolvedValue("ok");
+
+    const firstAttemptState = await persistence.load();
+    const firstAttemptGate = createVisualExtractionVisionGate({
+      persistence,
+      initialState: firstAttemptState,
+    });
+    for (let call = 0; call < 40; call += 1) {
+      await firstAttemptGate.execute(modelCall);
+    }
+
+    const reconstructedPersistence = createVisualExtractionVisionPersistence(db, run.id);
+    const reconstructedGate = createVisualExtractionVisionGate({
+      persistence: reconstructedPersistence,
+      initialState: await reconstructedPersistence.load(),
+    });
+    for (let call = 0; call < 40; call += 1) {
+      await reconstructedGate.execute(modelCall);
+    }
+    await expect(reconstructedGate.execute(modelCall)).rejects.toMatchObject({
+      reason: "visual_extraction_call_limit",
+    });
+    await reconstructedGate.refresh();
+
+    expect(modelCall).toHaveBeenCalledTimes(80);
+    expect(reconstructedGate.snapshot()).toMatchObject({
+      attempted: 81,
+      completed: 80,
+      failed: 0,
+      blocked: 1,
+      capBlocked: 1,
+    });
+    await expect(reconstructedPersistence.load()).resolves.toMatchObject({
+      diagnostics: expect.objectContaining({ attempted: 81, completed: 80, blocked: 1, capBlocked: 1 }),
+      slotsUsed: 80,
     });
   });
 });
@@ -2702,7 +2764,31 @@ type RunState = {
   createdAt: string;
   updatedAt: string;
   finishedAt: string | null;
+  visionCallLimit?: number;
+  visionReservationUsd?: number;
+  visionBudgetReserved?: number;
+  visionBudgetBlocked?: number;
+  visionSlotsUsed?: number;
+  visionAttempted?: number;
+  visionCompleted?: number;
+  visionFailed?: number;
+  visionBlocked?: number;
+  visionCapBlocked?: number;
 };
+
+function normalizeVisionRunState(run: RunState): RunState {
+  run.visionCallLimit ??= 80;
+  run.visionReservationUsd ??= 0;
+  run.visionBudgetReserved ??= 0;
+  run.visionBudgetBlocked ??= 0;
+  run.visionSlotsUsed ??= 0;
+  run.visionAttempted ??= 0;
+  run.visionCompleted ??= 0;
+  run.visionFailed ??= 0;
+  run.visionBlocked ??= 0;
+  run.visionCapBlocked ??= 0;
+  return run;
+}
 
 type UnitState = {
   id: string;
@@ -3276,7 +3362,7 @@ function createExtractionDb(seed: {
   };
 } = {}): D1Database & { state: { runs: RunState[]; units: UnitState[] } } {
   const state = {
-    runs: [...(seed.runs ?? [])],
+    runs: [...(seed.runs ?? [])].map(normalizeVisionRunState),
     units: [...(seed.units ?? [])],
   };
 
@@ -3306,7 +3392,7 @@ function createExtractionDb(seed: {
         },
         async run() {
           if (query.includes("visual_extraction_runs") && query.includes("INSERT")) {
-            const [id, parentSourceId, parentVersionId, originKind, status, totalUnits, uploadedUnits, processedUnits, selectedCount, reviewCount, filteredCount, unavailableCount, errorCode, error, createdAt, updatedAt, finishedAt] = params as [
+            const [id, parentSourceId, parentVersionId, originKind, status, totalUnits, uploadedUnits, processedUnits, selectedCount, reviewCount, filteredCount, unavailableCount, errorCode, error, createdAt, updatedAt, finishedAt, visionCallLimit, visionReservationUsd, visionBudgetReserved, visionBudgetBlocked, visionSlotsUsed, visionAttempted, visionCompleted, visionFailed, visionBlocked, visionCapBlocked] = params as [
               string,
               string,
               string,
@@ -3324,6 +3410,16 @@ function createExtractionDb(seed: {
               string,
               string,
               string | null,
+              number,
+              number,
+              number,
+              number,
+              number,
+              number,
+              number,
+              number,
+              number,
+              number,
             ];
 
             if (
@@ -3333,7 +3429,7 @@ function createExtractionDb(seed: {
               seed.simulateRunInsertRace.parentVersionId === parentVersionId &&
               seed.simulateRunInsertRace.originKind === originKind
             ) {
-              state.runs.push({
+              state.runs.push(normalizeVisionRunState({
                 id: seed.simulateRunInsertRace.canonicalId,
                 parentSourceId,
                 parentVersionId,
@@ -3351,7 +3447,17 @@ function createExtractionDb(seed: {
                 createdAt: seed.simulateRunInsertRace.createdAt,
                 updatedAt,
                 finishedAt,
-              });
+                visionCallLimit,
+                visionReservationUsd,
+                visionBudgetReserved,
+                visionBudgetBlocked,
+                visionSlotsUsed,
+                visionAttempted,
+                visionCompleted,
+                visionFailed,
+                visionBlocked,
+                visionCapBlocked,
+              }));
               throw new Error("UNIQUE constraint failed: visual_extraction_runs.parent_version_id, visual_extraction_runs.origin_kind");
             }
             if (
@@ -3361,7 +3467,7 @@ function createExtractionDb(seed: {
               seed.simulateRunInsertRace.parentVersionId === parentVersionId &&
               seed.simulateRunInsertRace.originKind === originKind
             ) {
-              state.runs.push({
+              state.runs.push(normalizeVisionRunState({
                 id: seed.simulateRunInsertRace.canonicalId,
                 parentSourceId,
                 parentVersionId,
@@ -3379,7 +3485,17 @@ function createExtractionDb(seed: {
                 createdAt: seed.simulateRunInsertRace.createdAt,
                 updatedAt,
                 finishedAt,
-              });
+                visionCallLimit,
+                visionReservationUsd,
+                visionBudgetReserved,
+                visionBudgetBlocked,
+                visionSlotsUsed,
+                visionAttempted,
+                visionCompleted,
+                visionFailed,
+                visionBlocked,
+                visionCapBlocked,
+              }));
               delete seed.simulateRunInsertRace;
               return { success: true, meta: { changes: 0 } };
             }
@@ -3389,7 +3505,7 @@ function createExtractionDb(seed: {
             ) {
               return { success: true, meta: { changes: 0 } };
             }
-            state.runs.push({
+            state.runs.push(normalizeVisionRunState({
               id,
               parentSourceId,
               parentVersionId,
@@ -3407,7 +3523,17 @@ function createExtractionDb(seed: {
               createdAt,
               updatedAt,
               finishedAt,
-            });
+              visionCallLimit,
+              visionReservationUsd,
+              visionBudgetReserved,
+              visionBudgetBlocked,
+              visionSlotsUsed,
+              visionAttempted,
+              visionCompleted,
+              visionFailed,
+              visionBlocked,
+              visionCapBlocked,
+            }));
           }
 
           if (query.includes("visual_extraction_units") && query.includes("INSERT")) {
@@ -3535,6 +3661,89 @@ function createExtractionDb(seed: {
               unit.processedAt = processedAt;
               unit.deletedAt = deletedAt;
             }
+          }
+
+          if (query.includes("UPDATE visual_extraction_runs") && query.includes("vision_call_limit = MAX")) {
+            const [callLimit, reservationUsd, budgetReserved, updatedAt, runId] = params as [number, number, number, string, string];
+            const run = state.runs.find((entry) => entry.id === runId);
+            if (run) {
+              normalizeVisionRunState(run);
+              run.visionCallLimit = Math.max(run.visionCallLimit ?? 80, callLimit);
+              run.visionReservationUsd = Math.max(run.visionReservationUsd ?? 0, reservationUsd);
+              run.visionBudgetReserved = Math.max(run.visionBudgetReserved ?? 0, budgetReserved);
+              run.updatedAt = updatedAt;
+            }
+            return { success: true, meta: { changes: run ? 1 : 0 } };
+          }
+
+          if (query.includes("UPDATE visual_extraction_runs") && query.includes("vision_slots_used = vision_slots_used + 1")) {
+            const [updatedAt, runId] = params as [string, string];
+            const run = state.runs.find((entry) => entry.id === runId);
+            if (!run) return { success: true, meta: { changes: 0 } };
+            normalizeVisionRunState(run);
+            if (run.visionBudgetReserved !== 1 || (run.visionSlotsUsed ?? 0) >= (run.visionCallLimit ?? 80)) {
+              return { success: true, meta: { changes: 0 } };
+            }
+            run.visionSlotsUsed = (run.visionSlotsUsed ?? 0) + 1;
+            run.updatedAt = updatedAt;
+            return { success: true, meta: { changes: 1 } };
+          }
+
+          if (query.includes("UPDATE visual_extraction_runs") && query.includes("vision_attempted = vision_attempted + 1")) {
+            const [updatedAt, runId] = params as [string, string];
+            const run = state.runs.find((entry) => entry.id === runId);
+            if (run) {
+              normalizeVisionRunState(run);
+              run.visionAttempted = (run.visionAttempted ?? 0) + 1;
+              run.updatedAt = updatedAt;
+            }
+            return { success: true, meta: { changes: run ? 1 : 0 } };
+          }
+
+          if (query.includes("UPDATE visual_extraction_runs") && query.includes("vision_cap_blocked = vision_cap_blocked + 1")) {
+            const [updatedAt, runId] = params as [string, string];
+            const run = state.runs.find((entry) => entry.id === runId);
+            if (run) {
+              normalizeVisionRunState(run);
+              run.visionBlocked = (run.visionBlocked ?? 0) + 1;
+              run.visionCapBlocked = (run.visionCapBlocked ?? 0) + 1;
+              run.updatedAt = updatedAt;
+            }
+            return { success: true, meta: { changes: run ? 1 : 0 } };
+          }
+
+          if (query.includes("UPDATE visual_extraction_runs") && query.includes("vision_budget_blocked = vision_budget_blocked + 1")) {
+            const [updatedAt, runId] = params as [string, string];
+            const run = state.runs.find((entry) => entry.id === runId);
+            if (run) {
+              normalizeVisionRunState(run);
+              run.visionBlocked = (run.visionBlocked ?? 0) + 1;
+              run.visionBudgetBlocked = (run.visionBudgetBlocked ?? 0) + 1;
+              run.updatedAt = updatedAt;
+            }
+            return { success: true, meta: { changes: run ? 1 : 0 } };
+          }
+
+          if (query.includes("UPDATE visual_extraction_runs") && query.includes("vision_completed = vision_completed + 1")) {
+            const [updatedAt, runId] = params as [string, string];
+            const run = state.runs.find((entry) => entry.id === runId);
+            if (run) {
+              normalizeVisionRunState(run);
+              run.visionCompleted = (run.visionCompleted ?? 0) + 1;
+              run.updatedAt = updatedAt;
+            }
+            return { success: true, meta: { changes: run ? 1 : 0 } };
+          }
+
+          if (query.includes("UPDATE visual_extraction_runs") && query.includes("vision_failed = vision_failed + 1")) {
+            const [updatedAt, runId] = params as [string, string];
+            const run = state.runs.find((entry) => entry.id === runId);
+            if (run) {
+              normalizeVisionRunState(run);
+              run.visionFailed = (run.visionFailed ?? 0) + 1;
+              run.updatedAt = updatedAt;
+            }
+            return { success: true, meta: { changes: run ? 1 : 0 } };
           }
 
           if (query.includes("UPDATE visual_extraction_runs")) {

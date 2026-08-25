@@ -9,6 +9,12 @@ import type {
   VisualExtractionRunRow,
   VisualExtractionUnitRow,
 } from "./contracts";
+import {
+  VISUAL_EXTRACTION_VISION_CALL_LIMIT,
+  type VisualExtractionVisionBlockReason,
+  type VisualExtractionVisionPersistence,
+  type VisualExtractionVisionPersistenceState,
+} from "./visionBudget";
 
 type DbRow = Record<string, unknown>;
 
@@ -35,6 +41,33 @@ function mapRun(row: DbRow): VisualExtractionRunRow {
     createdAt: String(row.createdAt),
     updatedAt: String(row.updatedAt),
     finishedAt: nullableString(row.finishedAt),
+    visionCallLimit: Number(row.visionCallLimit ?? VISUAL_EXTRACTION_VISION_CALL_LIMIT),
+    visionReservationUsd: Number(row.visionReservationUsd ?? 0),
+    visionBudgetReserved: Number(row.visionBudgetReserved ?? 0) === 1,
+    visionBudgetBlocked: Number(row.visionBudgetBlocked ?? 0),
+    visionSlotsUsed: Number(row.visionSlotsUsed ?? 0),
+    visionAttempted: Number(row.visionAttempted ?? 0),
+    visionCompleted: Number(row.visionCompleted ?? 0),
+    visionFailed: Number(row.visionFailed ?? 0),
+    visionBlocked: Number(row.visionBlocked ?? 0),
+    visionCapBlocked: Number(row.visionCapBlocked ?? 0),
+  };
+}
+
+function visionStateFromRun(run: VisualExtractionRunRow): VisualExtractionVisionPersistenceState {
+  return {
+    diagnostics: {
+      callLimit: run.visionCallLimit,
+      reservationUsd: run.visionReservationUsd,
+      budgetReserved: run.visionBudgetReserved,
+      budgetBlocked: run.visionBudgetBlocked > 0 || !run.visionBudgetReserved,
+      attempted: run.visionAttempted,
+      completed: run.visionCompleted,
+      failed: run.visionFailed,
+      blocked: run.visionBlocked,
+      capBlocked: run.visionCapBlocked,
+    },
+    slotsUsed: run.visionSlotsUsed,
   };
 }
 
@@ -65,7 +98,12 @@ async function getActiveRun(db: D1Database, input: CreateOrResumeRunInput): Prom
             selected_count AS selectedCount, review_count AS reviewCount,
             filtered_count AS filteredCount, unavailable_count AS unavailableCount,
             error_code AS errorCode, error, created_at AS createdAt,
-            updated_at AS updatedAt, finished_at AS finishedAt
+            updated_at AS updatedAt, finished_at AS finishedAt,
+            vision_call_limit AS visionCallLimit, vision_reservation_usd AS visionReservationUsd,
+            vision_budget_reserved AS visionBudgetReserved, vision_budget_blocked AS visionBudgetBlocked,
+            vision_slots_used AS visionSlotsUsed, vision_attempted AS visionAttempted,
+            vision_completed AS visionCompleted, vision_failed AS visionFailed,
+            vision_blocked AS visionBlocked, vision_cap_blocked AS visionCapBlocked
      FROM visual_extraction_runs
      WHERE parent_source_id = ? AND parent_version_id = ? AND origin_kind = ?
        AND status IN ('UPLOADING', 'QUEUED', 'RUNNING')
@@ -82,7 +120,12 @@ async function getRun(db: D1Database, runId: string): Promise<VisualExtractionRu
             selected_count AS selectedCount, review_count AS reviewCount,
             filtered_count AS filteredCount, unavailable_count AS unavailableCount,
             error_code AS errorCode, error, created_at AS createdAt,
-            updated_at AS updatedAt, finished_at AS finishedAt
+            updated_at AS updatedAt, finished_at AS finishedAt,
+            vision_call_limit AS visionCallLimit, vision_reservation_usd AS visionReservationUsd,
+            vision_budget_reserved AS visionBudgetReserved, vision_budget_blocked AS visionBudgetBlocked,
+            vision_slots_used AS visionSlotsUsed, vision_attempted AS visionAttempted,
+            vision_completed AS visionCompleted, vision_failed AS visionFailed,
+            vision_blocked AS visionBlocked, vision_cap_blocked AS visionCapBlocked
      FROM visual_extraction_runs WHERE id = ?`
   ).bind(runId).first<DbRow>();
   return row ? mapRun(row) : null;
@@ -150,8 +193,11 @@ export const ExtractionStore = {
        (id, parent_source_id, parent_version_id, origin_kind, status,
         total_units, uploaded_units, processed_units, selected_count,
         review_count, filtered_count, unavailable_count, error_code,
-        error, created_at, updated_at, finished_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        error, created_at, updated_at, finished_at, vision_call_limit,
+        vision_reservation_usd, vision_budget_reserved, vision_budget_blocked,
+        vision_slots_used, vision_attempted, vision_completed, vision_failed,
+        vision_blocked, vision_cap_blocked)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(
       uuid(),
       input.parentSourceId,
@@ -170,6 +216,16 @@ export const ExtractionStore = {
       timestamp,
       timestamp,
       null,
+      VISUAL_EXTRACTION_VISION_CALL_LIMIT,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
     ).run();
 
     const canonical = await getActiveRun(db, input);
@@ -353,3 +409,93 @@ export const ExtractionStore = {
     return (rows.results ?? []).map(mapUnit);
   },
 };
+
+export function createVisualExtractionVisionPersistence(db: D1Database, runId: string): VisualExtractionVisionPersistence {
+  const load = async (): Promise<VisualExtractionVisionPersistenceState> => {
+    const run = await getRun(db, runId);
+    if (!run) throw new Error("visual_extraction_run_not_found");
+    return visionStateFromRun(run);
+  };
+
+  const updateAndLoad = async (query: string, ...params: unknown[]): Promise<VisualExtractionVisionPersistenceState> => {
+    await db.prepare(query).bind(...params).run();
+    return load();
+  };
+
+  return {
+    load,
+    async seed(input) {
+      return updateAndLoad(
+        `UPDATE visual_extraction_runs
+         SET vision_call_limit = MAX(vision_call_limit, ?),
+             vision_reservation_usd = MAX(vision_reservation_usd, ?),
+             vision_budget_reserved = MAX(vision_budget_reserved, ?),
+             updated_at = ?
+         WHERE id = ?`,
+        VISUAL_EXTRACTION_VISION_CALL_LIMIT,
+        input.reservationUsd,
+        input.budgetReserved ? 1 : 0,
+        new Date().toISOString(),
+        runId,
+      );
+    },
+    async recordRequest() {
+      return updateAndLoad(
+        `UPDATE visual_extraction_runs
+         SET vision_attempted = vision_attempted + 1, updated_at = ?
+         WHERE id = ?`,
+        new Date().toISOString(),
+        runId,
+      );
+    },
+    async claimSlot() {
+      const result = await db.prepare(
+        `UPDATE visual_extraction_runs
+         SET vision_slots_used = vision_slots_used + 1, updated_at = ?
+         WHERE id = ? AND vision_budget_reserved = 1
+           AND vision_slots_used < vision_call_limit`
+      ).bind(new Date().toISOString(), runId).run();
+      return { claimed: Number(result.meta?.changes ?? 0) === 1, state: await load() };
+    },
+    async recordBlocked(reason: VisualExtractionVisionBlockReason) {
+      if (reason === "visual_extraction_call_limit") {
+        return updateAndLoad(
+          `UPDATE visual_extraction_runs
+           SET vision_blocked = vision_blocked + 1,
+               vision_cap_blocked = vision_cap_blocked + 1,
+               updated_at = ?
+           WHERE id = ?`,
+          new Date().toISOString(),
+          runId,
+        );
+      }
+      return updateAndLoad(
+        `UPDATE visual_extraction_runs
+         SET vision_blocked = vision_blocked + 1,
+             vision_budget_blocked = vision_budget_blocked + 1,
+             updated_at = ?
+         WHERE id = ?`,
+        new Date().toISOString(),
+        runId,
+      );
+    },
+    async recordCompleted() {
+      return updateAndLoad(
+        `UPDATE visual_extraction_runs
+         SET vision_completed = vision_completed + 1, updated_at = ?
+         WHERE id = ?`,
+        new Date().toISOString(),
+        runId,
+      );
+    },
+    async recordFailed() {
+      return updateAndLoad(
+        `UPDATE visual_extraction_runs
+         SET vision_failed = vision_failed + 1, updated_at = ?
+         WHERE id = ?`,
+        new Date().toISOString(),
+        runId,
+      );
+    },
+  };
+}
