@@ -177,10 +177,10 @@ export async function createPersonalVisual(
       env.DB.prepare(
         `INSERT INTO visual_assets
          (id, parent_source_id, origin_kind, asset_role, visual_kind, selection_status, rights_status,
-          is_personal_work, assignment_status, storage_state, processing_status, content_hash,
+          rights_basis, rights_reviewed_at, is_personal_work, assignment_status, storage_state, processing_status, content_hash,
           perceptual_hash, perceptual_hash_method, created_at, updated_at)
-         VALUES (?, ?, 'PERSONAL_UPLOAD', 'PERSONAL_WORK', 'OTHER', 'SELECTED', 'PERSONAL', 1, ?, 'ARCHIVAL', 'TRANSFORM_PENDING', ?, NULL, NULL, ?, ?)`
-      ).bind(id, input.parentSourceId, assignmentStatus, contentHash, timestamp, timestamp),
+         VALUES (?, ?, 'PERSONAL_UPLOAD', 'PERSONAL_WORK', 'OTHER', 'SELECTED', 'PERSONAL', 'user_personal_upload', ?, 1, ?, 'ARCHIVAL', 'TRANSFORM_PENDING', ?, NULL, NULL, ?, ?)`
+      ).bind(id, input.parentSourceId, timestamp, assignmentStatus, contentHash, timestamp, timestamp),
       env.DB.prepare(
         `INSERT INTO visual_asset_versions
          (id, visual_asset_id, version, variant, r2_key, mime_type, byte_size, content_hash, created_at)

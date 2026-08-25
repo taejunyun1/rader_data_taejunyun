@@ -211,15 +211,29 @@ visualExtraction.put("/pdf/runs/:runId/pages/:pageNumber", async (c) => {
     httpMetadata: { contentType: "image/webp" },
     customMetadata: { sourceId, versionId, runId, pageNumber: String(pageNumber) },
   });
-  await ExtractionStore.recordUnit(c.env.DB, {
-    runId,
-    unitNumber: pageNumber,
-    candidateKey: `page-${pageNumber}`,
-    tempR2Key: key,
-    width: typeof body?.width === "number" ? body.width : null,
-    height: typeof body?.height === "number" ? body.height : null,
-    contentHash: computedHash,
-  });
+  try {
+    await ExtractionStore.recordUnit(c.env.DB, {
+      runId,
+      unitNumber: pageNumber,
+      candidateKey: `page-${pageNumber}`,
+      tempR2Key: key,
+      width: typeof body?.width === "number" ? body.width : null,
+      height: typeof body?.height === "number" ? body.height : null,
+      contentHash: computedHash,
+    });
+  } catch (error) {
+    await c.env.ORIGINALS.delete(key).catch((cleanupError) => {
+      console.error(JSON.stringify({
+        level: "error",
+        scope: "visual-extraction:pdf-page-compensation",
+        runId,
+        pageNumber,
+        key,
+        message: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+      }));
+    });
+    throw error;
+  }
   const payload = await buildRunPayload(c.env.DB, runId);
   if (!payload) return c.json({ error: "visual_extraction_run_not_found" }, 404);
   return c.json(payload);

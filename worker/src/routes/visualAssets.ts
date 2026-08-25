@@ -195,6 +195,13 @@ visualAssets.patch("/:id/assignment", async (c) => {
          assignment_status = 'ASSIGNED',
          updated_at = ?
      WHERE id = ?
+       AND origin_kind = 'PERSONAL_UPLOAD'
+       AND assignment_status = 'UNASSIGNED'
+       AND parent_source_id IS NULL
+       AND parent_version_id IS NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM visual_analyses a WHERE a.visual_asset_id = visual_assets.id
+       )
        AND EXISTS (
          SELECT 1
          FROM sources s
@@ -213,11 +220,26 @@ visualAssets.patch("/:id/assignment", async (c) => {
     expectedVersionId,
   ).run();
   if (Number(result.meta?.changes ?? 0) !== 1) {
+    const current = await getVisualAsset(c.env.DB, visualAssetId);
+    if (
+      !current
+      || current.originKind !== "PERSONAL_UPLOAD"
+      || current.assignmentStatus !== "UNASSIGNED"
+      || current.parentSourceId !== null
+      || current.parentVersionId !== null
+      || await hasVisualAnalysis(c.env.DB, visualAssetId)
+    ) {
+      return c.json({ error: "assignment_asset_not_eligible" }, 409);
+    }
     return c.json({ error: expectedVersionId ? "assignment_source_active_version_mismatch" : "assignment_source_active_version_missing" }, 409);
   }
 
   return c.json({ asset: await loadAssetSummary(c.env.DB, visualAssetId) });
 });
+
+async function hasVisualAnalysis(db: D1Database, visualAssetId: string): Promise<boolean> {
+  return Boolean(await db.prepare("SELECT id FROM visual_analyses WHERE visual_asset_id = ? LIMIT 1").bind(visualAssetId).first());
+}
 
 visualAssets.patch("/:id/selection", async (c) => {
   const visualAssetId = c.req.param("id");
@@ -270,7 +292,9 @@ visualAssets.patch("/:id/rights", async (c) => {
   const rightsStatus = parseRightsStatus(body.rightsStatus);
   if (!rightsStatus) return c.json({ error: "rights_status_invalid" }, 400);
   const rightsBasis = typeof body.rightsBasis === "string" ? body.rightsBasis.trim() : "";
-  if (rightsStatus === "PERMITTED" && !rightsBasis) return c.json({ error: "rights_basis_required" }, 400);
+  if ((rightsStatus === "PERSONAL" || rightsStatus === "PERMITTED") && !rightsBasis) {
+    return c.json({ error: "rights_basis_required" }, 400);
+  }
   const now = new Date().toISOString();
   await c.env.DB.prepare(
     `UPDATE visual_assets
@@ -346,6 +370,9 @@ visualAssets.post("/:id/storage-transition", async (c) => {
   if (asset.pendingStorageState && asset.pendingStorageState !== target) return c.json({ error: "storage_transition_pending" }, 409);
   if (asset.rightsStatus !== "PERSONAL" && asset.rightsStatus !== "PERMITTED") {
     return c.json({ error: "storage_transition_rights_invalid" }, 409);
+  }
+  if (!asset.rightsBasis?.trim() || !asset.rightsReviewedAt) {
+    return c.json({ error: "storage_transition_rights_evidence_required" }, 409);
   }
 
   const capsule = await getVisualVersion(c.env.DB, visualAssetId, "CAPSULE");

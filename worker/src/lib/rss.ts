@@ -3,11 +3,9 @@ import type { DiscoveryProviderResult } from "@radar/shared/discoveryRun";
 import {
   fetchRemoteText,
   RemoteFetchError,
-  type DnsResolver,
 } from "../ingestion/fetchRemoteDocument";
 
 interface FeedFetchOptions {
-  resolveDns?: DnsResolver;
   fetchImpl?: typeof fetch;
 }
 
@@ -28,7 +26,6 @@ export async function fetchFeed(
   try {
     const res = await fetchRemoteText(url, {
       maxResponseBytes: 2 * 1024 * 1024,
-      resolveDns: options.resolveDns,
       fetchImpl: options.fetchImpl,
     });
     const body = new TextDecoder().decode(res.body);

@@ -34,13 +34,11 @@ describe("discovery provider outcomes", () => {
       url: string,
       limit: number,
       options: {
-        resolveDns: typeof allowPublicDnsResolution;
         fetchImpl: typeof fetch;
       },
     ) => ReturnType<typeof fetchFeed>;
 
     await expect(fetchFeedWithPolicy("https://example.com/feed.xml", 1, {
-      resolveDns: allowPublicDnsResolution,
       fetchImpl: fetchSpy as unknown as typeof fetch,
     })).resolves.toMatchObject({ status: "PARSE_ERROR", items: [] });
   });
@@ -56,13 +54,11 @@ describe("discovery provider outcomes", () => {
       url: string,
       limit: number,
       options: {
-        resolveDns: typeof allowPublicDnsResolution;
         fetchImpl: typeof fetch;
       },
     ) => ReturnType<typeof fetchFeed>;
 
     await expect(fetchFeedWithPolicy("https://custom.example/feed.xml", 1, {
-      resolveDns: allowPublicDnsResolution,
       fetchImpl: fetchSpy as unknown as typeof fetch,
     })).resolves.toMatchObject({ status: "HTTP_ERROR", errorCode: "REDIRECT_BLOCKED", items: [] });
   });
@@ -82,13 +78,11 @@ describe("discovery provider outcomes", () => {
       url: string,
       limit: number,
       options: {
-        resolveDns: typeof allowPublicDnsResolution;
         fetchImpl: typeof fetch;
       },
     ) => ReturnType<typeof fetchFeed>;
 
     await expect(fetchFeedWithPolicy("https://custom.example/feed.xml", 1, {
-      resolveDns: allowPublicDnsResolution,
       fetchImpl: fetchSpy as unknown as typeof fetch,
     })).resolves.toMatchObject({ status: "HTTP_ERROR", errorCode: "SIZE_LIMIT", items: [] });
   });
@@ -108,13 +102,11 @@ describe("discovery provider outcomes", () => {
       url: string,
       limit: number,
       options: {
-        resolveDns: typeof allowPublicDnsResolution;
         fetchImpl: typeof fetch;
       },
     ) => ReturnType<typeof fetchFeed>;
 
     const result = await fetchFeedWithPolicy("https://unthinking.photography/feed", 1, {
-      resolveDns: allowPublicDnsResolution,
       fetchImpl: fetchSpy as unknown as typeof fetch,
     });
 
@@ -144,8 +136,4 @@ function makeStreamResponse(chunks: Uint8Array[], headers: HeadersInit, url = "h
   });
 
   return withResponseUrl(response, url);
-}
-
-async function allowPublicDnsResolution(_hostname: string, recordType: "A" | "AAAA"): Promise<string[]> {
-  return recordType === "A" ? ["93.184.216.34"] : ["2606:2800:220:1:248:1893:25c8:1946"];
 }

@@ -431,6 +431,24 @@ describe("deep analysis budget reservation", () => {
     expect(db.reservations.filter((row) => row.status === "RESERVED")).toHaveLength(1);
   });
 
+  it("reserves the extraction-wide 80-call visual ceiling through the same atomic budget boundary", async () => {
+    const { reserveVisualExtractionBudget, visualExtractionReservationUsd } = await import(
+      "../../../worker/src/analysis/budgetReservation"
+    );
+    const env = budgetReservationEnv();
+    const amountUsd = await visualExtractionReservationUsd(env);
+    const db = budgetReservationDb({ monthlyBudgetUsd: amountUsd });
+    env.DB = db;
+
+    const first = await reserveVisualExtractionBudget(env, { researchJobId: "job-extraction-1" });
+    const second = await reserveVisualExtractionBudget(env, { researchJobId: "job-extraction-2" });
+
+    expect(amountUsd).toBe(0.8);
+    expect(first).toMatchObject({ ok: true, amountUsd });
+    expect(second).toEqual({ ok: false });
+    expect(db.reservations.filter((row) => row.status === "RESERVED")).toHaveLength(1);
+  });
+
   it("keeps the reservoir spend check as a fast guard while workflow reservation failure is the final BLOCKED state", async () => {
     vi.doUnmock("../../../worker/src/analysis/budgetReservation");
     vi.doUnmock("../../../worker/src/analysis/deepAnalyze");
@@ -510,6 +528,112 @@ describe("visual extraction workflow", () => {
     );
     expect(db.blockResearchJob).not.toHaveBeenCalled();
     expect(db.failResearchJob).not.toHaveBeenCalled();
+  });
+
+  it("continues extraction with a blocked gate, REVIEW fallback diagnostics, and no model usage", async () => {
+    const { ResearchJobWorkflow } = await loadDeepAnalysisWorkflow({
+      extractionReservationResults: [{ ok: false }],
+      visualExtractionResults: [{
+        sourceId: "source-budget",
+        sourceVersionId: "version-budget",
+        extractionRunId: "run-budget",
+        status: "SUCCEEDED",
+        counts: { selected: 0, review: 1, filtered: 0, unavailable: 0 },
+        diagnostics: {
+          sourceKind: "PDF",
+          limits: { htmlCandidates: 40, htmlFetch: 12, pdfPages: 40 },
+          blocked: { htmlCandidates: 0, htmlFetch: 0, pdfPages: 0 },
+          vision: {
+            callLimit: 80,
+            reservationUsd: 0.8,
+            budgetReserved: false,
+            budgetBlocked: true,
+            attempted: 1,
+            completed: 0,
+            failed: 0,
+            blocked: 1,
+            capBlocked: 0,
+          },
+        },
+      }],
+    });
+    const job = {
+      id: "job-extraction-budget-blocked",
+      kind: "VISUAL_EXTRACTION",
+      input: { sourceId: "source-budget", sourceVersionId: "version-budget", extractionRunId: "run-budget" },
+    };
+    const db = workflowStatusDb(job as ReturnType<typeof deepJob>);
+    const workflow = Object.create(ResearchJobWorkflow.prototype) as { env: Env; run: typeof ResearchJobWorkflow.prototype.run };
+    workflow.env = { DB: db, MONTHLY_BUDGET_USD: "10" } as Env;
+
+    await workflow.run({ payload: { jobId: job.id } } as never, workflowStep());
+
+    expect(db.reserveVisualExtractionBudget).toHaveBeenCalledWith(
+      { DB: db, MONTHLY_BUDGET_USD: "10" },
+      { researchJobId: job.id },
+    );
+    expect(db.completeResearchJob).toHaveBeenCalledWith(
+      db,
+      job.id,
+      expect.objectContaining({
+        diagnostics: expect.objectContaining({
+          vision: expect.objectContaining({ budgetBlocked: true, completed: 0 }),
+        }),
+      }),
+      { view: "VISUAL", sourceId: "source-budget", extractionRunId: "run-budget" },
+    );
+    expect(db.blockResearchJob).not.toHaveBeenCalled();
+    expect(db.failResearchJob).not.toHaveBeenCalled();
+  });
+
+  it("reuses one extraction reservation and call gate across workflow step retries", async () => {
+    let attempts = 0;
+    const modelCall = vi.fn().mockResolvedValue("ok");
+    const { ResearchJobWorkflow } = await loadDeepAnalysisWorkflow({
+      extractionReservationResults: [{ ok: true, reservationId: "reservation-extraction-retry", amountUsd: 0.8 }],
+      visualExtractionRunner: async (_env, extractionInput) => {
+        attempts += 1;
+        await extractionInput.visionGate.execute(modelCall);
+        if (attempts === 1) throw new Error("transient_extraction_failure");
+        return {
+          sourceId: "source-retry",
+          sourceVersionId: "version-retry",
+          extractionRunId: "run-retry",
+          status: "SUCCEEDED",
+          counts: { selected: 0, review: 0, filtered: 0, unavailable: 0 },
+          outcomeCounts: { duplicateExact: 0, duplicateNear: 0, rightsGated: 0, cleanupFailures: 0 },
+          diagnostics: {
+            sourceKind: "PDF",
+            limits: { htmlCandidates: 40, htmlFetch: 12, pdfPages: 40 },
+            blocked: { htmlCandidates: 0, htmlFetch: 0, pdfPages: 0 },
+            vision: extractionInput.visionGate.snapshot(),
+          },
+        };
+      },
+    });
+    const job = {
+      id: "job-extraction-retry",
+      kind: "VISUAL_EXTRACTION",
+      input: { sourceId: "source-retry", sourceVersionId: "version-retry", extractionRunId: "run-retry" },
+    };
+    const db = workflowStatusDb(job as ReturnType<typeof deepJob>);
+    const workflow = Object.create(ResearchJobWorkflow.prototype) as { env: Env; run: typeof ResearchJobWorkflow.prototype.run };
+    workflow.env = { DB: db, MONTHLY_BUDGET_USD: "10" } as Env;
+
+    await workflow.run(
+      { payload: { jobId: job.id } } as never,
+      retryingWorkflowStep("execute-visual_extraction"),
+    );
+
+    expect(attempts).toBe(2);
+    expect(modelCall).toHaveBeenCalledTimes(2);
+    expect(db.reserveVisualExtractionBudget).toHaveBeenCalledTimes(1);
+    expect(db.completeResearchJob).toHaveBeenCalledWith(
+      db,
+      job.id,
+      expect.objectContaining({ diagnostics: expect.objectContaining({ vision: expect.objectContaining({ attempted: 2, completed: 2 }) }) }),
+      expect.any(Object),
+    );
   });
 
   it("downgrades a visual candidate to REVIEW instead of blocking the job when the visual budget is exhausted", async () => {
@@ -877,6 +1001,7 @@ function workflowStatusDb(job: ReturnType<typeof deepJob>) {
     blockResearchJob: vi.fn().mockResolvedValue(undefined),
     reserveDeepAnalysisBudget: vi.fn(),
     reserveVisualAnalysisBudget: vi.fn(),
+    reserveVisualExtractionBudget: vi.fn(),
     releaseDeepAnalysisBudgetReservation: vi.fn().mockResolvedValue(undefined),
     releaseAnalysisBudgetReservation: vi.fn().mockResolvedValue(undefined),
     analyzeDeepSource: vi.fn(),
@@ -921,6 +1046,7 @@ function workflowStatusDb(job: ReturnType<typeof deepJob>) {
     blockResearchJob: ReturnType<typeof vi.fn>;
     reserveDeepAnalysisBudget: ReturnType<typeof vi.fn>;
     reserveVisualAnalysisBudget: ReturnType<typeof vi.fn>;
+    reserveVisualExtractionBudget: ReturnType<typeof vi.fn>;
     releaseDeepAnalysisBudgetReservation: ReturnType<typeof vi.fn>;
     releaseAnalysisBudgetReservation: ReturnType<typeof vi.fn>;
     analyzeDeepSource: ReturnType<typeof vi.fn>;
@@ -969,6 +1095,7 @@ function workflowBudgetReservationDb(job: ReturnType<typeof deepJob>, input: { m
 async function loadDeepAnalysisWorkflow(input: {
   reservationResults?: ({ ok: true; reservationId: string; amountUsd: number } | { ok: false })[];
   visualReservationResults?: ({ ok: true; reservationId: string; amountUsd: number } | { ok: false })[];
+  extractionReservationResults?: ({ ok: true; reservationId: string; amountUsd: number } | { ok: false })[];
   analysisResults?: { analysisId: string; model: string; costUsd: number }[];
   analysisError?: Error;
   releaseError?: Error;
@@ -984,8 +1111,41 @@ async function loadDeepAnalysisWorkflow(input: {
       sourceKind: "HTML" | "PDF";
       limits: { htmlCandidates: number; htmlFetch: number; pdfPages: number };
       blocked: { htmlCandidates: number; htmlFetch: number; pdfPages: number };
+      vision?: {
+        callLimit: number;
+        reservationUsd: number;
+        budgetReserved: boolean;
+        budgetBlocked: boolean;
+        attempted: number;
+        completed: number;
+        failed: number;
+        blocked: number;
+        capBlocked: number;
+      };
     };
   }>;
+  visualExtractionRunner?: (
+    env: Env,
+    input: {
+      sourceId: string;
+      sourceVersionId: string;
+      extractionRunId?: string;
+      visionGate: {
+        execute<T>(callback: () => Promise<T>): Promise<T>;
+        snapshot(): {
+          callLimit: number;
+          reservationUsd: number;
+          budgetReserved: boolean;
+          budgetBlocked: boolean;
+          attempted: number;
+          completed: number;
+          failed: number;
+          blocked: number;
+          capBlocked: number;
+        };
+      };
+    },
+  ) => Promise<NonNullable<typeof input.visualExtractionResults>[number]>;
 }) {
   vi.doMock("../../../worker/src/jobs/store", () => ({
     getResearchJob: (db: ReturnType<typeof workflowStatusDb>, id: string) => db.getResearchJob(id),
@@ -1011,6 +1171,13 @@ async function loadDeepAnalysisWorkflow(input: {
         db.reserveVisualAnalysisBudget(env, reservationInput);
         return result;
       },
+      reserveVisualExtractionBudget: (env: Env, reservationInput: { researchJobId: string }) => {
+        const db = env.DB as ReturnType<typeof workflowStatusDb>;
+        const result = input.extractionReservationResults?.shift() ?? { ok: false };
+        db.reserveVisualExtractionBudget(env, reservationInput);
+        return result;
+      },
+      visualExtractionReservationUsd: async () => 0.8,
       releaseDeepAnalysisBudgetReservation: async (db: ReturnType<typeof workflowStatusDb>, researchJobId: string) => {
         if (input.releaseError) throw input.releaseError;
         return db.releaseDeepAnalysisBudgetReservation(db, researchJobId);
@@ -1031,7 +1198,16 @@ async function loadDeepAnalysisWorkflow(input: {
     },
   }));
   vi.doMock("../../../worker/src/visual/extraction/run", () => ({
-    runVisualExtraction: async (_env: Env, _jobInput: { sourceId: string; sourceVersionId: string; extractionRunId?: string }) => {
+    runVisualExtraction: async (_env: Env, _jobInput: {
+      sourceId: string;
+      sourceVersionId: string;
+      extractionRunId?: string;
+      visionGate: {
+        execute<T>(callback: () => Promise<T>): Promise<T>;
+        snapshot(): unknown;
+      };
+    }) => {
+      if (input.visualExtractionRunner) return input.visualExtractionRunner(_env, _jobInput as never);
       const next = input.visualExtractionResults?.shift();
       if (!next) throw new Error("visual_extraction_missing_fixture");
       return next;

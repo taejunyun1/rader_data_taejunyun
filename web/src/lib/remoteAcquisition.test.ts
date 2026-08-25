@@ -225,6 +225,70 @@ describe("static HTML extraction", () => {
 
 describe("remote acquisition", () => {
   describe("fetchRemoteDocument", () => {
+    it("uses the platform fetch target directly without a separate DNS validation request", async () => {
+      const { fetchRemoteDocument } = await import("../../../worker/src/ingestion/fetchRemoteDocument");
+      const response = withResponseUrl(new Response("<html><body>public</body></html>", {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      }), "https://rebind.example/article");
+      const fetchSpy = vi.fn().mockResolvedValue(response);
+
+      await fetchRemoteDocument("https://rebind.example/article", { fetchImpl: fetchSpy });
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(fetchSpy.mock.calls[0]?.[0]).toBe("https://rebind.example/article");
+      expect(fetchSpy.mock.calls.some(([target]) => String(target).includes("dns-query"))).toBe(false);
+    });
+
+    it("maps a platform public-only rejection of a DNS-rebound target to REDIRECT_BLOCKED", async () => {
+      const { fetchRemoteDocument } = await import("../../../worker/src/ingestion/fetchRemoteDocument");
+      const fetchSpy = vi.fn().mockRejectedValue(new TypeError("Network connection lost: non-public destination"));
+
+      await expect(fetchRemoteDocument("https://rebind.example/article", { fetchImpl: fetchSpy }))
+        .rejects.toThrow("REDIRECT_BLOCKED");
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("manually fetches and validates every public redirect hop", async () => {
+      const { fetchRemoteDocument } = await import("../../../worker/src/ingestion/fetchRemoteDocument");
+      const fetchSpy = vi.fn()
+        .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: "https://cdn.example/final" } }))
+        .mockResolvedValueOnce(withResponseUrl(new Response("<html>final</html>", {
+          status: 200,
+          headers: { "content-type": "text/html" },
+        }), "https://cdn.example/final"));
+
+      const result = await fetchRemoteDocument("https://origin.example/start", { fetchImpl: fetchSpy });
+
+      expect(result.finalUrl).toBe("https://cdn.example/final");
+      expect(fetchSpy.mock.calls.map(([target]) => target)).toEqual([
+        "https://origin.example/start",
+        "https://cdn.example/final",
+      ]);
+      expect(fetchSpy.mock.calls.every(([, init]) => init?.redirect === "manual")).toBe(true);
+    });
+
+    it("stops a redirect chain when the platform rejects a rebound destination", async () => {
+      const { fetchRemoteDocument } = await import("../../../worker/src/ingestion/fetchRemoteDocument");
+      const fetchSpy = vi.fn()
+        .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: "https://rebind.example/final" } }))
+        .mockRejectedValueOnce(new TypeError("Network connection lost: non-public destination"));
+
+      await expect(fetchRemoteDocument("https://origin.example/start", { fetchImpl: fetchSpy }))
+        .rejects.toThrow("REDIRECT_BLOCKED");
+      expect(fetchSpy.mock.calls.map(([target]) => target)).toEqual([
+        "https://origin.example/start",
+        "https://rebind.example/final",
+      ]);
+    });
+
+    it("enables Cloudflare strict-public global fetch for the actual connection target", async () => {
+      const { readFile } = await import("node:fs/promises");
+      const config = await readFile("../worker/wrangler.jsonc", "utf8");
+
+      expect(config).toContain('"global_fetch_strictly_public"');
+    });
+
     it("blocks direct private network targets before issuing a request", async () => {
       const { fetchRemoteDocument } = await import("../../../worker/src/ingestion/fetchRemoteDocument");
       const fetchSpy = vi.fn();
@@ -244,7 +308,6 @@ describe("remote acquisition", () => {
       vi.stubGlobal("fetch", fetchSpy);
 
       await expect(fetchRemoteDocument("https://public.example/start", {
-        resolveDns: allowPublicDnsResolution,
         fetchImpl: fetchSpy,
       })).rejects.toThrow("REDIRECT_BLOCKED");
       expect(fetchSpy).toHaveBeenCalledTimes(1);
@@ -260,7 +323,6 @@ describe("remote acquisition", () => {
       });
 
       await expect(fetchRemoteDocument("https://public.example/large", {
-        resolveDns: allowPublicDnsResolution,
         fetchImpl: vi.fn().mockResolvedValue(oversized),
       })).rejects.toThrow("SIZE_LIMIT");
     });
@@ -283,7 +345,6 @@ describe("remote acquisition", () => {
       const response = withResponseUrl(hanging, "https://public.example/slow");
 
       const promise = fetchRemoteDocument("https://public.example/slow", {
-        resolveDns: allowPublicDnsResolution,
         fetchImpl: vi.fn((_url: string, init?: RequestInit) => {
           init?.signal?.addEventListener("abort", () => {
             // noop: stream cancellation surfaces the abort
@@ -310,7 +371,6 @@ describe("remote acquisition", () => {
       }), "https://public.example/final");
 
       const result = await fetchRemoteDocument("https://public.example/start", {
-        resolveDns: allowPublicDnsResolution,
         fetchImpl: vi.fn().mockResolvedValue(response),
       });
 
@@ -340,7 +400,6 @@ describe("remote acquisition", () => {
       }), "https://public.example/not-image.png");
 
       await expect(fetchRemoteImage("https://public.example/not-image.png", {
-        resolveDns: allowPublicDnsResolution,
         fetchImpl: vi.fn().mockResolvedValue(response),
       })).rejects.toThrow("IMAGE_TYPE_INVALID");
     });
@@ -355,7 +414,6 @@ describe("remote acquisition", () => {
       });
 
       await expect(fetchRemoteImage("https://public.example/large.png", {
-        resolveDns: allowPublicDnsResolution,
         fetchImpl: vi.fn().mockResolvedValue(oversized),
       })).rejects.toThrow("IMAGE_SIZE_LIMIT");
     });
@@ -369,7 +427,6 @@ describe("remote acquisition", () => {
       }), "https://public.example/final.svg");
 
       const result = await fetchRemoteImage("https://public.example/start.svg", {
-        resolveDns: allowPublicDnsResolution,
         fetchImpl: vi.fn().mockResolvedValue(response),
       });
 
@@ -390,7 +447,6 @@ describe("remote acquisition", () => {
       }), "https://public.example/not-root-svg.svg");
 
       await expect(fetchRemoteImage("https://public.example/not-root-svg.svg", {
-        resolveDns: allowPublicDnsResolution,
         fetchImpl: vi.fn().mockResolvedValue(response),
       })).rejects.toThrow("IMAGE_TYPE_INVALID");
     });
@@ -404,7 +460,6 @@ describe("remote acquisition", () => {
       }), "https://public.example/final.svg"));
 
       await fetchRemoteImage("https://public.example/start.svg", {
-        resolveDns: allowPublicDnsResolution,
         fetchImpl: fetchSpy,
       });
 
@@ -418,25 +473,22 @@ describe("remote acquisition", () => {
     });
   });
 
-  it("converts DNS resolution timeout into FETCH_TIMEOUT within the 20-second acquisition boundary", async () => {
+  it("converts platform fetch timeout into FETCH_TIMEOUT within the 20-second acquisition boundary", async () => {
     vi.useFakeTimers();
     const { acquireRemoteSource } = await import("../../../worker/src/ingestion/acquireRemoteSource");
     const env = makeAcquisitionEnv();
-    const fetchSpy = vi.fn();
-    vi.stubGlobal("fetch", fetchSpy);
+    const fetchSpy = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener(
+        "abort",
+        () => reject(new DOMException("The operation was aborted.", "AbortError")),
+        { once: true },
+      );
+    }));
 
     const acquisitionPromise = acquireRemoteSource(
       env,
       { sourceId: "source-1", url: "https://slow.example/article", version: 2 },
-      {
-        resolveDns: async (_hostname, _recordType, signal?: AbortSignal) => new Promise<string[]>((_, reject) => {
-          signal?.addEventListener(
-            "abort",
-            () => reject(new DOMException("The operation was aborted.", "AbortError")),
-            { once: true },
-          );
-        }),
-      },
+      { fetchImpl: fetchSpy as unknown as typeof fetch },
     );
     let settled = false;
     const outcomePromise = acquisitionPromise.then(
@@ -451,7 +503,7 @@ describe("remote acquisition", () => {
 
     expect(settled).toBe(true);
     await expect(outcomePromise).resolves.toBe("FETCH_TIMEOUT");
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   it("fetches HTML, stores the raw response, and returns extracted provenance", async () => {
@@ -471,7 +523,6 @@ describe("remote acquisition", () => {
       url: "https://start.example/article",
       version: 2,
     }, {
-      resolveDns: allowPublicDnsResolution,
     });
 
     expect(result).toMatchObject({
@@ -497,23 +548,17 @@ describe("remote acquisition", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("blocks hostnames that resolve to loopback or private addresses before issuing the request", async () => {
+  it("relies on the platform to reject a hostname rebound to a private address", async () => {
     const { acquireRemoteSource } = await import("../../../worker/src/ingestion/acquireRemoteSource");
     const env = makeAcquisitionEnv();
-    const fetchSpy = vi.fn();
-    vi.stubGlobal("fetch", fetchSpy);
+    const fetchSpy = vi.fn().mockRejectedValue(new TypeError("Network connection lost: non-public destination"));
 
     await expect(acquireRemoteSource(
       env,
       { sourceId: "source-1", url: "https://public.example/article", version: 2 },
-      {
-        resolveDns: async (hostname, recordType) => {
-          expect(hostname).toBe("public.example");
-          return recordType === "A" ? ["127.0.0.1", "10.0.0.9"] : [];
-        },
-      },
+      { fetchImpl: fetchSpy as unknown as typeof fetch },
     )).rejects.toThrow("REDIRECT_BLOCKED");
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   it("rejects unsupported content types with a stable error code", async () => {
@@ -526,7 +571,6 @@ describe("remote acquisition", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
 
     await expect(acquireRemoteSource(env, { sourceId: "source-1", url: "https://example.com/file.png", version: 2 }, {
-      resolveDns: allowPublicDnsResolution,
     }))
       .rejects.toThrow("UNSUPPORTED_CONTENT_TYPE");
   });
@@ -549,7 +593,6 @@ describe("remote acquisition", () => {
       url: "https://arxiv.org/pdf/1234",
       version: 2,
     }, {
-      resolveDns: allowPublicDnsResolution,
     });
 
     expect(result.kind).toBe("PDF");
@@ -575,7 +618,6 @@ describe("remote acquisition", () => {
       url: "https://arxiv.org/pdf/5678",
       version: 2,
     }, {
-      resolveDns: allowPublicDnsResolution,
     });
 
     expect(result.textScope).toBe("PARTIAL");
@@ -601,7 +643,6 @@ describe("remote acquisition", () => {
       url: "https://arxiv.org/pdf/1234",
       version: 2,
     }, {
-      resolveDns: allowPublicDnsResolution,
     })).rejects.toThrow("PDF_CONVERSION_FAILED");
   });
 
@@ -623,7 +664,6 @@ describe("remote acquisition", () => {
       url: "https://example.com/file.pdf",
       version: 2,
     }, {
-      resolveDns: allowPublicDnsResolution,
     });
 
     expect(result.kind).toBe("HTML");
@@ -652,7 +692,6 @@ describe("remote acquisition", () => {
       url: "https://example.com/paper.pdf",
       version: 2,
     }, {
-      resolveDns: allowPublicDnsResolution,
     })).rejects.toThrow("PDF_SIGNATURE_INVALID");
 
     expect(env.__fixture.objects.has("originals/source-invalid-pdf/v2.pdf")).toBe(true);
@@ -681,7 +720,6 @@ describe("remote acquisition", () => {
       url: "https://example.com/paper.pdf",
       version: 2,
     }, {
-      resolveDns: allowPublicDnsResolution,
     })).rejects.toThrow("HTTP_5XX");
 
     expect(env.__fixture.objects.has("originals/source-invalid-pdf-put-failure/v2.pdf")).toBe(false);
@@ -1109,20 +1147,7 @@ function withResponseUrl(response: Response, url: string): Response {
 }
 
 function createSafeFetchStub(documentResponse: Response) {
-  return vi.fn((input: string | URL | Request) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-    if (url.startsWith("https://cloudflare-dns.com/dns-query")) {
-      const recordType = new URL(url).searchParams.get("type");
-      const answer = recordType === "AAAA"
-        ? [{ type: 28, data: "2606:2800:220:1:248:1893:25c8:1946" }]
-        : [{ type: 1, data: "93.184.216.34" }];
-      return Promise.resolve(new Response(JSON.stringify({ Status: 0, Answer: answer }), {
-        status: 200,
-        headers: { "content-type": "application/dns-json" },
-      }));
-    }
-    return Promise.resolve(documentResponse);
-  });
+  return vi.fn(() => Promise.resolve(documentResponse));
 }
 
 function makeStreamResponse(chunks: Uint8Array[], headers: HeadersInit, url = "https://public.example/stream"): Response {
@@ -1141,10 +1166,6 @@ function makeStreamResponse(chunks: Uint8Array[], headers: HeadersInit, url = "h
 
 function makePdfBuffer(prefix = "%PDF-1.7\nmock pdf body"): ArrayBuffer {
   return new TextEncoder().encode(prefix).buffer;
-}
-
-async function allowPublicDnsResolution(_hostname: string, recordType: "A" | "AAAA"): Promise<string[]> {
-  return recordType === "A" ? ["93.184.216.34"] : ["2606:2800:220:1:248:1893:25c8:1946"];
 }
 
 function setupResearchJobWorkflowFixture() {

@@ -1,6 +1,7 @@
 import { loadModelRoles, pricingForModel } from "../lib/modelSettings";
 import { chunkText } from "./deepPrompt";
 import { profileFor, type DeepProfile } from "./deepProfiles";
+import { VISUAL_EXTRACTION_VISION_CALL_LIMIT } from "../visual/extraction/visionBudget";
 
 const DEEP_CHUNK_CHARS = 24_000;
 const DEEP_MAX_CHUNKS = 4;
@@ -8,6 +9,7 @@ const DEEP_CHUNK_OUTPUT_TOKENS = 2_600;
 const DEEP_SYNTHESIS_OUTPUT_TOKENS = 4_200;
 const PROMPT_OVERHEAD_TOKENS = 2_000;
 const VISUAL_ANALYSIS_RESERVATION_USD = 0.01;
+const VISUAL_EXTRACTION_RESERVATION_USD = VISUAL_ANALYSIS_RESERVATION_USD * VISUAL_EXTRACTION_VISION_CALL_LIMIT;
 
 type ReservationResult =
   | { ok: true; reservationId: string; amountUsd: number }
@@ -15,7 +17,8 @@ type ReservationResult =
 
 type AnalysisReservationInput =
   | { researchJobId: string; operation: "DEEP_ANALYSIS"; profile: DeepProfile }
-  | { researchJobId: string; operation: "VISUAL_ANALYSIS" };
+  | { researchJobId: string; operation: "VISUAL_ANALYSIS" }
+  | { researchJobId: string; operation: "VISUAL_EXTRACTION" };
 
 export async function deepAnalysisReservationUsd(env: Env, profile: DeepProfile): Promise<number> {
   const definition = profileFor(profile);
@@ -39,8 +42,13 @@ export async function visualAnalysisReservationUsd(_env: Env): Promise<number> {
   return VISUAL_ANALYSIS_RESERVATION_USD;
 }
 
+export async function visualExtractionReservationUsd(_env: Env): Promise<number> {
+  return VISUAL_EXTRACTION_RESERVATION_USD;
+}
+
 async function amountForReservation(env: Env, input: AnalysisReservationInput): Promise<number> {
   if (input.operation === "VISUAL_ANALYSIS") return visualAnalysisReservationUsd(env);
+  if (input.operation === "VISUAL_EXTRACTION") return visualExtractionReservationUsd(env);
   return deepAnalysisReservationUsd(env, input.profile);
 }
 
@@ -93,6 +101,13 @@ export async function reserveVisualAnalysisBudget(
   input: { researchJobId: string },
 ): Promise<ReservationResult> {
   return reserveAnalysisBudget(env, { researchJobId: input.researchJobId, operation: "VISUAL_ANALYSIS" });
+}
+
+export async function reserveVisualExtractionBudget(
+  env: Env,
+  input: { researchJobId: string },
+): Promise<ReservationResult> {
+  return reserveAnalysisBudget(env, { researchJobId: input.researchJobId, operation: "VISUAL_EXTRACTION" });
 }
 
 export async function releaseAnalysisBudgetReservation(

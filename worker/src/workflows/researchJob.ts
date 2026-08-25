@@ -15,6 +15,8 @@ import {
   releaseDeepAnalysisBudgetReservation,
   reserveDeepAnalysisBudget,
   reserveVisualAnalysisBudget,
+  reserveVisualExtractionBudget,
+  visualExtractionReservationUsd,
 } from "../analysis/budgetReservation";
 import { blockResearchJob, completeResearchJob, failResearchJob, getResearchJob, markJobRunning, updateJobProgress } from "../jobs/store";
 import { executeSourceAcquisitionJob } from "./sourceAcquisition";
@@ -23,6 +25,7 @@ import { analyzeVisualAsset } from "../visual/analyzer";
 import { markVisualProcessingError } from "../visual/store";
 import { enqueueResearchJob } from "../jobs/enqueue";
 import { runVisualExtraction, type VisualExtractionDiagnostics } from "../visual/extraction/run";
+import { createVisualExtractionVisionGate, type VisualExtractionVisionGate } from "../visual/extraction/visionBudget";
 
 class JobBlockedError extends Error {
   constructor(public readonly code: string, message: string) {
@@ -77,10 +80,27 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
         return true;
       });
 
+      const extractionBudget = job.kind === "VISUAL_EXTRACTION"
+        ? await step.do(
+          "reserve-visual-extraction-budget",
+          { retries: { limit: 1, delay: "5 seconds", backoff: "exponential" }, timeout: "1 minute" },
+          async () => {
+            const reservation = await reserveVisualExtractionBudget(this.env, { researchJobId: job.id });
+            return {
+              budgetReserved: reservation.ok,
+              reservationUsd: reservation.ok ? reservation.amountUsd : await visualExtractionReservationUsd(this.env),
+            };
+          },
+        )
+        : null;
+      const extractionVisionGate = extractionBudget
+        ? createVisualExtractionVisionGate(extractionBudget)
+        : undefined;
+
       const result = await step.do<WorkflowStepResult>(
         `execute-${job.kind.toLowerCase()}`,
         { retries: { limit: 1, delay: "5 seconds", backoff: "exponential" }, timeout: "15 minutes" },
-        async () => this.execute(job),
+        async () => this.execute(job, extractionVisionGate),
       );
 
       if (job.kind === "VISUAL_TRANSFORM") {
@@ -96,9 +116,13 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
         );
       }
 
-      if (job.kind === "DEEP_ANALYSIS" || job.kind === "VISUAL_ANALYSIS") {
+      if (job.kind === "DEEP_ANALYSIS" || job.kind === "VISUAL_ANALYSIS" || job.kind === "VISUAL_EXTRACTION") {
         await step.do(
-          job.kind === "DEEP_ANALYSIS" ? "release-deep-analysis-budget" : "release-visual-analysis-budget",
+          job.kind === "DEEP_ANALYSIS"
+            ? "release-deep-analysis-budget"
+            : job.kind === "VISUAL_EXTRACTION"
+              ? "release-visual-extraction-budget"
+              : "release-visual-analysis-budget",
           { retries: { limit: 1, delay: "5 seconds", backoff: "exponential" }, timeout: "1 minute" },
           async () => {
             if (job.kind === "DEEP_ANALYSIS") {
@@ -116,7 +140,9 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
         return true;
       });
     } catch (error) {
-      if (job.kind === "DEEP_ANALYSIS" || job.kind === "VISUAL_ANALYSIS") await this.releaseBudgetAfterFailure(job.id, job.kind, error);
+      if (job.kind === "DEEP_ANALYSIS" || job.kind === "VISUAL_ANALYSIS" || job.kind === "VISUAL_EXTRACTION") {
+        await this.releaseBudgetAfterFailure(job.id, job.kind, error);
+      }
       if (error instanceof JobBlockedError) {
         await blockResearchJob(this.env.DB, job.id, error.code, error.message);
       } else {
@@ -126,7 +152,7 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
     }
   }
 
-  private async execute(job: ResearchJob): Promise<WorkflowStepResult> {
+  private async execute(job: ResearchJob, extractionVisionGate?: VisualExtractionVisionGate): Promise<WorkflowStepResult> {
     if (job.kind === "DISCOVERY_RUN") {
       await updateJobProgress(this.env.DB, job.id, 20, "발견 방향을 읽는 중");
       const input = job.input as { divergence: number; profile: Parameters<typeof runDiscovery>[1] extends number ? never : { original: { keywords: string[]; strength: number }; counter: { keywords: string[]; strength: number }; updatedAt: string } };
@@ -216,7 +242,8 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
       }
       await updateJobProgress(this.env.DB, job.id, 30, "시각 후보를 정리하는 중");
       const input = job.input as { sourceId: string; sourceVersionId: string; extractionRunId?: string };
-      const extracted = await runVisualExtraction(this.env, input);
+      if (!extractionVisionGate) throw new Error("visual_extraction_vision_gate_missing");
+      const extracted = await runVisualExtraction(this.env, { ...input, visionGate: extractionVisionGate });
       return {
         result: {
           sourceId: extracted.sourceId,
@@ -243,7 +270,7 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
 
   private async releaseBudgetAfterFailure(
     researchJobId: string,
-    jobKind: "DEEP_ANALYSIS" | "VISUAL_ANALYSIS",
+    jobKind: "DEEP_ANALYSIS" | "VISUAL_ANALYSIS" | "VISUAL_EXTRACTION",
     originalError: unknown,
   ): Promise<void> {
     try {
@@ -255,7 +282,11 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
     } catch (releaseError) {
       console.error(JSON.stringify({
         level: "error",
-        scope: jobKind === "DEEP_ANALYSIS" ? "workflow:deep-analysis-budget-release" : "workflow:visual-analysis-budget-release",
+        scope: jobKind === "DEEP_ANALYSIS"
+          ? "workflow:deep-analysis-budget-release"
+          : jobKind === "VISUAL_EXTRACTION"
+            ? "workflow:visual-extraction-budget-release"
+            : "workflow:visual-analysis-budget-release",
         researchJobId,
         message: releaseError instanceof Error ? releaseError.message : "deep_analysis_budget_release_failed",
         originalError: originalError instanceof Error ? originalError.message : String(originalError),

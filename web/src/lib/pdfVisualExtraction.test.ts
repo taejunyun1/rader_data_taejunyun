@@ -141,10 +141,11 @@ function createVisualExtractionDb(options: {
 
 function createOriginalsBucket() {
   const put = vi.fn(async () => undefined);
+  const deleteObject = vi.fn(async () => undefined);
   const get = vi.fn(async () => ({
     body: new Response("%PDF-1.7 active").body,
   }));
-  return { get, put };
+  return { get, put, delete: deleteObject };
 }
 
 describe("reservoir active PDF original", () => {
@@ -370,6 +371,40 @@ describe("visual extraction pdf route", () => {
     expect(recordUnit).not.toHaveBeenCalled();
     expect(originals.put).not.toHaveBeenCalled();
   });
+
+  it("deletes the uploaded R2 page when recording its D1 unit fails", async () => {
+    const { default: visualExtraction } = await import("../../../worker/src/routes/visualExtraction");
+    const originals = createOriginalsBucket();
+    const webpBytes = Buffer.from("RIFF0000WEBPpayload");
+    const contentHash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", webpBytes)))
+      .map((value) => value.toString(16).padStart(2, "0"))
+      .join("");
+    recordUnit.mockRejectedValueOnce(new Error("d1_unit_record_failed"));
+
+    const response = await visualExtraction.request("/pdf/runs/run-1/pages/2", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sourceId: "source-1",
+        versionId: "version-active",
+        width: 1200,
+        height: 900,
+        contentHash,
+        imageBase64: webpBytes.toString("base64"),
+      }),
+    }, {
+      DB: createVisualExtractionDb({ uploadedPages: [], totalUnits: 3 }),
+      ORIGINALS: originals,
+    } as Env);
+
+    expect(response.status).toBe(500);
+    expect(originals.put).toHaveBeenCalledWith(
+      "visual-temp/run-1/page-2.webp",
+      expect.any(Uint8Array),
+      expect.any(Object),
+    );
+    expect(originals.delete).toHaveBeenCalledWith("visual-temp/run-1/page-2.webp");
+  });
 });
 
 describe("renderPdfVisualPages", () => {
@@ -488,5 +523,61 @@ describe("startOrResumePdfVisualExtraction", () => {
       "/api/reservoir/source-1/original?version=version-active",
       expect.objectContaining({ signal: controller.signal }),
     );
+  });
+
+  it("continues 40-page chunks while hasMore before finalizing a 41-page PDF", async () => {
+    const uploadedPages: number[] = [];
+    const runPayload = () => ({
+      run: { id: "run-41", status: "UPLOADING", totalUnits: 41 },
+      checkpoint: {
+        uploadedPages: [...uploadedPages],
+        totalPages: 41,
+        remainingPages: 41 - uploadedPages.length,
+        nextPageNumber: uploadedPages.length < 41 ? uploadedPages.length + 1 : null,
+      },
+    });
+    const render = vi.fn(async () => ({ promise: Promise.resolve() }));
+    vi.doMock("pdfjs-dist", () => ({
+      GlobalWorkerOptions: { workerSrc: "" },
+      getDocument: () => ({
+        promise: Promise.resolve({
+          numPages: 41,
+          getPage: async () => ({
+            getViewport: ({ scale }: { scale: number }) => ({ width: 100 * scale, height: 100 * scale }),
+            render,
+          }),
+          destroy: async () => undefined,
+        }),
+      }),
+    }));
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    vi.spyOn(HTMLCanvasElement.prototype, "toBlob").mockImplementation((callback) => {
+      callback(new Blob(["RIFF0000WEBP"], { type: "image/webp" }));
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/pdf/original") return new Response(new Blob(["pdf"], { type: "application/pdf" }));
+      if (url === "/api/visual-extraction/pdf/runs") return Response.json(runPayload());
+      if (url.includes("/pages/")) {
+        uploadedPages.push(Number(url.split("/").at(-1)));
+        return Response.json(runPayload());
+      }
+      if (url.endsWith("/finalize")) {
+        expect(uploadedPages).toHaveLength(41);
+        return Response.json({ ...runPayload(), run: { ...runPayload().run, status: "QUEUED" } });
+      }
+      throw new Error(`unexpected_fetch:${url}:${init?.method ?? "GET"}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { startOrResumePdfVisualExtraction } = await import("./pdfVisualExtraction");
+
+    const result = await startOrResumePdfVisualExtraction({
+      sourceId: "source-41",
+      versionId: "version-41",
+      originalUrl: "/pdf/original",
+    });
+
+    expect(result).toMatchObject({ status: "QUEUED", totalPages: 41, uploadedPages: 41, remainingPages: 0 });
+    expect(uploadedPages).toEqual(Array.from({ length: 41 }, (_, index) => index + 1));
   });
 });

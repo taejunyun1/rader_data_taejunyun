@@ -4,6 +4,7 @@ import { uuid } from "../ingestion/ids";
 import type { VisualStorageState } from "@radar/shared";
 import { getVisualAsset, getVisualVersionForAnalysis, markVisualProcessingError } from "./store";
 import { validateVisualAnalysis, visualAnalysisPrompt, visualAnalysisText, type VisualAnalysisPayload } from "./analysisSchema";
+import type { VisualExtractionVisionGate } from "./extraction/visionBudget";
 
 interface VisualAnalysisResult {
   visualAssetId: string;
@@ -45,6 +46,7 @@ interface AnalyzeVisualBytesInput {
   height: number | null;
   caption: string | null;
   storageState: VisualStorageState;
+  visionGate?: VisualExtractionVisionGate;
 }
 
 export async function analyzeVisualAsset(env: Env, visualAssetId: string, requestedVersionId?: string): Promise<VisualAnalysisResult> {
@@ -147,7 +149,7 @@ export async function analyzeVisualVersionBytes(env: Env, input: AnalyzeVisualBy
 
 async function runVisualModel(env: Env, input: AnalyzeVisualBytesInput): Promise<VisualAnalysisPayload> {
   const image = `data:${input.mimeType};base64,${base64(input.bytes)}`;
-  const aiResult = await env.AI.run(env.MODEL_VISION, {
+  const invokeModel = () => env.AI.run(env.MODEL_VISION, {
     messages: [
       { role: "system", content: "You are a careful visual research assistant. Output only valid JSON." },
       { role: "user", content: visualAnalysisPrompt({ filename: input.filename, width: input.width, height: input.height, caption: input.caption }) },
@@ -155,6 +157,9 @@ async function runVisualModel(env: Env, input: AnalyzeVisualBytesInput): Promise
     image,
     max_tokens: 1800,
   } as unknown as Record<string, unknown>);
+  const aiResult = input.visionGate
+    ? await input.visionGate.execute(invokeModel)
+    : await invokeModel();
   const payload = validateVisualAnalysis(extractJson(responseText(aiResult)));
   if (!payload) throw new Error("visual_analysis_invalid_output");
   return payload;

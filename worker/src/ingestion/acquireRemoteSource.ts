@@ -3,7 +3,6 @@ import { extractStaticHtml } from "./extractHtml";
 import {
   fetchRemoteDocument,
   RemoteFetchError,
-  type DnsResolver,
   type RemoteDocumentKind,
   type RemoteFetchErrorCode,
 } from "./fetchRemoteDocument";
@@ -28,7 +27,7 @@ export interface RemoteAcquisitionResult {
 }
 
 interface RemoteAcquisitionOptions {
-  resolveDns?: DnsResolver;
+  fetchImpl?: typeof fetch;
 }
 
 export class RemoteAcquisitionError extends Error {
@@ -49,9 +48,7 @@ export async function acquireRemoteSource(
   options: RemoteAcquisitionOptions = {},
 ): Promise<RemoteAcquisitionResult> {
   try {
-    const remote = await fetchRemoteDocument(input.url, {
-      resolveDns: options.resolveDns,
-    });
+    const remote = await fetchRemoteDocument(input.url, { fetchImpl: options.fetchImpl });
     const r2Key = buildOriginalKey(input.sourceId, input.version, input.versionId, remote.kind);
     await env.ORIGINALS.put(r2Key, remote.body);
 

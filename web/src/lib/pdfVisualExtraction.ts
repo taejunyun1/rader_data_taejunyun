@@ -215,31 +215,37 @@ export async function startOrResumePdfVisualExtraction(input: {
     runData = await runResponse.json() as PdfRunResponse;
     checkpoint = runData.checkpoint;
 
-    const rendered = await renderPdfVisualPages(originalBlob, {
-      runId: runData.run.id,
-      uploadedPages: checkpoint.uploadedPages,
-    }, input.signal);
-    totalPages = rendered.totalPages;
+    let hasMore = true;
+    while (hasMore) {
+      const rendered = await renderPdfVisualPages(originalBlob, {
+        runId: runData.run.id,
+        uploadedPages: checkpoint.uploadedPages,
+      }, input.signal);
+      totalPages = Math.max(totalPages, rendered.totalPages, checkpoint.totalPages);
 
-    for (const page of rendered.pages) {
-      if (input.signal?.aborted) return pausedPdfExtractionResult(runData.run.id, checkpoint, totalPages);
+      for (const page of rendered.pages) {
+        if (input.signal?.aborted) return pausedPdfExtractionResult(runData.run.id, checkpoint, totalPages);
 
-      const uploadResponse = await fetch(`/api/visual-extraction/pdf/runs/${runData.run.id}/pages/${page.pageNumber}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sourceId: input.sourceId,
-          versionId: input.versionId,
-          width: page.width,
-          height: page.height,
-          contentHash: page.contentHash,
-          imageBase64: await blobToBase64(page.blob),
-        }),
-        signal: input.signal,
-      });
-      if (!uploadResponse.ok) throw new Error("pdf_visual_page_upload_failed");
-      const uploadData = await uploadResponse.json() as PdfRunResponse;
-      checkpoint = uploadData.checkpoint;
+        const uploadResponse = await fetch(`/api/visual-extraction/pdf/runs/${runData.run.id}/pages/${page.pageNumber}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sourceId: input.sourceId,
+            versionId: input.versionId,
+            width: page.width,
+            height: page.height,
+            contentHash: page.contentHash,
+            imageBase64: await blobToBase64(page.blob),
+          }),
+          signal: input.signal,
+        });
+        if (!uploadResponse.ok) throw new Error("pdf_visual_page_upload_failed");
+        const uploadData = await uploadResponse.json() as PdfRunResponse;
+        checkpoint = uploadData.checkpoint;
+      }
+
+      hasMore = rendered.hasMore;
+      if (hasMore && rendered.pages.length === 0) throw new Error("pdf_visual_checkpoint_stalled");
     }
 
     if (input.signal?.aborted) return pausedPdfExtractionResult(runData.run.id, checkpoint, totalPages);

@@ -10,6 +10,13 @@ import { fetchRemoteImage, RemoteImageFetchError } from "./fetchImage";
 import { buildLinkOnlyVisualDraft, filterVisualCandidate, unavailableVisualDecision, type ExistingVisualFingerprint } from "./filter";
 import { ExtractionStore } from "./store";
 import { buildPdfVisionPrompt, parsePdfPageCandidates, type PdfPageCandidate } from "./pdf";
+import {
+  createVisualExtractionVisionGate,
+  isVisualExtractionVisionBlocked,
+  type VisualExtractionVisionBlockReason,
+  type VisualExtractionVisionDiagnostics,
+  type VisualExtractionVisionGate,
+} from "./visionBudget";
 
 const HTML_CANDIDATE_LIMIT = 40;
 const HTML_FETCH_LIMIT = 12;
@@ -29,6 +36,7 @@ export interface VisualExtractionDiagnostics {
     htmlFetch: number;
     pdfPages: number;
   };
+  vision: VisualExtractionVisionDiagnostics;
 }
 
 export interface VisualExtractionRunResult {
@@ -55,6 +63,7 @@ export interface RunVisualExtractionInput {
   sourceId: string;
   sourceVersionId: string;
   extractionRunId?: string;
+  visionGate?: VisualExtractionVisionGate;
 }
 
 export interface LoadedSourceForExtraction {
@@ -165,11 +174,14 @@ export async function runVisualExtraction(
     runPdfExtraction: runPdfVisualExtraction,
   },
 ): Promise<VisualExtractionRunResult> {
-  const source = await deps.loadSource(env, input);
+  const runInput = input.visionGate
+    ? input
+    : { ...input, visionGate: createVisualExtractionVisionGate({ budgetReserved: false, reservationUsd: 0 }) };
+  const source = await deps.loadSource(env, runInput);
   if (isPdfFormat(source.inputFormat)) {
-    return deps.runPdfExtraction(env, input, source);
+    return deps.runPdfExtraction(env, runInput, source);
   }
-  return deps.runHtmlExtraction(env, input, source);
+  return deps.runHtmlExtraction(env, runInput, source);
 }
 
 function emptyOutcomeCounts(): VisualExtractionRunResult["outcomeCounts"] {
@@ -178,6 +190,61 @@ function emptyOutcomeCounts(): VisualExtractionRunResult["outcomeCounts"] {
     duplicateNear: 0,
     rightsGated: 0,
     cleanupFailures: 0,
+  };
+}
+
+export function summarizePersistedExtraction(input: {
+  assets: Array<{ selectionStatus: string; selectionReason: string; rightsStatus: string }>;
+  units: Array<{ status: string }>;
+}): {
+  counts: VisualExtractionRunResult["counts"];
+  outcomeCounts: Pick<VisualExtractionRunResult["outcomeCounts"], "duplicateExact" | "duplicateNear" | "rightsGated">;
+} {
+  const counts = { selected: 0, review: 0, filtered: 0, unavailable: 0 };
+  let duplicateExact = 0;
+  let duplicateNear = 0;
+  let rightsGated = 0;
+  for (const asset of input.assets) {
+    if (asset.selectionStatus === "SELECTED") counts.selected += 1;
+    else if (asset.selectionStatus === "REVIEW") counts.review += 1;
+    else if (asset.selectionStatus === "UNAVAILABLE") counts.unavailable += 1;
+    else counts.filtered += 1;
+    if (asset.selectionReason.includes("duplicate_exact")) duplicateExact += 1;
+    if (asset.selectionReason.includes("duplicate_near")) duplicateNear += 1;
+    if (asset.rightsStatus !== "PERSONAL" && asset.rightsStatus !== "PERMITTED") rightsGated += 1;
+  }
+  counts.unavailable = Math.max(counts.unavailable, input.units.filter((unit) => unit.status === "FAILED").length);
+  return { counts, outcomeCounts: { duplicateExact, duplicateNear, rightsGated } };
+}
+
+export function mergeVisualExtractionDiagnostics(
+  previous: VisualExtractionDiagnostics | null,
+  current: VisualExtractionDiagnostics,
+): VisualExtractionDiagnostics {
+  if (!previous || previous.sourceKind !== current.sourceKind) return current;
+  return {
+    sourceKind: current.sourceKind,
+    limits: {
+      htmlCandidates: Math.max(previous.limits.htmlCandidates, current.limits.htmlCandidates),
+      htmlFetch: Math.max(previous.limits.htmlFetch, current.limits.htmlFetch),
+      pdfPages: Math.max(previous.limits.pdfPages, current.limits.pdfPages),
+    },
+    blocked: {
+      htmlCandidates: Math.max(previous.blocked.htmlCandidates, current.blocked.htmlCandidates),
+      htmlFetch: Math.max(previous.blocked.htmlFetch, current.blocked.htmlFetch),
+      pdfPages: Math.max(previous.blocked.pdfPages, current.blocked.pdfPages),
+    },
+    vision: {
+      callLimit: Math.max(previous.vision.callLimit, current.vision.callLimit),
+      reservationUsd: Math.max(previous.vision.reservationUsd, current.vision.reservationUsd),
+      budgetReserved: previous.vision.budgetReserved || current.vision.budgetReserved,
+      budgetBlocked: previous.vision.budgetBlocked || current.vision.budgetBlocked,
+      attempted: previous.vision.attempted + current.vision.attempted,
+      completed: previous.vision.completed + current.vision.completed,
+      failed: previous.vision.failed + current.vision.failed,
+      blocked: previous.vision.blocked + current.vision.blocked,
+      capBlocked: previous.vision.capBlocked + current.vision.capBlocked,
+    },
   };
 }
 
@@ -256,6 +323,7 @@ async function runHtmlVisualExtraction(env: Env, input: RunVisualExtractionInput
     sourceKind: "HTML",
     limits: { htmlCandidates: HTML_CANDIDATE_LIMIT, htmlFetch: HTML_FETCH_LIMIT, pdfPages: PDF_PAGE_LIMIT },
     blocked: { htmlCandidates: 0, htmlFetch: 0, pdfPages: 0 },
+    vision: extractionVisionGate(input).snapshot(),
   };
   const counts = { selected: 0, review: 0, filtered: 0, unavailable: 0 };
   const outcomeCounts = emptyOutcomeCounts();
@@ -265,6 +333,7 @@ async function runHtmlVisualExtraction(env: Env, input: RunVisualExtractionInput
     : [];
 
   if (!source.r2Key || (input.extractionRunId && existingUnits.length === 0)) {
+    await reconcileCumulativeExtractionState(env.DB, run.id, source, counts, outcomeCounts, diagnostics);
     await ExtractionStore.finishRun(env.DB, { runId: run.id, counts, status: "SUCCEEDED" });
     return {
       sourceId: source.sourceId,
@@ -342,11 +411,12 @@ async function runHtmlVisualExtraction(env: Env, input: RunVisualExtractionInput
       applyDecisionCount(counts, decision.selectionStatus);
       applyOutcomeCount(outcomeCounts, decision);
       outcomeCounts.rightsGated += 1;
-      await persistHtmlLinkOnlyVisual(env, source, {
+      const visionFallback = await persistHtmlLinkOnlyVisual(env, source, {
         candidate,
         fetched,
         decision,
-      });
+      }, extractionVisionGate(input));
+      if (visionFallback) adjustDecisionCountToReview(counts, decision.selectionStatus);
       existingAssets.push({ assetId: `${candidate.candidateKey}:${fetched.contentHash}`, contentHash: fetched.contentHash, perceptualHash: null });
       await ExtractionStore.markUnitProcessed(env.DB, {
         runId: run.id,
@@ -384,6 +454,8 @@ async function runHtmlVisualExtraction(env: Env, input: RunVisualExtractionInput
   }
 
   const status = failedUnits > 0 ? "PARTIAL" : "SUCCEEDED";
+  diagnostics.vision = extractionVisionGate(input).snapshot();
+  await reconcileCumulativeExtractionState(env.DB, run.id, source, counts, outcomeCounts, diagnostics);
   await ExtractionStore.finishRun(env.DB, { runId: run.id, counts, status });
   logVisualExtractionDiagnostic({
     level: "info",
@@ -415,16 +487,16 @@ async function runPdfVisualExtraction(env: Env, input: RunVisualExtractionInput,
     sourceKind: "PDF",
     limits: { htmlCandidates: HTML_CANDIDATE_LIMIT, htmlFetch: HTML_FETCH_LIMIT, pdfPages: PDF_PAGE_LIMIT },
     blocked: { htmlCandidates: 0, htmlFetch: 0, pdfPages: 0 },
+    vision: extractionVisionGate(input).snapshot(),
   };
   const counts = { selected: 0, review: 0, filtered: 0, unavailable: 0 };
   const outcomeCounts = emptyOutcomeCounts();
   const units = (await listExtractionUnits(env.DB, run.id)).filter((unit) => shouldProcessPdfExtractionUnit(unit.status));
   const queuedUnits = units.slice(0, PDF_PAGE_LIMIT);
   diagnostics.blocked.pdfPages = Math.max(units.length - queuedUnits.length, 0);
-  const rightsStatus = pdfRightsStatus(source.origin);
-  const rightsBasis = isLinkOnlyPdfRights(rightsStatus)
-    ? `pdf_rights_${rightsStatus.toLowerCase()}_requires_link_only`
-    : "source_pdf_permitted_for_capsule";
+  const rights = pdfRightsForSource(source.origin);
+  const rightsStatus = rights.rightsStatus;
+  const rightsBasis = rights.rightsBasis;
   const existingAssets = await loadExistingFingerprints(env.DB, source.sourceVersionId);
   let failedUnits = 0;
 
@@ -445,7 +517,7 @@ async function runPdfVisualExtraction(env: Env, input: RunVisualExtractionInput,
       const object = await env.ORIGINALS.get(unit.tempR2Key);
       if (!object) throw new Error("visual_page_bytes_missing");
       const pageBytes = await object.arrayBuffer();
-      const rawCandidates = await detectPdfPageCandidates(env, pageBytes, source, unit);
+      const rawCandidates = await detectPdfPageCandidates(env, pageBytes, source, unit, extractionVisionGate(input));
       const parsed = parsePdfPageCandidates(rawCandidates);
       counts.filtered += parsed.rejected.length;
 
@@ -454,19 +526,37 @@ async function runPdfVisualExtraction(env: Env, input: RunVisualExtractionInput,
           const crop = await cropVisualBytes(env, pageBytes, candidate.bbox);
           const contentHash = await sha256Hex(crop.bytes);
           const perceptualHash = await imageDHash(env, crop.bytes);
-          const decision = decidePdfVisualCandidate({
+          const filteredDecision = decidePdfVisualCandidate({
             pageNumber: unit.unitNumber,
             candidate,
             contentHash,
             perceptualHash,
             existingAssets,
           });
+          const decision = extractionFallbackDecision(candidate, filteredDecision);
           applyDecisionCount(counts, decision.selectionStatus);
           applyOutcomeCount(outcomeCounts, decision);
           let persisted: { assetId: string };
           if (isLinkOnlyPdfRights(rightsStatus)) {
             outcomeCounts.rightsGated += 1;
-            persisted = await persistPdfLinkOnlyVisual(env, source, unit, candidate, crop, rightsStatus, rightsBasis, decision, index, contentHash, perceptualHash);
+            const linkOnly = await persistPdfLinkOnlyVisual(
+              env,
+              source,
+              unit,
+              candidate,
+              crop,
+              rightsStatus,
+              rightsBasis,
+              decision,
+              index,
+              contentHash,
+              perceptualHash,
+              extractionVisionGate(input),
+            );
+            persisted = linkOnly;
+            if (linkOnly.visionFallback) adjustDecisionCountToReview(counts, decision.selectionStatus);
+          } else if (!rightsBasis) {
+            throw new Error("pdf_archival_rights_basis_missing");
           } else if (shouldPersistPdfTransform(decision.selectionStatus)) {
             persisted = await persistPdfTransformCandidate(env, source, unit, candidate, crop, rightsStatus, rightsBasis, index, decision, contentHash, perceptualHash);
           } else {
@@ -566,6 +656,8 @@ async function runPdfVisualExtraction(env: Env, input: RunVisualExtractionInput,
   }
 
   const status = failedUnits > 0 ? "PARTIAL" : "SUCCEEDED";
+  diagnostics.vision = extractionVisionGate(input).snapshot();
+  await reconcileCumulativeExtractionState(env.DB, run.id, source, counts, outcomeCounts, diagnostics);
   await ExtractionStore.finishRun(env.DB, { runId: run.id, counts, status });
   logVisualExtractionDiagnostic({
     level: "info",
@@ -621,6 +713,121 @@ async function listExtractionUnits(db: D1Database, runId: string): Promise<Extra
   return rows.results ?? [];
 }
 
+async function reconcileCumulativeExtractionState(
+  db: D1Database,
+  runId: string,
+  source: LoadedSourceForExtraction,
+  counts: VisualExtractionRunResult["counts"],
+  outcomeCounts: VisualExtractionRunResult["outcomeCounts"],
+  diagnostics: VisualExtractionDiagnostics,
+): Promise<void> {
+  const originKind = isPdfFormat(source.inputFormat) ? "PDF_PAGE_CROP" : "WEB_EMBED";
+  const [assetRows, unitRows, runRow, priorResult] = await Promise.all([
+    db.prepare(
+      `SELECT selection_status AS selectionStatus,
+              selection_reason AS selectionReason,
+              rights_status AS rightsStatus
+       FROM visual_assets
+       WHERE parent_version_id = ? AND origin_kind = ? AND deleted_at IS NULL`
+    ).bind(source.sourceVersionId, originKind).all<{
+      selectionStatus: string;
+      selectionReason: string;
+      rightsStatus: string;
+    }>(),
+    db.prepare("SELECT status FROM visual_extraction_units WHERE run_id = ?")
+      .bind(runId)
+      .all<{ status: string }>(),
+    db.prepare(
+      `SELECT selected_count AS selectedCount,
+              review_count AS reviewCount,
+              filtered_count AS filteredCount,
+              unavailable_count AS unavailableCount
+       FROM visual_extraction_runs WHERE id = ?`
+    ).bind(runId).first<{
+      selectedCount: number;
+      reviewCount: number;
+      filteredCount: number;
+      unavailableCount: number;
+    }>(),
+    loadPriorExtractionResult(db, runId, diagnostics),
+  ]);
+
+  const persisted = summarizePersistedExtraction({
+    assets: assetRows.results ?? [],
+    units: unitRows.results ?? [],
+  });
+  counts.selected = Math.max(counts.selected, persisted.counts.selected, Number(runRow?.selectedCount ?? 0));
+  counts.review = Math.max(counts.review, persisted.counts.review, Number(runRow?.reviewCount ?? 0));
+  counts.filtered = Math.max(counts.filtered, persisted.counts.filtered, Number(runRow?.filteredCount ?? 0));
+  counts.unavailable = Math.max(counts.unavailable, persisted.counts.unavailable, Number(runRow?.unavailableCount ?? 0));
+
+  outcomeCounts.duplicateExact = persisted.outcomeCounts.duplicateExact;
+  outcomeCounts.duplicateNear = persisted.outcomeCounts.duplicateNear;
+  outcomeCounts.rightsGated = persisted.outcomeCounts.rightsGated;
+  outcomeCounts.cleanupFailures += priorResult?.outcomeCounts.cleanupFailures ?? 0;
+  Object.assign(diagnostics, mergeVisualExtractionDiagnostics(priorResult?.diagnostics ?? null, diagnostics));
+}
+
+async function loadPriorExtractionResult(
+  db: D1Database,
+  runId: string,
+  current: VisualExtractionDiagnostics,
+): Promise<{
+  diagnostics: VisualExtractionDiagnostics;
+  outcomeCounts: VisualExtractionRunResult["outcomeCounts"];
+} | null> {
+  const row = await db.prepare(
+    `SELECT result_json AS resultJson
+     FROM research_jobs
+     WHERE kind = 'VISUAL_EXTRACTION'
+       AND status = 'SUCCEEDED'
+       AND result_json IS NOT NULL
+       AND json_extract(result_json, '$.extractionRunId') = ?
+     ORDER BY finished_at DESC
+     LIMIT 1`
+  ).bind(runId).first<{ resultJson: string }>();
+  if (!row?.resultJson) return null;
+  try {
+    const parsed = JSON.parse(row.resultJson) as {
+      diagnostics?: Partial<VisualExtractionDiagnostics>;
+      outcomeCounts?: Partial<VisualExtractionRunResult["outcomeCounts"]>;
+    };
+    const previous = parsed.diagnostics;
+    if (!previous?.limits || !previous.blocked || previous.sourceKind !== current.sourceKind) return null;
+    return {
+      diagnostics: {
+        sourceKind: current.sourceKind,
+        limits: {
+          htmlCandidates: Number(previous.limits.htmlCandidates ?? current.limits.htmlCandidates),
+          htmlFetch: Number(previous.limits.htmlFetch ?? current.limits.htmlFetch),
+          pdfPages: Number(previous.limits.pdfPages ?? current.limits.pdfPages),
+        },
+        blocked: {
+          htmlCandidates: Number(previous.blocked.htmlCandidates ?? 0),
+          htmlFetch: Number(previous.blocked.htmlFetch ?? 0),
+          pdfPages: Number(previous.blocked.pdfPages ?? 0),
+        },
+        vision: previous.vision ?? {
+          ...current.vision,
+          attempted: 0,
+          completed: 0,
+          failed: 0,
+          blocked: 0,
+          capBlocked: 0,
+        },
+      },
+      outcomeCounts: {
+        duplicateExact: Number(parsed.outcomeCounts?.duplicateExact ?? 0),
+        duplicateNear: Number(parsed.outcomeCounts?.duplicateNear ?? 0),
+        rightsGated: Number(parsed.outcomeCounts?.rightsGated ?? 0),
+        cleanupFailures: Number(parsed.outcomeCounts?.cleanupFailures ?? 0),
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function loadExistingFingerprints(db: D1Database, parentVersionId: string): Promise<ExistingVisualFingerprint[]> {
   const rows = await db.prepare(
     `SELECT id AS assetId, content_hash AS contentHash, perceptual_hash AS perceptualHash
@@ -640,6 +847,22 @@ function applyDecisionCount(
   else counts.filtered += 1;
 }
 
+function adjustDecisionCountToReview(
+  counts: VisualExtractionRunResult["counts"],
+  previous: "SELECTED" | "REVIEW" | "DECORATIVE" | "DUPLICATE" | "UNAVAILABLE",
+): void {
+  if (previous === "REVIEW") return;
+  if (previous === "SELECTED") counts.selected = Math.max(0, counts.selected - 1);
+  else if (previous === "UNAVAILABLE") counts.unavailable = Math.max(0, counts.unavailable - 1);
+  else counts.filtered = Math.max(0, counts.filtered - 1);
+  counts.review += 1;
+}
+
+function extractionVisionGate(input: RunVisualExtractionInput): VisualExtractionVisionGate {
+  if (!input.visionGate) throw new Error("visual_extraction_vision_gate_missing");
+  return input.visionGate;
+}
+
 async function persistHtmlLinkOnlyVisual(
   env: Env,
   source: LoadedSourceForExtraction,
@@ -648,7 +871,8 @@ async function persistHtmlLinkOnlyVisual(
     fetched: Awaited<ReturnType<typeof fetchRemoteImage>>;
     decision: ReturnType<typeof filterVisualCandidate>;
   },
-): Promise<void> {
+  visionGate: VisualExtractionVisionGate,
+): Promise<VisualExtractionVisionBlockReason | null> {
   const existing = await findExistingCandidate(env.DB, source.sourceVersionId, "WEB_EMBED", input.candidate.candidateKey);
   const draft = buildLinkOnlyVisualDraft({
     parentSourceId: source.sourceId,
@@ -664,23 +888,32 @@ async function persistHtmlLinkOnlyVisual(
     byteSize: input.fetched.byteSize,
     contentHash: input.fetched.contentHash,
     rightsStatus: "UNKNOWN",
-    rightsBasis: "external_image_requires_rights_review",
+    rightsBasis: null,
     decision: input.decision,
   });
   const persisted = existing?.versionId
     ? { assetId: existing.assetId, versionId: existing.versionId }
     : await persistLinkOnlyDraft(env.DB, draft);
-  await analyzeVisualVersionBytes(env, {
-    visualAssetId: persisted.assetId,
-    visualVersionId: persisted.versionId,
-    bytes: input.fetched.body,
-    filename: `${persisted.assetId}.${extensionForVisualType(input.fetched.contentType, "asset")}`,
-    mimeType: input.fetched.contentType,
-    width: null,
-    height: null,
-    caption: input.candidate.caption,
-    storageState: "LINK_ONLY",
-  });
+  if (existing?.analysisId) return null;
+  try {
+    await analyzeVisualVersionBytes(env, {
+      visualAssetId: persisted.assetId,
+      visualVersionId: persisted.versionId,
+      bytes: input.fetched.body,
+      filename: `${persisted.assetId}.${extensionForVisualType(input.fetched.contentType, "asset")}`,
+      mimeType: input.fetched.contentType,
+      width: null,
+      height: null,
+      caption: input.candidate.caption,
+      storageState: "LINK_ONLY",
+      visionGate,
+    });
+    return null;
+  } catch (error) {
+    if (!isVisualExtractionVisionBlocked(error)) throw error;
+    await markExtractionVisionFallback(env.DB, persisted.assetId, error.reason);
+    return error.reason;
+  }
 }
 
 async function persistPdfLinkOnlyVisual(
@@ -690,15 +923,16 @@ async function persistPdfLinkOnlyVisual(
   candidate: PdfPageCandidate,
   crop: Awaited<ReturnType<typeof cropVisualBytes>>,
   rightsStatus: "UNKNOWN" | "RESTRICTED" | "PUBLIC_LINK",
-  rightsBasis: string,
+  rightsBasis: string | null,
   decision: ReturnType<typeof filterVisualCandidate>,
   index: number,
   contentHash: string,
   perceptualHash: string,
-): Promise<{ assetId: string }> {
+  visionGate: VisualExtractionVisionGate,
+): Promise<{ assetId: string; visionFallback: VisualExtractionVisionBlockReason | null }> {
   const candidateKey = buildPdfCandidateKey(unit.unitNumber, candidate, index);
   const existing = await findExistingCandidate(env.DB, source.sourceVersionId, "PDF_PAGE_CROP", candidateKey);
-  if (existing && !existing.versionId) return { assetId: existing.assetId };
+  if (existing && !existing.versionId) return { assetId: existing.assetId, visionFallback: null };
   const draft = buildLinkOnlyVisualDraft({
     parentSourceId: source.sourceId,
     parentVersionId: source.sourceVersionId,
@@ -722,19 +956,26 @@ async function persistPdfLinkOnlyVisual(
   const persisted = existing?.versionId
     ? { assetId: existing.assetId, versionId: existing.versionId }
     : await persistLinkOnlyDraft(env.DB, draft);
-  if (existing?.analysisId) return { assetId: persisted.assetId };
-  await analyzeVisualVersionBytes(env, {
-    visualAssetId: persisted.assetId,
-    visualVersionId: persisted.versionId,
-    bytes: crop.bytes,
-    filename: `page-${unit.unitNumber}.webp`,
-    mimeType: "image/webp",
-    width: crop.width,
-    height: crop.height,
-    caption: candidate.caption,
-    storageState: "LINK_ONLY",
-  });
-  return { assetId: persisted.assetId };
+  if (existing?.analysisId) return { assetId: persisted.assetId, visionFallback: null };
+  try {
+    await analyzeVisualVersionBytes(env, {
+      visualAssetId: persisted.assetId,
+      visualVersionId: persisted.versionId,
+      bytes: crop.bytes,
+      filename: `page-${unit.unitNumber}.webp`,
+      mimeType: "image/webp",
+      width: crop.width,
+      height: crop.height,
+      caption: candidate.caption,
+      storageState: "LINK_ONLY",
+      visionGate,
+    });
+    return { assetId: persisted.assetId, visionFallback: null };
+  } catch (error) {
+    if (!isVisualExtractionVisionBlocked(error)) throw error;
+    await markExtractionVisionFallback(env.DB, persisted.assetId, error.reason);
+    return { assetId: persisted.assetId, visionFallback: error.reason };
+  }
 }
 
 async function persistPdfDuplicateMetadata(
@@ -1010,15 +1251,21 @@ async function findExistingCandidate(
   return row;
 }
 
-function pdfRightsStatus(origin: string | null): "PERMITTED" | "PERSONAL" | "UNKNOWN" | "RESTRICTED" | "PUBLIC_LINK" {
-  if (origin?.startsWith("homepage")) return "PERSONAL";
-  if (origin?.startsWith("discovery:")) return "UNKNOWN";
-  if (origin?.startsWith("restricted:")) return "RESTRICTED";
-  if (origin?.startsWith("public_link:")) return "PUBLIC_LINK";
-  return "PERMITTED";
+export function pdfRightsForSource(origin: string | null): {
+  rightsStatus: "PERSONAL" | "UNKNOWN" | "RESTRICTED" | "PUBLIC_LINK";
+  rightsBasis: string | null;
+  storageState: "ARCHIVAL" | "LINK_ONLY";
+} {
+  if (origin?.startsWith("restricted:")) {
+    return { rightsStatus: "RESTRICTED", rightsBasis: null, storageState: "LINK_ONLY" };
+  }
+  if (origin?.startsWith("public_link:")) {
+    return { rightsStatus: "PUBLIC_LINK", rightsBasis: null, storageState: "LINK_ONLY" };
+  }
+  return { rightsStatus: "UNKNOWN", rightsBasis: null, storageState: "LINK_ONLY" };
 }
 
-function isLinkOnlyPdfRights(value: ReturnType<typeof pdfRightsStatus>): value is "UNKNOWN" | "RESTRICTED" | "PUBLIC_LINK" {
+function isLinkOnlyPdfRights(value: ReturnType<typeof pdfRightsForSource>["rightsStatus"]): value is "UNKNOWN" | "RESTRICTED" | "PUBLIC_LINK" {
   return value === "UNKNOWN" || value === "RESTRICTED" || value === "PUBLIC_LINK";
 }
 
@@ -1027,6 +1274,7 @@ async function detectPdfPageCandidates(
   pageBytes: ArrayBuffer,
   source: LoadedSourceForExtraction,
   unit: ExtractionUnitRow,
+  visionGate: VisualExtractionVisionGate,
 ): Promise<PdfPageCandidate[]> {
   if (!env.AI?.run || !env.MODEL_VISION) {
     return [fallbackPdfCandidate(unit)];
@@ -1039,30 +1287,63 @@ async function detectPdfPageCandidates(
       figureContext: extractPdfFigureContext(source.extractedText, unit.unitNumber),
     });
     const image = `data:image/webp;base64,${base64(pageBytes)}`;
-    const result = await env.AI.run(env.MODEL_VISION, {
-      messages: [
-        { role: "system", content: "You are a careful PDF-page visual extraction assistant. Output only valid JSON." },
-        { role: "user", content: prompt },
-      ],
-      image,
-      max_tokens: 1800,
-    } as unknown as Record<string, unknown>);
+    const result = await visionGate.execute(() => env.AI.run(env.MODEL_VISION, {
+        messages: [
+          { role: "system", content: "You are a careful PDF-page visual extraction assistant. Output only valid JSON." },
+          { role: "user", content: prompt },
+        ],
+        image,
+        max_tokens: 1800,
+      } as unknown as Record<string, unknown>));
     const parsed = parsePdfCandidateResponse(responseText(result));
     return parsed.length ? parsed : [fallbackPdfCandidate(unit)];
-  } catch {
+  } catch (error) {
+    if (isVisualExtractionVisionBlocked(error)) {
+      return [fallbackPdfCandidate(unit, `vision_skipped_${error.reason}`)];
+    }
     return [fallbackPdfCandidate(unit)];
   }
 }
 
-function fallbackPdfCandidate(unit: ExtractionUnitRow): PdfPageCandidate {
+function fallbackPdfCandidate(unit: ExtractionUnitRow, reason = "full_page_fallback"): PdfPageCandidate {
   return {
     bbox: { x: 0, y: 0, width: 1, height: 1 },
     visualKind: "DOCUMENT_SCAN",
     figureLabel: null,
     caption: `page ${unit.unitNumber}`,
-    reason: "full_page_fallback",
+    reason,
     confidence: 0.4,
   };
+}
+
+function extractionFallbackDecision(
+  candidate: PdfPageCandidate,
+  decision: ReturnType<typeof filterVisualCandidate>,
+): ReturnType<typeof filterVisualCandidate> {
+  if (!candidate.reason.startsWith("vision_skipped_")) return decision;
+  return {
+    ...decision,
+    selectionStatus: "REVIEW",
+    selectionReason: `${decision.ruleVersion}:${candidate.reason}`,
+    duplicateOf: null,
+  };
+}
+
+async function markExtractionVisionFallback(
+  db: D1Database,
+  visualAssetId: string,
+  reason: VisualExtractionVisionBlockReason,
+): Promise<void> {
+  const now = new Date().toISOString();
+  await db.prepare(
+    `UPDATE visual_assets
+     SET selection_status = 'REVIEW',
+         selection_reason = ?,
+         processing_status = 'READY',
+         last_error = ?,
+         updated_at = ?
+     WHERE id = ?`
+  ).bind(`visual_extraction_skipped_${reason}`, reason, now, visualAssetId).run();
 }
 
 function extractPdfFigureContext(text: string | null, pageNumber: number): Array<{ figureLabel: string | null; caption: string | null }> {

@@ -31,7 +31,118 @@ describe("visual extraction migration", () => {
   });
 });
 
+describe("visual extraction vision budget", () => {
+  it("blocks every model call when the workflow budget reservation is denied", async () => {
+    const { createVisualExtractionVisionGate, VisualExtractionVisionBlockedError } = await import(
+      "../../../worker/src/visual/extraction/visionBudget"
+    );
+    const modelCall = vi.fn().mockResolvedValue("should-not-run");
+    const gate = createVisualExtractionVisionGate({ budgetReserved: false, reservationUsd: 0.8 });
+
+    await expect(gate.execute(modelCall)).rejects.toMatchObject<Partial<VisualExtractionVisionBlockedError>>({
+      reason: "monthly_budget_exhausted",
+    });
+
+    expect(modelCall).not.toHaveBeenCalled();
+    expect(gate.snapshot()).toEqual({
+      callLimit: 80,
+      reservationUsd: 0.8,
+      budgetReserved: false,
+      budgetBlocked: true,
+      attempted: 1,
+      completed: 0,
+      failed: 0,
+      blocked: 1,
+      capBlocked: 0,
+    });
+  });
+
+  it("permits at most 80 extraction model calls and records the blocked overflow", async () => {
+    const { createVisualExtractionVisionGate } = await import("../../../worker/src/visual/extraction/visionBudget");
+    const gate = createVisualExtractionVisionGate({ budgetReserved: true, reservationUsd: 0.8 });
+    const modelCall = vi.fn().mockResolvedValue("ok");
+
+    for (let call = 0; call < 80; call += 1) {
+      await expect(gate.execute(modelCall)).resolves.toBe("ok");
+    }
+    await expect(gate.execute(modelCall)).rejects.toMatchObject({ reason: "visual_extraction_call_limit" });
+
+    expect(modelCall).toHaveBeenCalledTimes(80);
+    expect(gate.snapshot()).toMatchObject({
+      callLimit: 80,
+      budgetReserved: true,
+      budgetBlocked: false,
+      attempted: 81,
+      completed: 80,
+      failed: 0,
+      blocked: 1,
+      capBlocked: 1,
+    });
+  });
+});
+
 describe("ExtractionStore", () => {
+  it("preserves the declared PDF total when finishing a partial set of uploaded page units", async () => {
+    const { ExtractionStore } = await import("../../../worker/src/visual/extraction/store");
+    const db = createExtractionDb();
+    const run = await ExtractionStore.createOrResumeRun(db, {
+      parentSourceId: "source-1",
+      parentVersionId: "version-85",
+      originKind: "PDF_PAGE_CROP",
+      now: "2026-08-26T01:00:00.000Z",
+    });
+    const persistedRun = db.state.runs.find((row) => row.id === run.id);
+    if (!persistedRun) throw new Error("run_fixture_missing");
+    persistedRun.totalUnits = 85;
+
+    for (let page = 1; page <= 40; page += 1) {
+      await ExtractionStore.recordUnit(db, { runId: run.id, unitNumber: page, candidateKey: `page-${page}` });
+      await ExtractionStore.markUnitProcessed(db, {
+        runId: run.id,
+        unitNumber: page,
+        candidateKey: `page-${page}`,
+        status: "SUCCEEDED",
+      });
+    }
+
+    const finished = await ExtractionStore.finishRun(db, {
+      runId: run.id,
+      counts: { selected: 40, review: 0, filtered: 0, unavailable: 0 },
+    });
+
+    expect(finished.totalUnits).toBe(85);
+  });
+
+  it("does not collapse earlier successful run counts when a retry reports only its current units", async () => {
+    const { ExtractionStore } = await import("../../../worker/src/visual/extraction/store");
+    const db = createExtractionDb({
+      runs: [{
+        id: "run-cumulative",
+        parentSourceId: "source-1",
+        parentVersionId: "version-1",
+        originKind: "PDF_PAGE_CROP",
+        status: "PARTIAL",
+        selectedCount: 3,
+        reviewCount: 2,
+        filteredCount: 4,
+        unavailableCount: 1,
+      }],
+    });
+
+    const finished = await ExtractionStore.finishRun(db, {
+      runId: "run-cumulative",
+      counts: { selected: 0, review: 1, filtered: 0, unavailable: 0 },
+      status: "SUCCEEDED",
+    });
+
+    expect(finished).toMatchObject({
+      selectedCount: 3,
+      reviewCount: 2,
+      filteredCount: 4,
+      unavailableCount: 1,
+    });
+  });
+
   it("reuses an active run for the same source version and creates a new run when the active version changes", async () => {
     const { ExtractionStore } = await import("../../../worker/src/visual/extraction/store");
     const db = createExtractionDb();
@@ -620,7 +731,7 @@ describe("rights-first LINK_ONLY drafts", () => {
       byteSize: 2048,
       contentHash: "hash-link",
       rightsStatus: "UNKNOWN",
-      rightsBasis: "not reviewed",
+      rightsBasis: null,
       decision: {
         selectionStatus: "REVIEW",
         selectionReason: "visual-filter-v1:needs_context_review",
@@ -643,7 +754,8 @@ describe("rights-first LINK_ONLY drafts", () => {
       selectionStatus: "REVIEW",
       selectionReason: "visual-filter-v1:needs_context_review",
       rightsStatus: "UNKNOWN",
-      rightsBasis: "not reviewed",
+      rightsBasis: null,
+      rightsReviewedAt: null,
       storageState: "LINK_ONLY",
       processingStatus: "READY",
       contentHash: "hash-link",
@@ -866,6 +978,63 @@ describe("pdf visual crop and common filtering", () => {
 });
 
 describe("pdf resume and duplicate transform gates", () => {
+  it("rebuilds cumulative retry counts and outcomes from persisted assets and units", async () => {
+    const { summarizePersistedExtraction } = await import("../../../worker/src/visual/extraction/run");
+
+    expect(summarizePersistedExtraction({
+      assets: [
+        { selectionStatus: "SELECTED", selectionReason: "visual-filter-v1:selected_contextual_match", rightsStatus: "PERSONAL" },
+        { selectionStatus: "REVIEW", selectionReason: "visual-filter-v1:needs_context_review", rightsStatus: "UNKNOWN" },
+        { selectionStatus: "DUPLICATE", selectionReason: "visual-filter-v1:duplicate_exact", rightsStatus: "UNKNOWN" },
+      ],
+      units: [
+        { status: "SUCCEEDED" },
+        { status: "FAILED" },
+        { status: "DELETED" },
+      ],
+    })).toEqual({
+      counts: { selected: 1, review: 1, filtered: 1, unavailable: 1 },
+      outcomeCounts: { duplicateExact: 1, duplicateNear: 0, rightsGated: 2 },
+    });
+  });
+
+  it("retains earlier successful diagnostics while adding retry vision usage", async () => {
+    const { mergeVisualExtractionDiagnostics } = await import("../../../worker/src/visual/extraction/run");
+    const prior = {
+      sourceKind: "PDF" as const,
+      limits: { htmlCandidates: 40, htmlFetch: 12, pdfPages: 40 },
+      blocked: { htmlCandidates: 0, htmlFetch: 0, pdfPages: 12 },
+      vision: {
+        callLimit: 80,
+        reservationUsd: 0.8,
+        budgetReserved: true,
+        budgetBlocked: false,
+        attempted: 30,
+        completed: 29,
+        failed: 1,
+        blocked: 0,
+        capBlocked: 0,
+      },
+    };
+    const retry = {
+      ...prior,
+      blocked: { htmlCandidates: 0, htmlFetch: 0, pdfPages: 0 },
+      vision: {
+        ...prior.vision,
+        attempted: 2,
+        completed: 1,
+        failed: 0,
+        blocked: 1,
+        capBlocked: 1,
+      },
+    };
+
+    expect(mergeVisualExtractionDiagnostics(prior, retry)).toMatchObject({
+      blocked: { htmlCandidates: 0, htmlFetch: 0, pdfPages: 12 },
+      vision: { attempted: 32, completed: 30, failed: 1, blocked: 1, capBlocked: 1 },
+    });
+  });
+
   it("retries failed or processing units, skips terminal success, and retains failed-page retry inputs", async () => {
     const {
       shouldProcessPdfExtractionUnit,
@@ -1042,6 +1211,28 @@ describe("pdf resume and duplicate transform gates", () => {
 });
 
 describe("visual extraction runner", () => {
+  it("defaults ordinary uploaded PDFs to UNKNOWN LINK_ONLY rights without reviewed evidence", async () => {
+    const module = await import("../../../worker/src/visual/extraction/run") as typeof import("../../../worker/src/visual/extraction/run") & {
+      pdfRightsForSource(origin: string | null): { rightsStatus: string; rightsBasis: string | null; storageState: string };
+    };
+
+    expect(module.pdfRightsForSource("upload:pdf")).toEqual({
+      rightsStatus: "UNKNOWN",
+      rightsBasis: null,
+      storageState: "LINK_ONLY",
+    });
+    expect(module.pdfRightsForSource("url:https://example.com/paper.pdf")).toEqual({
+      rightsStatus: "UNKNOWN",
+      rightsBasis: null,
+      storageState: "LINK_ONLY",
+    });
+    expect(module.pdfRightsForSource("homepage:project")).toEqual({
+      rightsStatus: "UNKNOWN",
+      rightsBasis: null,
+      storageState: "LINK_ONLY",
+    });
+  });
+
   it("routes HTML versions through the HTML pipeline and preserves run-level diagnostics", async () => {
     const { runVisualExtraction } = await import("../../../worker/src/visual/extraction/run");
     const loadSource = vi.fn().mockResolvedValue({
@@ -1072,7 +1263,10 @@ describe("visual extraction runner", () => {
       runPdfExtraction,
     });
 
-    expect(loadSource).toHaveBeenCalledWith({} as Env, { sourceId: "source-1", sourceVersionId: "version-html" });
+    expect(loadSource).toHaveBeenCalledWith(
+      {} as Env,
+      expect.objectContaining({ sourceId: "source-1", sourceVersionId: "version-html" }),
+    );
     expect(runHtmlExtraction).toHaveBeenCalledTimes(1);
     expect(runPdfExtraction).not.toHaveBeenCalled();
     expect(result).toMatchObject({
@@ -1282,6 +1476,26 @@ describe("visual extraction cleanup", () => {
 });
 
 describe("visual asset routes", () => {
+  it("records explicit personal-upload rights evidence only at the personal image upload boundary", async () => {
+    const fixture = createVisualAssetRouteFixture();
+    const { createPersonalVisual } = await import("../../../worker/src/visual/store");
+
+    await createPersonalVisual(fixture.env, {
+      bytes: Uint8Array.from([0xff, 0xd8, 0xff, 0x00]).buffer,
+      filename: "personal.jpg",
+      contentType: "image/jpeg",
+      parentSourceId: null,
+    });
+
+    const row = fixture.sqlite.prepare("SELECT rights_status, rights_basis, rights_reviewed_at, storage_state FROM visual_assets LIMIT 1").get() as Record<string, unknown>;
+    expect(row).toMatchObject({
+      rights_status: "PERSONAL",
+      rights_basis: "user_personal_upload",
+      storage_state: "ARCHIVAL",
+    });
+    expect(String(row.rights_reviewed_at ?? "")).toMatch(/^2026-|^20\d\d-/);
+  });
+
   it("returns bbox, nearby text, rights basis, auto suggestion, latest user verified, relations, and extraction run in the detail payload", async () => {
     const fixture = createVisualAssetRouteFixture();
     fixture.insertSource({ id: "source-1", activeVersionId: "version-source-1" });
@@ -1774,12 +1988,67 @@ describe("visual asset routes", () => {
       body: JSON.stringify({ sourceId: "source-new" }),
     }, fixture.env);
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(409);
     expect(fixture.assetRow("asset-assign")).toMatchObject({
-      parent_source_id: "source-new",
-      parent_version_id: "version-new",
+      parent_source_id: "source-stale",
+      parent_version_id: "version-current",
       assignment_status: "ASSIGNED",
     });
+  });
+
+  it("atomically rejects non-personal, parented, already-assigned, and analyzed assignment targets", async () => {
+    const fixture = createVisualAssetRouteFixture();
+    fixture.insertSource({ id: "source-target", activeVersionId: "version-target" });
+    fixture.insertSourceVersion({ id: "version-target", sourceId: "source-target", version: 1 });
+    fixture.insertAsset({
+      id: "asset-extracted",
+      originKind: "WEB_EMBED",
+      assignmentStatus: "UNASSIGNED",
+      parentSourceId: null,
+      parentVersionId: null,
+    });
+    fixture.insertAsset({
+      id: "asset-parented",
+      originKind: "PERSONAL_UPLOAD",
+      assignmentStatus: "UNASSIGNED",
+      parentSourceId: "source-target",
+      parentVersionId: "version-target",
+    });
+    fixture.insertAsset({
+      id: "asset-analyzed",
+      originKind: "PERSONAL_UPLOAD",
+      assignmentStatus: "UNASSIGNED",
+      parentSourceId: null,
+      parentVersionId: null,
+    });
+    fixture.insertAssetVersion({
+      id: "asset-analyzed-original",
+      visualAssetId: "asset-analyzed",
+      version: 1,
+      variant: "ORIGINAL",
+      r2Key: "visuals/asset-analyzed/original.jpg",
+    });
+    fixture.insertAnalysis({
+      id: "analysis-assignment-guard",
+      visualAssetId: "asset-analyzed",
+      visualVersionId: "asset-analyzed-original",
+      analysisType: "AUTO_SUGGESTION",
+      payload: validVisualAnalysisPayload("assignment-guard"),
+    });
+
+    const { default: visualAssets } = await import("../../../worker/src/routes/visualAssets");
+    for (const assetId of ["asset-extracted", "asset-parented", "asset-analyzed"]) {
+      const response = await visualAssets.request(`/${assetId}/assignment`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceId: "source-target" }),
+      }, fixture.env);
+      expect(response.status).toBe(409);
+    }
+
+    expect(fixture.assetRow("asset-extracted")).toMatchObject({ parent_source_id: null, assignment_status: "UNASSIGNED" });
+    expect(fixture.assetRow("asset-parented")).toMatchObject({ parent_source_id: "source-target", assignment_status: "UNASSIGNED" });
+    expect(fixture.assetRow("asset-analyzed")).toMatchObject({ parent_source_id: null, assignment_status: "UNASSIGNED" });
   });
 
   it("recovers decorative or duplicate assets without erasing the original automated decision audit", async () => {
@@ -1835,7 +2104,7 @@ describe("visual asset routes", () => {
     ]));
   });
 
-  it("requires a non-empty basis for PERMITTED rights and records the rights review timestamp", async () => {
+  it("requires a non-empty basis for PERSONAL or PERMITTED rights and records the rights review timestamp", async () => {
     const fixture = createVisualAssetRouteFixture();
     fixture.insertSource({ id: "source-1", activeVersionId: "version-source-1" });
     fixture.insertSourceVersion({ id: "version-source-1", sourceId: "source-1", version: 1 });
@@ -1856,6 +2125,13 @@ describe("visual asset routes", () => {
       body: JSON.stringify({ rightsStatus: "PERMITTED", rightsBasis: "   " }),
     }, fixture.env);
     expect(invalid.status).toBe(400);
+
+    const invalidPersonal = await visualAssets.request("/asset-rights/rights", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rightsStatus: "PERSONAL", rightsBasis: "   " }),
+    }, fixture.env);
+    expect(invalidPersonal.status).toBe(400);
 
     const response = await visualAssets.request("/asset-rights/rights", {
       method: "PATCH",
@@ -2662,6 +2938,7 @@ function createVisualAssetRouteFixture() {
     DB: d1,
     ORIGINALS: {
       get: vi.fn(),
+      put: vi.fn(async () => undefined),
       delete: vi.fn(async (key: string) => {
         deleteCalls.push(key);
         if (failNextDelete) {
@@ -2673,6 +2950,9 @@ function createVisualAssetRouteFixture() {
           failNextBatch = true;
         }
       }),
+    },
+    IMAGES: {
+      info: vi.fn(async () => ({ format: "image/jpeg", width: 1, height: 1 })),
     },
     RESEARCH_JOBS_WORKFLOW: { create: workflowCreate },
   } as unknown as Env;

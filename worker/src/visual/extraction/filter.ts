@@ -77,7 +77,7 @@ export interface LinkOnlyVisualDraft {
     selectionReason: string;
     rightsStatus: VisualRightsStatus;
     rightsBasis: string | null;
-    rightsReviewedAt: string;
+    rightsReviewedAt: string | null;
     assignmentStatus: "ASSIGNED";
     storageState: "LINK_ONLY";
     pendingStorageState: null;
@@ -196,7 +196,7 @@ export function buildLinkOnlyVisualDraft(input: LinkOnlyVisualDraftInput): LinkO
       selectionReason: input.decision.selectionReason,
       rightsStatus: input.rightsStatus,
       rightsBasis: input.rightsBasis,
-      rightsReviewedAt: now,
+      rightsReviewedAt: null,
       assignmentStatus: "ASSIGNED",
       storageState: "LINK_ONLY",
       pendingStorageState: null,

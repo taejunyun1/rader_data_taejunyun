@@ -1,7 +1,6 @@
 const FETCH_TIMEOUT_MS = 20_000;
 const MAX_RESPONSE_BYTES = 20 * 1024 * 1024;
 const MAX_REDIRECTS = 5;
-const CLOUDFLARE_DOH_ENDPOINT = "https://cloudflare-dns.com/dns-query";
 const PDF_SIGNATURE_BYTES = Uint8Array.from([0x25, 0x50, 0x44, 0x46, 0x2d]);
 const PDF_SIGNATURE_SCAN_BYTES = 1024;
 
@@ -16,15 +15,7 @@ export type RemoteFetchErrorCode =
   | "REDIRECT_BLOCKED"
   | "PDF_SIGNATURE_INVALID";
 
-export type DnsRecordType = "A" | "AAAA";
-export type DnsResolver = (
-  hostname: string,
-  recordType: DnsRecordType,
-  signal: AbortSignal,
-) => Promise<string[]>;
-
 export interface RemoteFetchPolicy {
-  resolveDns?: DnsResolver;
   fetchImpl?: typeof fetch;
   maxResponseBytes?: number;
   accept?: RemoteFetchAccept;
@@ -116,7 +107,6 @@ export async function fetchSafeRemoteBytes(
 ): Promise<SafeRemoteText> {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), FETCH_TIMEOUT_MS);
-  const resolveDns = policy.resolveDns ?? createDnsResolver(policy.fetchImpl ?? fetch);
   const acceptHeader = policy.acceptHeader ?? acceptHeaderFor(policy.accept ?? "DOCUMENT");
   const maxRedirects = Math.max(0, policy.maxRedirects ?? MAX_REDIRECTS);
 
@@ -124,7 +114,6 @@ export async function fetchSafeRemoteBytes(
     const { response, finalUrl } = await fetchWithRedirects(
       url,
       ac.signal,
-      resolveDns,
       policy.fetchImpl ?? fetch,
       acceptHeader,
       maxRedirects,
@@ -140,28 +129,33 @@ export async function fetchSafeRemoteBytes(
 async function fetchWithRedirects(
   url: string,
   signal: AbortSignal,
-  resolveDns: DnsResolver,
   fetchImpl: typeof fetch,
   acceptHeader: string,
   maxRedirects: number,
 ): Promise<{ response: Response; finalUrl: string }> {
-  let currentUrl = await validateRemoteUrl(url, resolveDns, signal);
+  let currentUrl = validateRemoteUrl(url);
 
   for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount++) {
-    const response = await fetchImpl(currentUrl, {
-      headers: {
-        "User-Agent": "ResearchRadar/0.1 (personal research tool)",
-        Accept: acceptHeader,
-      },
-      redirect: "manual",
-      signal,
-    });
+    let response: Response;
+    try {
+      response = await fetchImpl(currentUrl, {
+        headers: {
+          "User-Agent": "ResearchRadar/0.1 (personal research tool)",
+          Accept: acceptHeader,
+        },
+        redirect: "manual",
+        signal,
+      });
+    } catch (error) {
+      if (isAbortError(error)) throw error;
+      throw new RemoteFetchError("REDIRECT_BLOCKED");
+    }
 
     if (isRedirectStatus(response.status)) {
       if (redirectCount === maxRedirects) throw new RemoteFetchError("REDIRECT_BLOCKED", response.status);
       const location = response.headers.get("location");
       if (!location) throw new RemoteFetchError("REDIRECT_BLOCKED", response.status);
-      currentUrl = await validateRemoteUrl(new URL(location, currentUrl).toString(), resolveDns, signal);
+      currentUrl = validateRemoteUrl(new URL(location, currentUrl).toString());
       continue;
     }
 
@@ -169,7 +163,7 @@ async function fetchWithRedirects(
     if (response.status >= 500) throw new RemoteFetchError("HTTP_5XX", response.status);
     if (!response.ok) throw new RemoteFetchError("HTTP_5XX", response.status);
 
-    return { response, finalUrl: response.url || currentUrl };
+    return { response, finalUrl: normalizePublicHttpUrl(response.url || currentUrl) ?? currentUrl };
   }
 
   throw new RemoteFetchError("REDIRECT_BLOCKED");
@@ -181,16 +175,10 @@ function acceptHeaderFor(accept: RemoteFetchAccept): string {
     : "text/html,application/xhtml+xml,text/plain;q=0.9,application/pdf;q=0.9,*/*;q=0.3";
 }
 
-async function validateRemoteUrl(url: string, resolveDns: DnsResolver, signal: AbortSignal): Promise<string> {
+function validateRemoteUrl(url: string): string {
   const normalized = normalizePublicHttpUrl(url);
   if (!normalized) throw new RemoteFetchError("REDIRECT_BLOCKED");
-
-  const parsed = new URL(normalized);
-  if (!(await hostnameResolvesPublicly(parsed.hostname, resolveDns, signal))) {
-    throw new RemoteFetchError("REDIRECT_BLOCKED");
-  }
-
-  return parsed.toString();
+  return normalized;
 }
 
 function classifyRemoteDocument(document: SafeRemoteText): SafeRemoteDocument {
@@ -279,76 +267,6 @@ async function readResponseBody(
   } finally {
     signal.removeEventListener("abort", onAbort);
   }
-}
-
-async function hostnameResolvesPublicly(
-  hostname: string,
-  resolveDns: DnsResolver,
-  signal: AbortSignal,
-): Promise<boolean> {
-  const normalized = normalizeHostname(hostname);
-  if (parseIpAddress(normalized)) return true;
-
-  const results = await Promise.all([
-    resolveDnsSafely(resolveDns, normalized, "A", signal),
-    resolveDnsSafely(resolveDns, normalized, "AAAA", signal),
-  ]);
-
-  if (results.some((result) => result.failed)) return false;
-
-  let sawAnyAnswer = false;
-  for (const result of results) {
-    for (const answer of result.answers) {
-      sawAnyAnswer = true;
-      const address = parseIpAddress(answer);
-      if (!address || isBlockedIpAddress(address)) return false;
-    }
-  }
-
-  return sawAnyAnswer;
-}
-
-async function resolveDnsSafely(
-  resolveDns: DnsResolver,
-  hostname: string,
-  recordType: DnsRecordType,
-  signal: AbortSignal,
-): Promise<{ answers: string[]; failed: boolean }> {
-  try {
-    const answers = await resolveDns(hostname, recordType, signal);
-    return {
-      answers: answers.filter(Boolean),
-      failed: false,
-    };
-  } catch (error) {
-    if (isAbortError(error)) throw error;
-    return { answers: [], failed: true };
-  }
-}
-
-function createDnsResolver(fetchImpl: typeof fetch): DnsResolver {
-  return async (hostname, recordType, signal) => {
-    const response = await fetchImpl(
-      `${CLOUDFLARE_DOH_ENDPOINT}?name=${encodeURIComponent(hostname)}&type=${recordType}`,
-      {
-        headers: {
-          Accept: "application/dns-json",
-        },
-        signal,
-      },
-    );
-    if (!response.ok) throw new Error("dns_lookup_failed");
-
-    const payload = await response.json() as DnsJsonResponse;
-    if (payload.Status !== 0) {
-      if (payload.Status === 3) return [];
-      throw new Error("dns_lookup_failed");
-    }
-
-    return (payload.Answer ?? [])
-      .filter((answer) => answer.type === (recordType === "A" ? 1 : 28))
-      .map((answer) => answer.data.trim());
-  };
 }
 
 function normalizeContentType(raw: string | null): string {
@@ -499,12 +417,4 @@ function isAbortError(error: unknown): boolean {
     && error !== null
     && "name" in error
     && error.name === "AbortError";
-}
-
-interface DnsJsonResponse {
-  Status: number;
-  Answer?: Array<{
-    type: number;
-    data: string;
-  }>;
 }
