@@ -126,7 +126,10 @@ CREATE TABLE visual_asset_operations (
 CREATE INDEX idx_visual_asset_operations_pending
   ON visual_asset_operations(status, created_at);
 
-CREATE TABLE research_jobs_new (
+ALTER TABLE ai_budget_reservations RENAME TO ai_budget_reservations_old;
+ALTER TABLE research_jobs RENAME TO research_jobs_old;
+
+CREATE TABLE research_jobs (
   id TEXT PRIMARY KEY,
   workflow_instance_id TEXT UNIQUE,
   kind TEXT NOT NULL CHECK (kind IN ('DISCOVERY_RUN', 'DISTILL_RUN', 'RADAR_SYNTHESIS', 'DEEP_ANALYSIS', 'SOURCE_ACQUISITION', 'VISUAL_TRANSFORM', 'VISUAL_ANALYSIS', 'VISUAL_EXTRACTION')),
@@ -138,7 +141,7 @@ CREATE TABLE research_jobs_new (
   result_ref_json TEXT,
   error_code TEXT,
   error TEXT,
-  retry_of TEXT REFERENCES research_jobs_new(id),
+  retry_of TEXT REFERENCES research_jobs(id),
   requested_by TEXT,
   dedupe_key TEXT NOT NULL,
   dismissed_at TEXT,
@@ -148,14 +151,29 @@ CREATE TABLE research_jobs_new (
   updated_at TEXT NOT NULL
 );
 
-INSERT INTO research_jobs_new
+INSERT INTO research_jobs
 SELECT id, workflow_instance_id, kind, status, progress, message, input_json, result_json, result_ref_json,
        error_code, error, retry_of, requested_by, dedupe_key, dismissed_at, created_at, started_at, finished_at,
        updated_at
-FROM research_jobs;
+FROM research_jobs_old;
 
-DROP TABLE research_jobs;
-ALTER TABLE research_jobs_new RENAME TO research_jobs;
+CREATE TABLE ai_budget_reservations (
+  id TEXT PRIMARY KEY,
+  month TEXT NOT NULL,
+  research_job_id TEXT NOT NULL UNIQUE REFERENCES research_jobs(id),
+  amount_usd REAL NOT NULL CHECK (amount_usd > 0),
+  status TEXT NOT NULL CHECK (status IN ('RESERVED', 'RELEASED')),
+  created_at TEXT NOT NULL,
+  released_at TEXT
+);
+
+INSERT INTO ai_budget_reservations (id, month, research_job_id, amount_usd, status, created_at, released_at)
+SELECT id, month, research_job_id, amount_usd, status, created_at, released_at
+FROM ai_budget_reservations_old;
+
+DROP TABLE ai_budget_reservations_old;
+DROP TABLE research_jobs_old;
+
 CREATE INDEX idx_research_jobs_recent ON research_jobs(created_at DESC);
 CREATE INDEX idx_research_jobs_status ON research_jobs(status, updated_at DESC);
 CREATE UNIQUE INDEX idx_research_jobs_active_dedupe ON research_jobs(dedupe_key) WHERE status IN ('QUEUED', 'RUNNING');
