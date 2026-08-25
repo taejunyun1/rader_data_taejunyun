@@ -23,9 +23,18 @@ export interface VisualExtractionVisionPersistenceState {
 
 export interface VisualExtractionVisionPersistence {
   load(): Promise<VisualExtractionVisionPersistenceState>;
-  seed(input: { budgetReserved: boolean; reservationUsd: number }): Promise<VisualExtractionVisionPersistenceState>;
+  seed(input: {
+    budgetReserved: boolean;
+    reservationUsd: number;
+    reservationId?: string | null;
+    researchJobId?: string | null;
+  }): Promise<VisualExtractionVisionPersistenceState>;
   recordRequest(): Promise<VisualExtractionVisionPersistenceState>;
-  claimSlot(): Promise<{ claimed: boolean; state: VisualExtractionVisionPersistenceState }>;
+  claimSlot(): Promise<{
+    claimed: boolean;
+    reason?: VisualExtractionVisionBlockReason;
+    state: VisualExtractionVisionPersistenceState;
+  }>;
   recordBlocked(reason: VisualExtractionVisionBlockReason): Promise<VisualExtractionVisionPersistenceState>;
   recordCompleted(): Promise<VisualExtractionVisionPersistenceState>;
   recordFailed(): Promise<VisualExtractionVisionPersistenceState>;
@@ -92,7 +101,11 @@ export function createVisualExtractionVisionGate(input: {
     },
     async claimSlot() {
       if (!state.diagnostics.budgetReserved || state.slotsUsed >= state.diagnostics.callLimit) {
-        return { claimed: false, state };
+        return {
+          claimed: false,
+          reason: state.diagnostics.budgetReserved ? "visual_extraction_call_limit" : "monthly_budget_exhausted",
+          state,
+        };
       }
       update({ ...state, slotsUsed: state.slotsUsed + 1 });
       return { claimed: true, state };
@@ -130,8 +143,9 @@ export function createVisualExtractionVisionGate(input: {
       const slot = await persistence.claimSlot();
       update(slot.state);
       if (!slot.claimed) {
-        update(await persistence.recordBlocked("visual_extraction_call_limit"));
-        throw new VisualExtractionVisionBlockedError("visual_extraction_call_limit");
+        const reason = slot.reason ?? "visual_extraction_call_limit";
+        update(await persistence.recordBlocked(reason));
+        throw new VisualExtractionVisionBlockedError(reason);
       }
       try {
         const result = await modelCall();

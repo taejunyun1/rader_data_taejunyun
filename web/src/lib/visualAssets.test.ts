@@ -38,6 +38,14 @@ describe("visual extraction migration", () => {
     expect(migrationSql).toContain("vision_attempted");
     expect(migrationSql).toContain("DEFAULT 80");
   });
+
+  it("adds reservation identity binding without transaction wrappers", () => {
+    const migrationSql = readFileSync(join(process.cwd(), "../worker/migrations/0020_visual_extraction_reservation_binding.sql"), "utf8");
+
+    expect(migrationSql).not.toMatch(/^\s*(?:BEGIN|COMMIT)\s*;/im);
+    expect(migrationSql).toContain("vision_reservation_id");
+    expect(migrationSql).toContain("vision_reservation_job_id");
+  });
 });
 
 describe("visual extraction vision budget", () => {
@@ -96,14 +104,16 @@ describe("visual extraction vision budget", () => {
     const { createVisualExtractionVisionGate } = await import(
       "../../../worker/src/visual/extraction/visionBudget"
     );
-    const db = createExtractionDb();
+    const db = createExtractionDb({
+      reservations: [{ id: "reservation-1", researchJobId: "job-1", status: "RESERVED" }],
+    });
     const run = await ExtractionStore.createOrResumeRun(db, {
       parentSourceId: "source-restart",
       parentVersionId: "version-restart",
       originKind: "PDF_PAGE_CROP",
     });
     const persistence = createVisualExtractionVisionPersistence(db, run.id);
-    await persistence.seed({ budgetReserved: true, reservationUsd: 0.8 });
+    await persistence.seed({ budgetReserved: true, reservationUsd: 0.8, reservationId: "reservation-1", researchJobId: "job-1" });
     const modelCall = vi.fn().mockResolvedValue("ok");
 
     const firstAttemptState = await persistence.load();
@@ -139,6 +149,60 @@ describe("visual extraction vision budget", () => {
     await expect(reconstructedPersistence.load()).resolves.toMatchObject({
       diagnostics: expect.objectContaining({ attempted: 81, completed: 80, blocked: 1, capBlocked: 1 }),
       slotsUsed: 80,
+    });
+  });
+
+  it("does not let a denied retry reuse authorization or claim the 41st durable slot", async () => {
+    const { ExtractionStore, createVisualExtractionVisionPersistence } = await import(
+      "../../../worker/src/visual/extraction/store"
+    );
+    const { createVisualExtractionVisionGate } = await import(
+      "../../../worker/src/visual/extraction/visionBudget"
+    );
+    const db = createExtractionDb({
+      reservations: [{ id: "reservation-1", researchJobId: "job-1", status: "RESERVED" }],
+    });
+    const run = await ExtractionStore.createOrResumeRun(db, {
+      parentSourceId: "source-denied-retry",
+      parentVersionId: "version-denied-retry",
+      originKind: "PDF_PAGE_CROP",
+    });
+    const persistence = createVisualExtractionVisionPersistence(db, run.id);
+    const seed = (input: {
+      budgetReserved: boolean;
+      reservationUsd: number;
+      reservationId: string | null;
+      researchJobId: string;
+    }) => persistence.seed(input as never);
+    await seed({ budgetReserved: true, reservationUsd: 0.8, reservationId: "reservation-1", researchJobId: "job-1" });
+    await expect(persistence.load()).resolves.toMatchObject({
+      diagnostics: expect.objectContaining({ callLimit: 80, budgetReserved: true }),
+      slotsUsed: 0,
+    });
+    const modelCall = vi.fn().mockResolvedValue("ok");
+    const firstAttemptGate = createVisualExtractionVisionGate({
+      persistence,
+      initialState: await persistence.load(),
+    });
+    for (let call = 0; call < 40; call += 1) {
+      await firstAttemptGate.execute(modelCall);
+    }
+
+    await seed({ budgetReserved: false, reservationUsd: 0.8, reservationId: null, researchJobId: "job-2" });
+    const deniedRetryPersistence = createVisualExtractionVisionPersistence(db, run.id);
+    const deniedRetryState = await deniedRetryPersistence.load();
+    expect(deniedRetryState.diagnostics.budgetReserved).toBe(false);
+    expect(deniedRetryState.slotsUsed).toBe(40);
+    const deniedRetryGate = createVisualExtractionVisionGate({
+      persistence: deniedRetryPersistence,
+      initialState: deniedRetryState,
+    });
+
+    await expect(deniedRetryGate.execute(modelCall)).rejects.toMatchObject({ reason: "monthly_budget_exhausted" });
+    expect(modelCall).toHaveBeenCalledTimes(40);
+    await expect(deniedRetryPersistence.load()).resolves.toMatchObject({
+      diagnostics: expect.objectContaining({ attempted: 41, completed: 40, blocked: 1, capBlocked: 0 }),
+      slotsUsed: 40,
     });
   });
 });
@@ -2767,6 +2831,8 @@ type RunState = {
   visionCallLimit?: number;
   visionReservationUsd?: number;
   visionBudgetReserved?: number;
+  visionReservationId?: string | null;
+  visionReservationJobId?: string | null;
   visionBudgetBlocked?: number;
   visionSlotsUsed?: number;
   visionAttempted?: number;
@@ -2780,6 +2846,8 @@ function normalizeVisionRunState(run: RunState): RunState {
   run.visionCallLimit ??= 80;
   run.visionReservationUsd ??= 0;
   run.visionBudgetReserved ??= 0;
+  run.visionReservationId ??= null;
+  run.visionReservationJobId ??= null;
   run.visionBudgetBlocked ??= 0;
   run.visionSlotsUsed ??= 0;
   run.visionAttempted ??= 0;
@@ -3346,6 +3414,7 @@ function sqliteToD1(sqlite: DatabaseSync, shouldFailBatch: () => boolean = () =>
 function createExtractionDb(seed: {
   runs?: RunState[];
   units?: UnitState[];
+  reservations?: Array<{ id: string; researchJobId: string; status: "RESERVED" | "RELEASED" }>;
   simulateRunInsertRace?: {
     parentSourceId: string;
     parentVersionId: string;
@@ -3364,6 +3433,7 @@ function createExtractionDb(seed: {
   const state = {
     runs: [...(seed.runs ?? [])].map(normalizeVisionRunState),
     units: [...(seed.units ?? [])],
+    reservations: [...(seed.reservations ?? [])],
   };
 
   const db = {
@@ -3376,6 +3446,16 @@ function createExtractionDb(seed: {
           return this;
         },
         async first<T = unknown>() {
+          if (query.includes("SELECT CASE WHEN vision_budget_reserved")) {
+            const [runId] = params as [string];
+            const run = state.runs.find((entry) => entry.id === runId);
+            const authorized = run && run.visionBudgetReserved === 1 && state.reservations.some((reservation) =>
+              reservation.id === run.visionReservationId
+              && reservation.researchJobId === run.visionReservationJobId
+              && reservation.status === "RESERVED"
+            ) ? 1 : 0;
+            return { authorized } as T;
+          }
           if (query.includes("FROM visual_extraction_runs") && query.includes("status IN ('UPLOADING', 'QUEUED', 'RUNNING')")) {
             const [parentSourceId, parentVersionId, originKind] = params as [string, string, string];
             return state.runs.find((run) => run.parentSourceId === parentSourceId && run.parentVersionId === parentVersionId && run.originKind === originKind && ["UPLOADING", "QUEUED", "RUNNING"].includes(run.status)) as T | null;
@@ -3392,7 +3472,7 @@ function createExtractionDb(seed: {
         },
         async run() {
           if (query.includes("visual_extraction_runs") && query.includes("INSERT")) {
-            const [id, parentSourceId, parentVersionId, originKind, status, totalUnits, uploadedUnits, processedUnits, selectedCount, reviewCount, filteredCount, unavailableCount, errorCode, error, createdAt, updatedAt, finishedAt, visionCallLimit, visionReservationUsd, visionBudgetReserved, visionBudgetBlocked, visionSlotsUsed, visionAttempted, visionCompleted, visionFailed, visionBlocked, visionCapBlocked] = params as [
+            const [id, parentSourceId, parentVersionId, originKind, status, totalUnits, uploadedUnits, processedUnits, selectedCount, reviewCount, filteredCount, unavailableCount, errorCode, error, createdAt, updatedAt, finishedAt, visionCallLimit, visionReservationUsd, visionBudgetReserved, visionBudgetBlocked, visionReservationId, visionReservationJobId, visionSlotsUsed, visionAttempted, visionCompleted, visionFailed, visionBlocked, visionCapBlocked] = params as [
               string,
               string,
               string,
@@ -3414,6 +3494,8 @@ function createExtractionDb(seed: {
               number,
               number,
               number,
+              string | null,
+              string | null,
               number,
               number,
               number,
@@ -3451,6 +3533,8 @@ function createExtractionDb(seed: {
                 visionReservationUsd,
                 visionBudgetReserved,
                 visionBudgetBlocked,
+                visionReservationId,
+                visionReservationJobId,
                 visionSlotsUsed,
                 visionAttempted,
                 visionCompleted,
@@ -3489,6 +3573,8 @@ function createExtractionDb(seed: {
                 visionReservationUsd,
                 visionBudgetReserved,
                 visionBudgetBlocked,
+                visionReservationId,
+                visionReservationJobId,
                 visionSlotsUsed,
                 visionAttempted,
                 visionCompleted,
@@ -3527,6 +3613,8 @@ function createExtractionDb(seed: {
               visionReservationUsd,
               visionBudgetReserved,
               visionBudgetBlocked,
+              visionReservationId,
+              visionReservationJobId,
               visionSlotsUsed,
               visionAttempted,
               visionCompleted,
@@ -3664,16 +3752,36 @@ function createExtractionDb(seed: {
           }
 
           if (query.includes("UPDATE visual_extraction_runs") && query.includes("vision_call_limit = MAX")) {
-            const [callLimit, reservationUsd, budgetReserved, updatedAt, runId] = params as [number, number, number, string, string];
+            const [callLimit, reservationUsd, updatedAt, runId] = params as [number, number, string, string];
             const run = state.runs.find((entry) => entry.id === runId);
             if (run) {
               normalizeVisionRunState(run);
               run.visionCallLimit = Math.max(run.visionCallLimit ?? 80, callLimit);
               run.visionReservationUsd = Math.max(run.visionReservationUsd ?? 0, reservationUsd);
-              run.visionBudgetReserved = Math.max(run.visionBudgetReserved ?? 0, budgetReserved);
+              run.visionBudgetReserved = 0;
+              run.visionReservationId = null;
+              run.visionReservationJobId = null;
               run.updatedAt = updatedAt;
             }
             return { success: true, meta: { changes: run ? 1 : 0 } };
+          }
+
+          if (query.includes("UPDATE visual_extraction_runs") && query.includes("SET vision_budget_reserved = 1")) {
+            const [reservationId, researchJobId, updatedAt, runId] = params as [string, string, string, string];
+            const run = state.runs.find((entry) => entry.id === runId);
+            const active = state.reservations.some((reservation) =>
+              reservation.id === reservationId
+              && reservation.researchJobId === researchJobId
+              && reservation.status === "RESERVED"
+            );
+            if (run && active) {
+              normalizeVisionRunState(run);
+              run.visionBudgetReserved = 1;
+              run.visionReservationId = reservationId;
+              run.visionReservationJobId = researchJobId;
+              run.updatedAt = updatedAt;
+            }
+            return { success: true, meta: { changes: run && active ? 1 : 0 } };
           }
 
           if (query.includes("UPDATE visual_extraction_runs") && query.includes("vision_slots_used = vision_slots_used + 1")) {
@@ -3681,7 +3789,12 @@ function createExtractionDb(seed: {
             const run = state.runs.find((entry) => entry.id === runId);
             if (!run) return { success: true, meta: { changes: 0 } };
             normalizeVisionRunState(run);
-            if (run.visionBudgetReserved !== 1 || (run.visionSlotsUsed ?? 0) >= (run.visionCallLimit ?? 80)) {
+            const active = state.reservations.some((reservation) =>
+              reservation.id === run.visionReservationId
+              && reservation.researchJobId === run.visionReservationJobId
+              && reservation.status === "RESERVED"
+            );
+            if (run.visionBudgetReserved !== 1 || !active || (run.visionSlotsUsed ?? 0) >= (run.visionCallLimit ?? 80)) {
               return { success: true, meta: { changes: 0 } };
             }
             run.visionSlotsUsed = (run.visionSlotsUsed ?? 0) + 1;

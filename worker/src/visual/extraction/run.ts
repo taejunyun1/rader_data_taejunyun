@@ -67,6 +67,8 @@ export interface RunVisualExtractionInput {
   visionBudget?: {
     budgetReserved: boolean;
     reservationUsd: number;
+    reservationId?: string | null;
+    researchJobId?: string | null;
   };
 }
 

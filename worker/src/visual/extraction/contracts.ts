@@ -43,6 +43,8 @@ export interface VisualExtractionRunRow {
   visionCallLimit: number;
   visionReservationUsd: number;
   visionBudgetReserved: boolean;
+  visionReservationId: string | null;
+  visionReservationJobId: string | null;
   visionBudgetBlocked: number;
   visionSlotsUsed: number;
   visionAttempted: number;

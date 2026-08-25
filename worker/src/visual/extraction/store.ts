@@ -44,6 +44,8 @@ function mapRun(row: DbRow): VisualExtractionRunRow {
     visionCallLimit: Number(row.visionCallLimit ?? VISUAL_EXTRACTION_VISION_CALL_LIMIT),
     visionReservationUsd: Number(row.visionReservationUsd ?? 0),
     visionBudgetReserved: Number(row.visionBudgetReserved ?? 0) === 1,
+    visionReservationId: nullableString(row.visionReservationId),
+    visionReservationJobId: nullableString(row.visionReservationJobId),
     visionBudgetBlocked: Number(row.visionBudgetBlocked ?? 0),
     visionSlotsUsed: Number(row.visionSlotsUsed ?? 0),
     visionAttempted: Number(row.visionAttempted ?? 0),
@@ -101,6 +103,7 @@ async function getActiveRun(db: D1Database, input: CreateOrResumeRunInput): Prom
             updated_at AS updatedAt, finished_at AS finishedAt,
             vision_call_limit AS visionCallLimit, vision_reservation_usd AS visionReservationUsd,
             vision_budget_reserved AS visionBudgetReserved, vision_budget_blocked AS visionBudgetBlocked,
+            vision_reservation_id AS visionReservationId, vision_reservation_job_id AS visionReservationJobId,
             vision_slots_used AS visionSlotsUsed, vision_attempted AS visionAttempted,
             vision_completed AS visionCompleted, vision_failed AS visionFailed,
             vision_blocked AS visionBlocked, vision_cap_blocked AS visionCapBlocked
@@ -123,6 +126,7 @@ async function getRun(db: D1Database, runId: string): Promise<VisualExtractionRu
             updated_at AS updatedAt, finished_at AS finishedAt,
             vision_call_limit AS visionCallLimit, vision_reservation_usd AS visionReservationUsd,
             vision_budget_reserved AS visionBudgetReserved, vision_budget_blocked AS visionBudgetBlocked,
+            vision_reservation_id AS visionReservationId, vision_reservation_job_id AS visionReservationJobId,
             vision_slots_used AS visionSlotsUsed, vision_attempted AS visionAttempted,
             vision_completed AS visionCompleted, vision_failed AS visionFailed,
             vision_blocked AS visionBlocked, vision_cap_blocked AS visionCapBlocked
@@ -195,9 +199,10 @@ export const ExtractionStore = {
         review_count, filtered_count, unavailable_count, error_code,
         error, created_at, updated_at, finished_at, vision_call_limit,
         vision_reservation_usd, vision_budget_reserved, vision_budget_blocked,
+        vision_reservation_id, vision_reservation_job_id,
         vision_slots_used, vision_attempted, vision_completed, vision_failed,
         vision_blocked, vision_cap_blocked)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(
       uuid(),
       input.parentSourceId,
@@ -220,6 +225,8 @@ export const ExtractionStore = {
       0,
       0,
       0,
+      null,
+      null,
       0,
       0,
       0,
@@ -425,19 +432,42 @@ export function createVisualExtractionVisionPersistence(db: D1Database, runId: s
   return {
     load,
     async seed(input) {
-      return updateAndLoad(
+      await updateAndLoad(
         `UPDATE visual_extraction_runs
          SET vision_call_limit = MAX(vision_call_limit, ?),
              vision_reservation_usd = MAX(vision_reservation_usd, ?),
-             vision_budget_reserved = MAX(vision_budget_reserved, ?),
+             vision_budget_reserved = 0,
+             vision_reservation_id = NULL,
+             vision_reservation_job_id = NULL,
              updated_at = ?
          WHERE id = ?`,
         VISUAL_EXTRACTION_VISION_CALL_LIMIT,
         input.reservationUsd,
-        input.budgetReserved ? 1 : 0,
         new Date().toISOString(),
         runId,
       );
+      if (input.budgetReserved && input.reservationId && input.researchJobId) {
+        await db.prepare(
+          `UPDATE visual_extraction_runs
+           SET vision_budget_reserved = 1,
+               vision_reservation_id = ?,
+               vision_reservation_job_id = ?,
+               updated_at = ?
+           WHERE id = ?
+             AND EXISTS (
+               SELECT 1 FROM ai_budget_reservations
+               WHERE id = ? AND research_job_id = ? AND status = 'RESERVED'
+             )`
+        ).bind(
+          input.reservationId,
+          input.researchJobId,
+          new Date().toISOString(),
+          runId,
+          input.reservationId,
+          input.researchJobId,
+        ).run();
+      }
+      return load();
     },
     async recordRequest() {
       return updateAndLoad(
@@ -453,9 +483,38 @@ export function createVisualExtractionVisionPersistence(db: D1Database, runId: s
         `UPDATE visual_extraction_runs
          SET vision_slots_used = vision_slots_used + 1, updated_at = ?
          WHERE id = ? AND vision_budget_reserved = 1
-           AND vision_slots_used < vision_call_limit`
+           AND vision_slots_used < vision_call_limit
+           AND vision_reservation_id IS NOT NULL
+           AND vision_reservation_job_id IS NOT NULL
+           AND EXISTS (
+             SELECT 1 FROM ai_budget_reservations
+             WHERE id = vision_reservation_id
+               AND research_job_id = vision_reservation_job_id
+               AND status = 'RESERVED'
+           )`
       ).bind(new Date().toISOString(), runId).run();
-      return { claimed: Number(result.meta?.changes ?? 0) === 1, state: await load() };
+      const state = await load();
+      if (Number(result.meta?.changes ?? 0) === 1) return { claimed: true, state };
+      const authorization = await db.prepare(
+        `SELECT CASE WHEN vision_budget_reserved = 1
+                     AND vision_reservation_id IS NOT NULL
+                     AND vision_reservation_job_id IS NOT NULL
+                     AND EXISTS (
+                       SELECT 1 FROM ai_budget_reservations
+                       WHERE id = vision_reservation_id
+                         AND research_job_id = vision_reservation_job_id
+                         AND status = 'RESERVED'
+                     )
+                    THEN 1 ELSE 0 END AS authorized
+         FROM visual_extraction_runs WHERE id = ?`
+      ).bind(runId).first<{ authorized: number }>();
+      return {
+        claimed: false,
+        reason: Number(authorization?.authorized ?? 0) === 1
+          ? "visual_extraction_call_limit"
+          : "monthly_budget_exhausted",
+        state,
+      };
     },
     async recordBlocked(reason: VisualExtractionVisionBlockReason) {
       if (reason === "visual_extraction_call_limit") {

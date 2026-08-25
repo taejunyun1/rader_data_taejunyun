@@ -43,12 +43,25 @@ Implemented the seven backend Important findings from the final review on `main`
    - If D1 unit recording fails after the temporary PDF page is written, the R2 object is deleted before the original D1 error is rethrown.
    - Cleanup failure is logged without replacing the primary persistence error.
 
+## Follow-up high budget findings
+
+1. **Denied visual retries and reservation binding**
+   - Each extraction attempt clears the prior run authorization before applying the current reservation result.
+   - A granted attempt is bound to the current `ai_budget_reservations.id`, `research_job_id`, and `RESERVED` status; the durable slot claim checks that binding atomically.
+   - A denied retry therefore cannot reuse a prior authorization or increment the next slot. The 40-call then denied 41st-call probe is covered by regression tests.
+
+2. **Visual usage settlement before reservation release**
+   - Visual analysis/extraction release now inserts one deterministic, idempotent `ai_usage` row before marking the reservation released.
+   - The recorded spend is conservative and bounded by the reservation amount, with zero token counts because Workers AI does not expose token billing in this path.
+   - Deep-analysis release remains unchanged for usage accounting because its OpenAI calls already record actual `ai_usage` rows.
+
 ## Changed files
 
 ### Runtime
 
 - `worker/wrangler.jsonc`
 - `worker/migrations/0019_visual_extraction_vision_budget.sql`
+- `worker/migrations/0020_visual_extraction_reservation_binding.sql`
 - `worker/src/analysis/budgetReservation.ts`
 - `worker/src/ingestion/acquireRemoteSource.ts`
 - `worker/src/ingestion/fetchRemoteDocument.ts`
@@ -82,6 +95,7 @@ Implemented the seven backend Important findings from the final review on `main`
 
 - Focused backend/web Vitest suites: passing.
 - Follow-up focused suites (`visualAssets`, `deepAnalysis`, `pdfVisualExtraction`): 92 tests passed, including D1-backed gate reconstruction across two attempts with exactly 80 model calls and cumulative diagnostics.
+- Budget follow-up focused suites: 95 tests passed, including denied 40→41 retry authorization and sequential monthly-budget enforcement.
 - Workspace typecheck (`shared`, `worker`, `web`): passing.
 - `git diff --check`: passing.
 - Full web Vitest suite: 393 passed, 4 failed in the unchanged `src/views/DiscoverView.test.tsx` modal flow. Running that file alone reproduces the same four failures. Those UI failures are outside this backend remediation scope and were not modified.
@@ -90,6 +104,8 @@ Implemented the seven backend Important findings from the final review on `main`
 
 - No deploy, D1 migration application, live R2 operation, or live Cloudflare subrequest was performed.
 - Migration `0019_visual_extraction_vision_budget.sql` is committed but has not been applied to a live D1 database.
+- Migration `0020_visual_extraction_reservation_binding.sql` is committed but has not been applied to a live D1 database.
+- Workers AI does not provide token-level billing here, so visual settlement intentionally charges the bounded reservation estimate rather than fabricating token usage or unbounded per-call rows.
 - `global_fetch_strictly_public` is covered by configuration and fetch-boundary tests; live platform enforcement requires the next authorized deployment/runtime verification.
 - Extraction still processes at most 40 PDF page units per invocation. Pages beyond that limit remain represented by the preserved total/checkpoint and stay retryable; the client now uploads all chunks instead of silently truncating after page 40.
 - Independent subagent review was unavailable in this session; the scoped diff received a manual security and Cloudflare Workers best-practices review.

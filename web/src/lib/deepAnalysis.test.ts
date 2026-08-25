@@ -432,6 +432,28 @@ describe("deep analysis budget reservation", () => {
     expect(db.reservations.filter((row) => row.status === "RESERVED")).toHaveLength(1);
   });
 
+  it("records conservative visual spend before release so sequential jobs cannot bypass the monthly cap", async () => {
+    vi.doUnmock("../../../worker/src/analysis/budgetReservation");
+    vi.resetModules();
+    const { releaseAnalysisBudgetReservation, reserveVisualAnalysisBudget, visualAnalysisReservationUsd } = await import(
+      "../../../worker/src/analysis/budgetReservation"
+    );
+    const env = budgetReservationEnv();
+    const amountUsd = await visualAnalysisReservationUsd(env);
+    const db = budgetReservationDb({ monthlyBudgetUsd: amountUsd });
+    env.DB = db;
+
+    const first = await reserveVisualAnalysisBudget(env, { researchJobId: "job-visual-sequential-1" });
+    await releaseAnalysisBudgetReservation(db, "job-visual-sequential-1");
+    await releaseAnalysisBudgetReservation(db, "job-visual-sequential-1");
+    const second = await reserveVisualAnalysisBudget(env, { researchJobId: "job-visual-sequential-2" });
+
+    expect(first).toMatchObject({ ok: true, amountUsd });
+    expect(db.usageRows).toHaveLength(1);
+    expect(db.usageRows[0]).toMatchObject({ costUsd: amountUsd, purpose: "visual_reservation" });
+    expect(second).toEqual({ ok: false });
+  });
+
   it("reserves the extraction-wide 80-call visual ceiling through the same atomic budget boundary", async () => {
     const { reserveVisualExtractionBudget, visualExtractionReservationUsd } = await import(
       "../../../worker/src/analysis/budgetReservation"
@@ -879,6 +901,13 @@ interface BudgetReservationStatement {
   values: unknown[];
 }
 
+interface BudgetUsageRow {
+  id: string;
+  month: string;
+  purpose: string;
+  costUsd: number;
+}
+
 function budgetReservationEnv(db: D1Database = budgetReservationDb({ monthlyBudgetUsd: 10 })): Env {
   return {
     DB: db,
@@ -900,6 +929,7 @@ function budgetReservationDb(input: { monthlyBudgetUsd: number; usageUsd?: numbe
     monthlyBudgetUsd: input.monthlyBudgetUsd,
     usageUsd: input.usageUsd ?? 0,
     reservations: [] as BudgetReservationRow[],
+    usageRows: [] as BudgetUsageRow[],
     statements: [] as BudgetReservationStatement[],
     prepare(sql: string) {
       let values: unknown[] = [];
@@ -915,12 +945,21 @@ function budgetReservationDb(input: { monthlyBudgetUsd: number; usageUsd?: numbe
           if (sql.includes("FROM ai_budget_reservations") && sql.includes("research_job_id = ?")) {
             const researchJobId = String(values[0]);
             const row = db.reservations.find((item) => item.researchJobId === researchJobId && item.status === "RESERVED");
-            return row ? { id: row.id, amount_usd: row.amountUsd } : null;
+            return row ? { id: row.id, month: row.month, amountUsd: row.amountUsd, amount_usd: row.amountUsd } : null;
           }
           return null;
         },
         async run() {
           db.statements.push({ sql, values });
+          if (sql.includes("INTO ai_usage")) {
+            const [id, month, costUsd, _createdAt] = values;
+            if (!db.usageRows.some((row) => row.id === id)) {
+              db.usageRows.push({ id: String(id), month: String(month), purpose: "visual_reservation", costUsd: Number(costUsd) });
+              db.usageUsd += Number(costUsd);
+              return { success: true, meta: { changes: 1 } };
+            }
+            return { success: true, meta: { changes: 0 } };
+          }
           if (sql.includes("INSERT INTO ai_budget_reservations")) {
             const [id, month, researchJobId, amountUsd, createdAt] = values;
             const existing = db.reservations.some((row) => row.researchJobId === researchJobId);
@@ -942,10 +981,10 @@ function budgetReservationDb(input: { monthlyBudgetUsd: number; usageUsd?: numbe
             return { success: true, meta: { changes: 0 } };
           }
           if (sql.includes("UPDATE ai_budget_reservations")) {
-            const [releasedAt, researchJobId] = values;
+            const [releasedAt, identifier] = values;
             let changes = 0;
             for (const row of db.reservations) {
-              if (row.researchJobId === researchJobId && row.status === "RESERVED") {
+              if ((row.researchJobId === identifier || row.id === identifier) && row.status === "RESERVED") {
                 row.status = "RELEASED";
                 row.releasedAt = String(releasedAt);
                 changes += 1;
@@ -957,6 +996,11 @@ function budgetReservationDb(input: { monthlyBudgetUsd: number; usageUsd?: numbe
         },
       };
       return statement;
+    },
+    async batch(statements: D1PreparedStatement[]) {
+      const results = [];
+      for (const statement of statements) results.push(await statement.run());
+      return results;
     },
   };
   return db as typeof db & D1Database;

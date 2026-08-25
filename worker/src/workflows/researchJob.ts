@@ -88,6 +88,8 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
             return {
               budgetReserved: reservation.ok,
               reservationUsd: reservation.ok ? reservation.amountUsd : await visualExtractionReservationUsd(this.env),
+              reservationId: reservation.ok ? reservation.reservationId : null,
+              researchJobId: job.id,
             };
           },
         )
