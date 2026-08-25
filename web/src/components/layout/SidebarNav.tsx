@@ -27,6 +27,9 @@ const JOB_VIEWS: Record<ResearchJob["kind"], View> = {
   RADAR_SYNTHESIS: "RADAR",
   DEEP_ANALYSIS: "RESERVOIR",
   SOURCE_ACQUISITION: "RESERVOIR",
+  VISUAL_TRANSFORM: "RESERVOIR",
+  VISUAL_ANALYSIS: "RESERVOIR",
+  VISUAL_EXTRACTION: "RESERVOIR",
 };
 
 export default function SidebarNav({ view, onNavigate, usage, counts = {}, jobs = [] }: SidebarNavProps) {

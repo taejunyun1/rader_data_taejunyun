@@ -9,6 +9,23 @@ function requestedBy(c: { req: { header(name: string): string | undefined } }): 
   return c.req.header("CF-Access-Authenticated-User-Email") ?? "local";
 }
 
+function isResearchJobRequest(value: unknown): value is ResearchJobRequest {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as { kind?: unknown; input?: unknown };
+  return typeof candidate.kind === "string"
+    && [
+      "DISCOVERY_RUN",
+      "DISTILL_RUN",
+      "RADAR_SYNTHESIS",
+      "DEEP_ANALYSIS",
+      "SOURCE_ACQUISITION",
+      "VISUAL_TRANSFORM",
+      "VISUAL_ANALYSIS",
+      "VISUAL_EXTRACTION",
+    ].includes(candidate.kind)
+    && candidate.input !== undefined;
+}
+
 jobs.get("/", async (c) => {
   const items = await listResearchJobs(c.env.DB, requestedBy(c), 30);
   const status = c.req.query("status");
@@ -30,7 +47,8 @@ jobs.post("/:id/retry", async (c) => {
   const old = await getResearchJob(c.env.DB, c.req.param("id"));
   if (!old || (old.requestedBy && old.requestedBy !== requestedBy(c))) return c.json({ error: "not_found" }, 404);
   if (old.status !== "FAILED" && old.status !== "BLOCKED") return c.json({ error: "job_not_retryable" }, 409);
-  const request = { kind: old.kind, input: old.input } as ResearchJobRequest;
+  const request = { kind: old.kind, input: old.input };
+  if (!isResearchJobRequest(request)) return c.json({ error: "job_kind_not_retryable" }, 400);
   try {
     const result = await enqueueResearchJob(c.env, request, requestedBy(c), old.id);
     return c.json(result, 202);

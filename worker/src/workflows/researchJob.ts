@@ -139,6 +139,14 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
       });
     }
 
+    if (job.kind === "VISUAL_TRANSFORM" || job.kind === "VISUAL_ANALYSIS" || job.kind === "VISUAL_EXTRACTION") {
+      throw new JobBlockedError("visual_pipeline_not_ready", "visual_pipeline_not_ready");
+    }
+
+    if (job.kind !== "DEEP_ANALYSIS") {
+      throw new Error(`unsupported_research_job_kind:${job.kind}`);
+    }
+
     await updateJobProgress(this.env.DB, job.id, 20, "자료 본문을 읽는 중");
     const input = job.input as { sourceId: string; profile: "precision" | "maximum" };
     const reservation = await reserveDeepAnalysisBudget(this.env, { researchJobId: job.id, profile: input.profile });

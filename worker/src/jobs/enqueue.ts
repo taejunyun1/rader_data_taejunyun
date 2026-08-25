@@ -6,7 +6,10 @@ export type ResearchJobRequest =
   | { kind: "DISTILL_RUN"; input: { includeCounter: boolean; redistillOf?: string; keepElements?: string[]; promptVariant?: string } }
   | { kind: "RADAR_SYNTHESIS"; input: { period: "WEEKLY" | "MONTHLY" | "YEARLY" } }
   | { kind: "DEEP_ANALYSIS"; input: { sourceId: string; profile: "precision" | "maximum" } }
-  | { kind: "SOURCE_ACQUISITION"; input: { sourceId: string; url: string } };
+  | { kind: "SOURCE_ACQUISITION"; input: { sourceId: string; url: string } }
+  | { kind: "VISUAL_TRANSFORM"; input: { visualAssetId: string } }
+  | { kind: "VISUAL_ANALYSIS"; input: { visualAssetId: string; versionId?: string } }
+  | { kind: "VISUAL_EXTRACTION"; input: { sourceId: string; sourceVersionId: string; extractionRunId?: string } };
 
 function stable(value: unknown): string {
   return JSON.stringify(value, Object.keys((value && typeof value === "object" ? value : {}) as object).sort());
