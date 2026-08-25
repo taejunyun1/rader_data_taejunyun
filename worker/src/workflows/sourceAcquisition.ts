@@ -48,7 +48,7 @@ export async function executeSourceAcquisitionJob(input: ExecuteSourceAcquisitio
   if (existing) {
     await updateProgress(env.DB, job.id, 75, "이미 저장된 원문 버전을 확인하는 중");
     await updateIngestJob(env.DB, sourceId, existing.qualityStatus === "READY" ? "extracted" : "failed", existing.qualityStatus === "READY" ? null : "text_not_ready");
-    if (existing.qualityStatus === "READY") await enqueueVisualExtractionIfActive(env, sourceId, existing.versionId, warnings);
+    if (existing.qualityStatus === "READY") await enqueueVisualExtractionIfReusableAndMissingRun(env, sourceId, existing.versionId, warnings);
     return {
       result: {
         sourceId,
@@ -172,4 +172,35 @@ async function enqueueVisualExtractionIfActive(
     const message = error instanceof Error && error.message ? error.message : "visual_extraction_enqueue_failed";
     warnings.push(`visual_extraction_enqueue_failed:${message}`);
   }
+}
+
+async function enqueueVisualExtractionIfReusableAndMissingRun(
+  env: Env,
+  sourceId: string,
+  sourceVersionId: string,
+  warnings: string[],
+): Promise<void> {
+  const activeVersion = await getActiveVersion(env.DB, sourceId);
+  if (!activeVersion || activeVersion.id !== sourceVersionId) return;
+  if (await hasVisualExtractionRunForVersion(env.DB, sourceVersionId)) return;
+  try {
+    await enqueueResearchJob(
+      env,
+      { kind: "VISUAL_EXTRACTION", input: { sourceId, sourceVersionId } },
+      "system:source-acquisition",
+    );
+  } catch (error) {
+    const message = error instanceof Error && error.message ? error.message : "visual_extraction_enqueue_failed";
+    warnings.push(`visual_extraction_enqueue_failed:${message}`);
+  }
+}
+
+async function hasVisualExtractionRunForVersion(db: D1Database, sourceVersionId: string): Promise<boolean> {
+  const row = await db.prepare(
+    `SELECT id
+     FROM visual_extraction_runs
+     WHERE parent_version_id = ?
+     LIMIT 1`,
+  ).bind(sourceVersionId).first<{ id: string }>();
+  return Boolean(row?.id);
 }

@@ -170,6 +170,8 @@ describe("static HTML extraction", () => {
     ["blob:https://example.com/blob-id", "blocked_source_scheme"],
     ["javascript:alert(1)", "blocked_source_scheme"],
     ["http://127.0.0.1/private.png", "private_source_url"],
+    ["http://[fd00::1]/private.png", "private_source_url"],
+    ["http://[fe80::1]/private.png", "private_source_url"],
   ] satisfies Array<[string, string]>)("rejects direct candidate urls for %s", async (src, expectedSignal) => {
     const { extractStaticHtml } = await import("../../../worker/src/ingestion/extractHtml");
     const { inspectHtmlVisualCandidates } = await import("../../../worker/src/visual/extraction/html");
@@ -806,6 +808,62 @@ describe("source acquisition workflow", () => {
 
     expect(fixture.enqueueResearchJob).not.toHaveBeenCalled();
   });
+
+  it("does not enqueue visual extraction on a reusable active version when an extraction run already exists", async () => {
+    const fixture = setupResearchJobWorkflowFixture();
+    fixture.findReusableAcquisitionVersion.mockResolvedValue({
+      versionId: "acq-job-existing",
+      charCount: 2400,
+      textScope: "FULLTEXT",
+      qualityStatus: "READY",
+    });
+    fixture.getActiveVersion.mockResolvedValue({ id: "acq-job-existing", version: 2 });
+    fixture.hasVisualExtractionRunForVersion.mockResolvedValue(true);
+
+    const { executeSourceAcquisitionJob, db } = await loadSourceAcquisitionRunner(fixture);
+    const result = await executeSourceAcquisitionJob({
+      env: { DB: db } as Env,
+      job: {
+        id: "job-existing",
+        input: { sourceId: "source-1", url: "https://example.com/article" },
+      },
+      updateProgress: fixture.updateJobProgress,
+    });
+
+    expect(fixture.updateIngestJob).toHaveBeenCalledWith(db, "source-1", "extracted", null);
+    expect(fixture.hasVisualExtractionRunForVersion).toHaveBeenCalledWith("acq-job-existing");
+    expect(fixture.enqueueResearchJob).not.toHaveBeenCalled();
+    expect(result.result.versionId).toBe("acq-job-existing");
+  });
+
+  it("retries visual extraction on a reusable active version when no extraction run exists yet", async () => {
+    const fixture = setupResearchJobWorkflowFixture();
+    fixture.findReusableAcquisitionVersion.mockResolvedValue({
+      versionId: "acq-job-retry",
+      charCount: 2400,
+      textScope: "FULLTEXT",
+      qualityStatus: "READY",
+    });
+    fixture.getActiveVersion.mockResolvedValue({ id: "acq-job-retry", version: 2 });
+    fixture.hasVisualExtractionRunForVersion.mockResolvedValue(false);
+
+    const { executeSourceAcquisitionJob, db } = await loadSourceAcquisitionRunner(fixture);
+    await executeSourceAcquisitionJob({
+      env: { DB: db } as Env,
+      job: {
+        id: "job-retry",
+        input: { sourceId: "source-1", url: "https://example.com/article" },
+      },
+      updateProgress: fixture.updateJobProgress,
+    });
+
+    expect(fixture.hasVisualExtractionRunForVersion).toHaveBeenCalledWith("acq-job-retry");
+    expect(fixture.enqueueResearchJob).toHaveBeenCalledWith(
+      expect.objectContaining({ DB: db }),
+      { kind: "VISUAL_EXTRACTION", input: { sourceId: "source-1", sourceVersionId: "acq-job-retry" } },
+      "system:source-acquisition",
+    );
+  });
 });
 
 describe("manual URL extraction compatibility", () => {
@@ -961,7 +1019,9 @@ async function allowPublicDnsResolution(_hostname: string, recordType: "A" | "AA
 
 function setupResearchJobWorkflowFixture() {
   return {
+    findReusableAcquisitionVersion: vi.fn().mockResolvedValue(null),
     getActiveVersion: vi.fn().mockResolvedValue(null),
+    hasVisualExtractionRunForVersion: vi.fn().mockResolvedValue(false),
     acquireRemoteSource: vi.fn(),
     appendAcquisitionVersion: vi.fn(),
     updateIngestJob: vi.fn(),
@@ -986,12 +1046,18 @@ async function loadSourceAcquisitionRunner(fixture: ReturnType<typeof setupResea
     enqueueResearchJob: fixture.enqueueResearchJob,
   }));
   const db = {
-    prepare() {
+    prepare(query: string) {
+      let params: unknown[] = [];
       return {
-        bind() {
+        bind(...values: unknown[]) {
+          params = values;
           return this;
         },
         async first() {
+          if (query.includes("FROM source_versions v")) return fixture.findReusableAcquisitionVersion(...params);
+          if (query.includes("FROM visual_extraction_runs")) {
+            return await fixture.hasVisualExtractionRunForVersion(...params) ? { id: "run-1" } : null;
+          }
           return null;
         },
       };

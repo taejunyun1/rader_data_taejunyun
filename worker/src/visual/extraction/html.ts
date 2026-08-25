@@ -343,17 +343,18 @@ function canonicalizeUrl(raw: string, baseUrl: string): { url: string | null; si
 
 function isPrivateUrl(url: URL): boolean {
   const host = url.hostname.toLowerCase();
-  if (host === "localhost" || host.endsWith(".local")) return true;
-  if (host === "::1" || host === "[::1]") return true;
-  if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
-    const parts = host.split(".").map(Number);
+  const normalizedHost = host.replace(/^\[|\]$/g, "");
+  if (normalizedHost === "localhost" || normalizedHost.endsWith(".local")) return true;
+  if (normalizedHost === "::1") return true;
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(normalizedHost)) {
+    const parts = normalizedHost.split(".").map(Number);
     const [a, b] = parts;
     if (a === 10 || a === 127 || a === 0) return true;
     if (a === 169 && b === 254) return true;
     if (a === 192 && b === 168) return true;
     if (a === 172 && b != null && b >= 16 && b <= 31) return true;
   }
-  return host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80:");
+  return normalizedHost.startsWith("fc") || normalizedHost.startsWith("fd") || normalizedHost.startsWith("fe80:");
 }
 
 function splitFigureCaption(value: string | null): [string | null, string | null] {

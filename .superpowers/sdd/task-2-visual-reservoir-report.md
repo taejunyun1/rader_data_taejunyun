@@ -108,3 +108,40 @@ Additional regression coverage added for:
 - thumbnail `img src` plus `800w/1600w` `srcset`, expecting the `1600w` candidate as `sourceUrl`
 - contextual `24x24` figure remaining in candidates with `review_small_context`
 - direct candidate rejection for `data:`, `blob:`, `javascript:`, and `127.0.0.1` URLs
+
+## Fix Follow-Up 2
+
+Date: 2026-08-25
+Reason: final Task 2 review findings
+
+### Addressed Findings
+
+- Private candidate URL detection now normalizes `URL.hostname` by removing IPv6 brackets before checking loopback, ULA, and link-local ranges, so bracketed hosts like `http://[fd00::1]/...` and `http://[fe80::1]/...` are rejected correctly.
+- The reusable acquisition fast-path no longer re-enqueues visual extraction just because the reused version is active. It first checks whether a `visual_extraction_runs` row already exists for that source version. If a run already exists, enqueue is skipped; if no run exists, the enqueue retry still happens so earlier enqueue failures can recover.
+
+### Additional RED/GREEN Cycle
+
+RED:
+
+```bash
+pnpm --dir web exec vitest run src/lib/remoteAcquisition.test.ts src/lib/ingestion.test.ts
+```
+
+Observed failures:
+
+- bracketed IPv6 ULA and link-local candidate URLs were still accepted as candidates
+- reusable active acquisition versions still re-enqueued visual extraction without checking prior extraction runs
+
+GREEN:
+
+```bash
+pnpm --dir web exec vitest run src/lib/remoteAcquisition.test.ts src/lib/ingestion.test.ts
+```
+
+Passed: `64/64` tests
+
+Additional regression coverage added for:
+
+- `http://[fd00::1]/private.png` and `http://[fe80::1]/private.png` candidate rejection
+- reusable active version with an existing `visual_extraction_runs` row does not enqueue again
+- reusable active version with no existing extraction run still retries enqueue
