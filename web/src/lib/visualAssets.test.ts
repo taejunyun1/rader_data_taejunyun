@@ -212,6 +212,7 @@ describe("ExtractionStore", () => {
     expect(processing.processedAt).toBeNull();
     expect(finished.processedUnits).toBe(0);
     expect(finished.status).toBe("RUNNING");
+    expect(finished.finishedAt).toBeNull();
   });
 
   it("reports partial success when some units fail, lists expired temp units, and cancels runs explicitly", async () => {

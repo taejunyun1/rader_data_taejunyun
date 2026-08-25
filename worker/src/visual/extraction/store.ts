@@ -138,6 +138,10 @@ function deriveFinishedStatus(
   return "PARTIAL";
 }
 
+function isTerminalRunStatus(status: VisualExtractionRunRow["status"]): boolean {
+  return status === "SUCCEEDED" || status === "PARTIAL" || status === "FAILED" || status === "CANCELLED";
+}
+
 export const ExtractionStore = {
   async createOrResumeRun(db: D1Database, input: CreateOrResumeRunInput): Promise<VisualExtractionRunRow> {
     const timestamp = nowIso(input.now);
@@ -247,10 +251,11 @@ export const ExtractionStore = {
     if (!existing) throw new Error("visual_extraction_run_not_found");
 
     const units = await listRunUnits(db, input.runId);
-    const finishedAt = nowIso(input.finishedAt);
+    const updatedAt = nowIso(input.finishedAt);
+    const status = deriveFinishedStatus(units, input);
     const next: VisualExtractionRunRow = {
       ...existing,
-      status: deriveFinishedStatus(units, input),
+      status,
       totalUnits: units.length,
       uploadedUnits: countUploaded(units),
       processedUnits: countProcessed(units),
@@ -260,8 +265,8 @@ export const ExtractionStore = {
       unavailableCount: input.counts.unavailable,
       errorCode: input.errorCode ?? existing.errorCode,
       error: input.error ?? existing.error,
-      updatedAt: finishedAt,
-      finishedAt,
+      updatedAt,
+      finishedAt: isTerminalRunStatus(status) ? updatedAt : null,
     };
 
     await db.prepare(
