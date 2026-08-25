@@ -215,7 +215,7 @@ describe("ExtractionStore", () => {
     expect(finished.finishedAt).toBeNull();
   });
 
-  it("reports partial success when some units fail, lists expired temp units, and cancels runs explicitly", async () => {
+  it("reports partial success when some units fail and lists expired temp units", async () => {
     const { ExtractionStore } = await import("../../../worker/src/visual/extraction/store");
     const db = createExtractionDb();
     const run = await ExtractionStore.createOrResumeRun(db, {
@@ -288,6 +288,64 @@ describe("ExtractionStore", () => {
     expect(finished.status).toBe("PARTIAL");
     expect(expired.map((unit) => unit.candidateKey)).toEqual(["candidate-2"]);
 
+  });
+
+  it("recomputes cancel counters from current units instead of copying the stale run row", async () => {
+    const { ExtractionStore } = await import("../../../worker/src/visual/extraction/store");
+    const db = createExtractionDb();
+    const run = await ExtractionStore.createOrResumeRun(db, {
+      parentSourceId: "source-1",
+      parentVersionId: "version-1",
+      originKind: "DISCOVERY_EMBED",
+      now: "2026-08-25T03:00:00.000Z",
+    });
+
+    await ExtractionStore.recordUnit(db, {
+      runId: run.id,
+      unitNumber: 1,
+      candidateKey: "candidate-1",
+      tempR2Key: "tmp/one.webp",
+      createdAt: "2026-08-25T03:00:00.000Z",
+    });
+    await ExtractionStore.recordUnit(db, {
+      runId: run.id,
+      unitNumber: 2,
+      candidateKey: "candidate-2",
+      tempR2Key: "tmp/two.webp",
+      createdAt: "2026-08-25T03:00:10.000Z",
+    });
+    await ExtractionStore.recordUnit(db, {
+      runId: run.id,
+      unitNumber: 3,
+      candidateKey: "candidate-3",
+      tempR2Key: "tmp/three.webp",
+      createdAt: "2026-08-25T03:00:20.000Z",
+    });
+
+    await ExtractionStore.markUnitProcessed(db, {
+      runId: run.id,
+      unitNumber: 1,
+      candidateKey: "candidate-1",
+      status: "SUCCEEDED",
+      processedAt: "2026-08-25T03:01:00.000Z",
+    });
+    await ExtractionStore.markUnitProcessed(db, {
+      runId: run.id,
+      unitNumber: 2,
+      candidateKey: "candidate-2",
+      status: "FAILED",
+      processedAt: "2026-08-25T03:01:30.000Z",
+      errorCode: "fetch_failed",
+      error: "origin missing",
+    });
+    await ExtractionStore.markUnitProcessed(db, {
+      runId: run.id,
+      unitNumber: 3,
+      candidateKey: "candidate-3",
+      status: "SUCCEEDED",
+      processedAt: "2026-08-25T03:01:45.000Z",
+    });
+
     const cancelled = await ExtractionStore.cancelRun(db, {
       runId: run.id,
       errorCode: "user_cancelled",
@@ -297,6 +355,9 @@ describe("ExtractionStore", () => {
 
     expect(cancelled.status).toBe("CANCELLED");
     expect(cancelled.errorCode).toBe("user_cancelled");
+    expect(cancelled.totalUnits).toBe(3);
+    expect(cancelled.uploadedUnits).toBe(3);
+    expect(cancelled.processedUnits).toBe(3);
   });
 
   it("marks deleted units with deleted_at, excludes them from uploaded counts, and allows succeeded completion after terminal units only", async () => {

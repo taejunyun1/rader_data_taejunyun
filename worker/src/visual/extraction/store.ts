@@ -298,10 +298,14 @@ export const ExtractionStore = {
     const existing = await getRun(db, input.runId);
     if (!existing) throw new Error("visual_extraction_run_not_found");
 
+    const units = await listRunUnits(db, input.runId);
     const cancelledAt = nowIso(input.cancelledAt);
     const next: VisualExtractionRunRow = {
       ...existing,
       status: "CANCELLED",
+      totalUnits: units.length,
+      uploadedUnits: countUploaded(units),
+      processedUnits: countProcessed(units),
       errorCode: input.errorCode ?? existing.errorCode,
       error: input.error ?? existing.error,
       updatedAt: cancelledAt,
