@@ -30,6 +30,8 @@ export interface VisualAssetRow {
   sourceUrl: string | null;
   pageNumber: number | null;
   figureLabel: string | null;
+  bboxJson: string | null;
+  candidateKey: string | null;
   caption: string | null;
   nearbyText: string | null;
   assetRole: VisualAssetRole;
@@ -37,6 +39,8 @@ export interface VisualAssetRow {
   selectionStatus: VisualSelectionStatus;
   selectionReason: string | null;
   rightsStatus: VisualRightsStatus;
+  rightsBasis: string | null;
+  rightsReviewedAt: string | null;
   assignmentStatus: "ASSIGNED" | "UNASSIGNED";
   storageState: VisualStorageState;
   pendingStorageState: VisualStorageState | null;
@@ -63,6 +67,17 @@ export interface VisualAssetVersionRow {
   contentHash: string;
   parentAssetVersionId: string | null;
   deletedAt: string | null;
+}
+
+export interface VisualRelationRow {
+  id: string;
+  relationKind: string;
+  createdBy: "SYSTEM" | "USER";
+  description: string | null;
+  toVisualAssetId: string | null;
+  relatedSourceId: string | null;
+  relatedThreadId: string | null;
+  createdAt: string;
 }
 
 export const MAX_PERSONAL_VISUAL_BYTES = 20 * 1024 * 1024;

@@ -1,4 +1,12 @@
-import type { VisualAnalysisSummary, VisualAssetListResponse, VisualAssetSummary } from "@radar/shared";
+import type {
+  NormalizedVisualBbox,
+  VisualAnalysisSummary,
+  VisualAssetDetail,
+  VisualAssetListResponse,
+  VisualAssetSummary,
+  VisualExtractionRunSummary,
+  VisualRelationSummary,
+} from "@radar/shared";
 import { sha256Hex, uuid } from "../ingestion/ids";
 import type { CreatePersonalVisualInput, VisualAssetRow, VisualAssetVersionRow } from "./contracts";
 import { extensionForVisualType, safeVisualFilename } from "./contracts";
@@ -18,6 +26,8 @@ function mapVisualAsset(row: DbRow): VisualAssetRow {
     sourceUrl: nullableString(row.sourceUrl),
     pageNumber: row.pageNumber == null ? null : Number(row.pageNumber),
     figureLabel: nullableString(row.figureLabel),
+    bboxJson: nullableString(row.bboxJson),
+    candidateKey: nullableString(row.candidateKey),
     caption: nullableString(row.caption),
     nearbyText: nullableString(row.nearbyText),
     assetRole: String(row.assetRole) as VisualAssetRow["assetRole"],
@@ -25,6 +35,8 @@ function mapVisualAsset(row: DbRow): VisualAssetRow {
     selectionStatus: String(row.selectionStatus) as VisualAssetRow["selectionStatus"],
     selectionReason: nullableString(row.selectionReason),
     rightsStatus: String(row.rightsStatus) as VisualAssetRow["rightsStatus"],
+    rightsBasis: nullableString(row.rightsBasis),
+    rightsReviewedAt: nullableString(row.rightsReviewedAt),
     assignmentStatus: String(row.assignmentStatus) as VisualAssetRow["assignmentStatus"],
     storageState: String(row.storageState) as VisualAssetRow["storageState"],
     pendingStorageState: nullableString(row.pendingStorageState) as VisualAssetRow["pendingStorageState"],
@@ -43,9 +55,11 @@ export async function getVisualAsset(db: D1Database, id: string): Promise<Visual
   const row = await db.prepare(
     `SELECT id, parent_source_id AS parentSourceId, parent_version_id AS parentVersionId,
             origin_kind AS originKind, source_url AS sourceUrl, page_number AS pageNumber,
-            figure_label AS figureLabel, caption, nearby_text AS nearbyText, asset_role AS assetRole,
+            figure_label AS figureLabel, bbox_json AS bboxJson, candidate_key AS candidateKey,
+            caption, nearby_text AS nearbyText, asset_role AS assetRole,
             visual_kind AS visualKind, selection_status AS selectionStatus, selection_reason AS selectionReason,
-            rights_status AS rightsStatus, assignment_status AS assignmentStatus, storage_state AS storageState,
+            rights_status AS rightsStatus, rights_basis AS rightsBasis, rights_reviewed_at AS rightsReviewedAt,
+            assignment_status AS assignmentStatus, storage_state AS storageState,
             pending_storage_state AS pendingStorageState, processing_status AS processingStatus,
             last_error AS lastError, content_hash AS contentHash, perceptual_hash AS perceptualHash,
             perceptual_hash_method AS perceptualHashMethod, created_at AS createdAt, updated_at AS updatedAt,
@@ -72,9 +86,11 @@ export async function listVisualAssets(
   const rows = await db.prepare(
     `SELECT a.id, a.parent_source_id AS parentSourceId, a.parent_version_id AS parentVersionId,
             a.origin_kind AS originKind, a.source_url AS sourceUrl, a.page_number AS pageNumber,
-            a.figure_label AS figureLabel, a.caption, a.nearby_text AS nearbyText, a.asset_role AS assetRole,
+            a.figure_label AS figureLabel, a.bbox_json AS bboxJson, a.candidate_key AS candidateKey,
+            a.caption, a.nearby_text AS nearbyText, a.asset_role AS assetRole,
             a.visual_kind AS visualKind, a.selection_status AS selectionStatus, a.selection_reason AS selectionReason,
-            a.rights_status AS rightsStatus, a.assignment_status AS assignmentStatus, a.storage_state AS storageState,
+            a.rights_status AS rightsStatus, a.rights_basis AS rightsBasis, a.rights_reviewed_at AS rightsReviewedAt,
+            a.assignment_status AS assignmentStatus, a.storage_state AS storageState,
             a.pending_storage_state AS pendingStorageState, a.processing_status AS processingStatus,
             a.last_error AS lastError, a.content_hash AS contentHash, a.perceptual_hash AS perceptualHash,
             a.perceptual_hash_method AS perceptualHashMethod, a.created_at AS createdAt, a.updated_at AS updatedAt,
@@ -273,6 +289,25 @@ function toVisualAnalysisSummary(row: DbRow | null | undefined): VisualAnalysisS
   }
 }
 
+function parseNormalizedVisualBbox(value: string | null): NormalizedVisualBbox | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    if (typeof parsed.x !== "number" || typeof parsed.y !== "number" || typeof parsed.width !== "number" || typeof parsed.height !== "number") {
+      return null;
+    }
+    return {
+      x: parsed.x,
+      y: parsed.y,
+      width: parsed.width,
+      height: parsed.height,
+      page: parsed.page == null ? null : Number(parsed.page),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function toVisualAssetSummary(asset: VisualAssetRow, capsuleVersionId: string | null = null, analysis: VisualAnalysisSummary | null = null): VisualAssetSummary {
   return {
     id: asset.id,
@@ -296,5 +331,27 @@ export function toVisualAssetSummary(asset: VisualAssetRow, capsuleVersionId: st
     analysis,
     createdAt: asset.createdAt,
     updatedAt: asset.updatedAt,
+  };
+}
+
+export function toVisualAssetDetail(
+  asset: VisualAssetRow,
+  autoSuggestion: VisualAnalysisSummary | null = null,
+  userVerified: VisualAnalysisSummary | null = null,
+  relations: VisualRelationSummary[] = [],
+  extractionRun: VisualExtractionRunSummary | null = null,
+  capsuleVersionId: string | null = null,
+): VisualAssetDetail {
+  return {
+    ...toVisualAssetSummary(asset, capsuleVersionId, autoSuggestion),
+    candidateKey: asset.candidateKey,
+    bbox: parseNormalizedVisualBbox(asset.bboxJson),
+    nearbyText: asset.nearbyText,
+    rightsBasis: asset.rightsBasis,
+    rightsReviewedAt: asset.rightsReviewedAt,
+    autoSuggestion,
+    userVerified,
+    relations,
+    extractionRun,
   };
 }

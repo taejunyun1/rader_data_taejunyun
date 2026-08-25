@@ -15,6 +15,8 @@ export type VisualAssetRole = "PERSONAL_WORK" | "REFERENCE" | "DOCUMENTATION" | 
 export type VisualProcessingStatus = "UPLOADED" | "TRANSFORM_PENDING" | "TRANSFORMING" | "ANALYSIS_PENDING" | "ANALYZING" | "READY" | "FAILED";
 export type VisualAnalysisType = "AUTO_SUGGESTION" | "USER_VERIFIED";
 export type VisualAnalysisReviewStatus = "PENDING" | "ACCEPTED" | "EDITED" | "DISMISSED";
+export type VisualExtractionRunStatus = "UPLOADING" | "QUEUED" | "RUNNING" | "SUCCEEDED" | "PARTIAL" | "FAILED" | "CANCELLED";
+export type VisualExtractionUnitStatus = "UPLOADED" | "PROCESSING" | "SUCCEEDED" | "FAILED" | "DELETED";
 
 export interface VisualAnalysisSummary {
   id: string;
@@ -53,4 +55,60 @@ export interface VisualAssetSummary {
 
 export interface VisualAssetListResponse {
   items: VisualAssetSummary[];
+}
+
+export interface NormalizedVisualBbox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  page?: number | null;
+}
+
+export interface VisualAnalysisPair {
+  autoSuggestion: VisualAnalysisSummary | null;
+  userVerified: VisualAnalysisSummary | null;
+}
+
+export interface VisualRelationSummary {
+  id: string;
+  relationKind: string;
+  createdBy: "SYSTEM" | "USER";
+  description: string | null;
+  toVisualAssetId: string | null;
+  relatedSourceId: string | null;
+  relatedThreadId: string | null;
+  createdAt: string;
+}
+
+export interface VisualExtractionRunSummary {
+  id: string;
+  parentSourceId: string;
+  parentVersionId: string;
+  originKind: VisualOriginKind;
+  status: VisualExtractionRunStatus;
+  totalUnits: number;
+  uploadedUnits: number;
+  processedUnits: number;
+  selectedCount: number;
+  reviewCount: number;
+  filteredCount: number;
+  unavailableCount: number;
+  errorCode: string | null;
+  error: string | null;
+  createdAt: string;
+  updatedAt: string;
+  finishedAt: string | null;
+}
+
+export interface VisualAssetDetail extends VisualAssetSummary {
+  candidateKey: string | null;
+  bbox: NormalizedVisualBbox | null;
+  nearbyText: string | null;
+  rightsBasis: string | null;
+  rightsReviewedAt: string | null;
+  autoSuggestion: VisualAnalysisSummary | null;
+  userVerified: VisualAnalysisSummary | null;
+  relations: VisualRelationSummary[];
+  extractionRun: VisualExtractionRunSummary | null;
 }
