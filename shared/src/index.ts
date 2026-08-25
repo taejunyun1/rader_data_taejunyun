@@ -39,6 +39,7 @@ export * from "./discovery";
 export * from "./discoveryRun";
 export * from "./fieldSignals";
 export * from "./visual";
+export * from "./visualAnalysis";
 
 /** Actions that keep a source in the next research context until the next distill run. */
 export const NEXT_RESEARCH_MARK_ACTIONS = ["keep", "develop"] as const;

@@ -2,7 +2,7 @@ import { extractJson } from "../analysis/deepPrompt";
 import { embedText } from "../lib/embed";
 import { uuid } from "../ingestion/ids";
 import type { VisualStorageState } from "@radar/shared";
-import { getVisualAsset, getVisualVersion, markVisualProcessingError } from "./store";
+import { getVisualAsset, getVisualVersionForAnalysis, markVisualProcessingError } from "./store";
 import { validateVisualAnalysis, visualAnalysisPrompt, visualAnalysisText, type VisualAnalysisPayload } from "./analysisSchema";
 
 interface VisualAnalysisResult {
@@ -52,8 +52,8 @@ export async function analyzeVisualAsset(env: Env, visualAssetId: string, reques
   if (!asset) throw new Error("visual_asset_not_found");
   const version = requestedVersionId
     ? await getVisualVersionById(env.DB, visualAssetId, requestedVersionId)
-    : await getVisualVersion(env.DB, visualAssetId, "CAPSULE");
-  if (!version?.r2Key || version.variant !== "CAPSULE") throw new Error("visual_capsule_not_ready");
+    : await getVisualVersionForAnalysis(env.DB, visualAssetId);
+  if (!version) throw new Error("visual_version_not_ready");
 
   const existing = await env.DB.prepare(
     `SELECT id, model_id AS modelId, cost_usd AS costUsd, payload_json AS payloadJson
@@ -77,6 +77,7 @@ export async function analyzeVisualAsset(env: Env, visualAssetId: string, reques
       };
     }
   }
+  if (!version.r2Key) throw new Error(version.variant === "ORIGINAL" ? "visual_original_not_ready" : "visual_capsule_not_ready");
 
   await env.DB.prepare("UPDATE visual_assets SET processing_status = 'ANALYZING', last_error = NULL, updated_at = ? WHERE id = ?")
     .bind(new Date().toISOString(), visualAssetId).run();
@@ -88,12 +89,12 @@ export async function analyzeVisualAsset(env: Env, visualAssetId: string, reques
       visualAssetId,
       visualVersionId: version.id,
       bytes: await object.arrayBuffer(),
-      filename: `${visualAssetId}.webp`,
+      filename: `${visualAssetId}.${version.mimeType.split("/")[1] ?? "img"}`,
       mimeType: version.mimeType,
       width: version.width,
       height: version.height,
       caption: asset.caption,
-      storageState: "CAPSULE",
+      storageState: asset.storageState,
     });
   } catch (error) {
     await markVisualProcessingError(env.DB, visualAssetId, error instanceof Error ? error.message : "visual_analysis_failed");

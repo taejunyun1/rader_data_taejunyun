@@ -1105,6 +1105,76 @@ describe("visual asset routes", () => {
     });
   });
 
+  it("resolves LINK_ONLY ORIGINAL analysis for detail and edit without exposing stored bytes", async () => {
+    const fixture = createVisualAssetRouteFixture();
+    fixture.insertSource({ id: "source-link", activeVersionId: "version-link" });
+    fixture.insertSourceVersion({ id: "version-link", sourceId: "source-link", version: 1 });
+    fixture.insertAsset({
+      id: "asset-link-only",
+      parentSourceId: "source-link",
+      parentVersionId: "version-link",
+      originKind: "WEB_EMBED",
+      sourceUrl: "https://example.com/remote-figure.webp",
+      storageState: "LINK_ONLY",
+      rightsStatus: "UNKNOWN",
+      rightsBasis: "external_image_requires_rights_review",
+      isPersonalWork: 0,
+    });
+    fixture.insertAssetVersion({
+      id: "asset-link-only-original",
+      visualAssetId: "asset-link-only",
+      version: 1,
+      variant: "ORIGINAL",
+      r2Key: null,
+      mimeType: "image/webp",
+    });
+    fixture.insertAnalysis({
+      id: "analysis-link-only-auto",
+      visualAssetId: "asset-link-only",
+      visualVersionId: "asset-link-only-original",
+      analysisType: "AUTO_SUGGESTION",
+      payload: validVisualAnalysisPayload("link-only-auto"),
+      reviewStatus: "PENDING",
+      createdAt: "2026-08-25T04:20:00.000Z",
+    });
+
+    const { default: visualAssets } = await import("../../../worker/src/routes/visualAssets");
+    const detailResponse = await visualAssets.request("/asset-link-only", undefined, fixture.env);
+
+    expect(detailResponse.status).toBe(200);
+    const detail = await detailResponse.json() as { asset: Record<string, unknown> };
+    expect(detail.asset).toMatchObject({
+      storageState: "LINK_ONLY",
+      capsuleVersionId: null,
+      thumbnailUrl: null,
+      autoSuggestion: expect.objectContaining({ id: "analysis-link-only-auto" }),
+    });
+
+    const editedPayload = validVisualAnalysisPayload("link-only-edited");
+    const editResponse = await visualAssets.request("/asset-link-only/analysis", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "edit", payload: editedPayload }),
+    }, fixture.env);
+
+    expect(editResponse.status).toBe(200);
+    const editedDetail = await editResponse.json() as { asset: Record<string, unknown> };
+    expect(editedDetail.asset).toMatchObject({
+      capsuleVersionId: null,
+      thumbnailUrl: null,
+      analysis: expect.objectContaining({ payload: editedPayload }),
+    });
+    expect(fixture.analysisRowsFor("asset-link-only")).toContainEqual(expect.objectContaining({
+      analysis_type: "USER_VERIFIED",
+      visual_version_id: "asset-link-only-original",
+      parent_analysis_id: "analysis-link-only-auto",
+      payload_json: JSON.stringify(editedPayload),
+    }));
+
+    const contentResponse = await visualAssets.request("/asset-link-only/content?variant=ORIGINAL", undefined, fixture.env);
+    expect(contentResponse.status).toBe(404);
+  });
+
   it("accepts an auto suggestion by creating a new USER_VERIFIED row without mutating the auto suggestion row", async () => {
     const fixture = createVisualAssetRouteFixture();
     fixture.insertSource({ id: "source-1", activeVersionId: "version-source-1" });

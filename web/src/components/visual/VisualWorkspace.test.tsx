@@ -207,6 +207,43 @@ describe("Visual workspace", () => {
     expect(within(inspector).getByText("검증 제안")).toBeInTheDocument();
     expect(within(inspector).getByText("검증 불확실성")).toBeInTheDocument();
     expect(within(inspector).getByText("근거 / 불확실성")).toBeInTheDocument();
+    expect(within(inspector).getByText(/유사 도판/)).toBeInTheDocument();
+    expect(within(inspector).getByText(/부분 완료/)).toBeInTheDocument();
+    expect(within(inspector).getByText("후보 문맥")).toBeInTheDocument();
+    expect(within(inspector).getByText(/후보 키/)).toHaveTextContent("figure-1");
+  });
+
+  it("normalizes editor payloads with the worker contract before saving", async () => {
+    const payload = analysisPayload("검증") as Record<string, unknown>;
+    const context = payload.context as Record<string, unknown>;
+    context.medium = ["매체 1", "매체 2", "매체 3", "매체 4", "매체 5", "매체 6", "매체 7"];
+    payload.visualKind = "NOT_A_VISUAL_KIND";
+    payload.confidence = 2.5;
+    const detail = buildDetail({
+      userVerified: { ...buildDetail().userVerified!, payload },
+    });
+    vi.mocked(fetch).mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/visual-assets/asset-1") return Promise.resolve(new Response(JSON.stringify({ asset: detail })));
+      if (url === "/api/visual-assets/asset-1/analysis" && init?.method === "PATCH") {
+        return Promise.resolve(new Response(JSON.stringify({ asset: buildSummary() })));
+      }
+      return Promise.resolve(new Response(JSON.stringify({})));
+    });
+
+    render(<VisualAssetPanel assets={[buildSummary()]} />);
+    await userEvent.click(screen.getByRole("button", { name: /도판 1/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "분석 수정" }));
+    await userEvent.click(screen.getByRole("button", { name: "저장" }));
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+      "/api/visual-assets/asset-1/analysis",
+      expect.objectContaining({ method: "PATCH" }),
+    ));
+    const patchCall = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input) === "/api/visual-assets/asset-1/analysis" && init?.method === "PATCH");
+    const saved = JSON.parse(String(patchCall?.[1]?.body)) as { payload: Record<string, unknown> };
+    expect(saved.payload).toMatchObject({ visualKind: "OTHER", confidence: 1 });
+    expect((saved.payload.context as Record<string, unknown>).medium).toEqual(["매체 1", "매체 2", "매체 3", "매체 4", "매체 5", "매체 6"]);
   });
 
   it("keeps edited analysis input on save failure and offers inline retry controls", async () => {

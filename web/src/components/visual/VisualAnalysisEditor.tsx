@@ -1,75 +1,17 @@
 import { useMemo, useState } from "react";
-import type { VisualAnalysisSummary } from "@radar/shared";
+import { validateVisualAnalysis, type VisualAnalysisPayload, type VisualAnalysisSummary } from "@radar/shared";
 
 type ObservationKey = keyof DraftPayload["observation"];
 type FormalKey = keyof DraftPayload["formal"];
 type ContextKey = keyof DraftPayload["context"];
 
-interface DraftPayload {
-  observation: {
-    subject: string[];
-    composition: string[];
-    color: string[];
-    texture: string[];
-    spatialRelation: string[];
-    material: string[];
-    lighting: string[];
-    visibleText: string[];
-  };
-  formal: {
-    shapes: string[];
-    lines: string[];
-    planes: string[];
-    rhythm: string[];
-    scale: string[];
-    density: string[];
-    edges: string[];
-    contrast: string[];
-    perspective: string[];
-  };
-  context: {
-    medium: string[];
-    process: string[];
-    relationToPhotography: string[];
-    culturalReferences: string[];
-  };
-  propositions: string[];
-  uncertainty: string[];
-  visualKind: "PHOTO" | "ARTWORK" | "INSTALLATION" | "GRAPHIC" | "DIAGRAM" | "DOCUMENT_SCAN" | "OTHER";
-  confidence: number | null;
-}
+type DraftPayload = VisualAnalysisPayload;
 
 interface VisualAnalysisEditorProps {
   analysis: VisualAnalysisSummary;
   onCancel: () => void;
   onSave: (payload: DraftPayload) => Promise<void>;
 }
-
-const LIMITS: Record<string, number> = {
-  subject: 8,
-  composition: 8,
-  color: 8,
-  texture: 8,
-  spatialRelation: 8,
-  material: 8,
-  lighting: 8,
-  visibleText: 8,
-  shapes: 8,
-  lines: 8,
-  planes: 8,
-  rhythm: 8,
-  scale: 8,
-  density: 8,
-  edges: 8,
-  contrast: 8,
-  perspective: 8,
-  medium: 6,
-  process: 6,
-  relationToPhotography: 6,
-  culturalReferences: 6,
-  propositions: 8,
-  uncertainty: 8,
-};
 
 const OBSERVATION_FIELDS: Array<{ key: ObservationKey; label: string }> = [
   { key: "subject", label: "관찰" },
@@ -101,100 +43,26 @@ const CONTEXT_FIELDS: Array<{ key: ContextKey; label: string }> = [
   { key: "culturalReferences", label: "문화 참조" },
 ];
 
-function ensureStringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string")
-    : [];
+function fromAnalysis(analysis: VisualAnalysisSummary): DraftPayload {
+  return validateVisualAnalysis(analysis.payload) ?? emptyDraft();
 }
 
-function fromAnalysis(analysis: VisualAnalysisSummary): DraftPayload {
-  const root = analysis.payload as Partial<DraftPayload>;
+function emptyDraft(): DraftPayload {
   return {
     observation: {
-      subject: ensureStringArray(root.observation?.subject),
-      composition: ensureStringArray(root.observation?.composition),
-      color: ensureStringArray(root.observation?.color),
-      texture: ensureStringArray(root.observation?.texture),
-      spatialRelation: ensureStringArray(root.observation?.spatialRelation),
-      material: ensureStringArray(root.observation?.material),
-      lighting: ensureStringArray(root.observation?.lighting),
-      visibleText: ensureStringArray(root.observation?.visibleText),
+      subject: [], composition: [], color: [], texture: [], spatialRelation: [], material: [], lighting: [], visibleText: [],
     },
     formal: {
-      shapes: ensureStringArray(root.formal?.shapes),
-      lines: ensureStringArray(root.formal?.lines),
-      planes: ensureStringArray(root.formal?.planes),
-      rhythm: ensureStringArray(root.formal?.rhythm),
-      scale: ensureStringArray(root.formal?.scale),
-      density: ensureStringArray(root.formal?.density),
-      edges: ensureStringArray(root.formal?.edges),
-      contrast: ensureStringArray(root.formal?.contrast),
-      perspective: ensureStringArray(root.formal?.perspective),
+      shapes: [], lines: [], planes: [], rhythm: [], scale: [], density: [], edges: [], contrast: [], perspective: [],
     },
     context: {
-      medium: ensureStringArray(root.context?.medium),
-      process: ensureStringArray(root.context?.process),
-      relationToPhotography: ensureStringArray(root.context?.relationToPhotography),
-      culturalReferences: ensureStringArray(root.context?.culturalReferences),
+      medium: [], process: [], relationToPhotography: [], culturalReferences: [],
     },
-    propositions: ensureStringArray(root.propositions),
-    uncertainty: ensureStringArray(root.uncertainty),
-    visualKind: typeof root.visualKind === "string" ? root.visualKind : "OTHER",
-    confidence: typeof root.confidence === "number" ? root.confidence : null,
+    propositions: [],
+    uncertainty: [],
+    visualKind: "OTHER",
+    confidence: null,
   };
-}
-
-function trimList(values: string[], key: string, maxLength: number): string[] {
-  return values
-    .map((value) => value.trim().slice(0, maxLength))
-    .filter(Boolean)
-    .slice(0, LIMITS[key] ?? 8);
-}
-
-function validateClientPayload(draft: DraftPayload): DraftPayload | null {
-  const next: DraftPayload = {
-    observation: {
-      subject: trimList(draft.observation.subject, "subject", 320),
-      composition: trimList(draft.observation.composition, "composition", 320),
-      color: trimList(draft.observation.color, "color", 320),
-      texture: trimList(draft.observation.texture, "texture", 320),
-      spatialRelation: trimList(draft.observation.spatialRelation, "spatialRelation", 320),
-      material: trimList(draft.observation.material, "material", 320),
-      lighting: trimList(draft.observation.lighting, "lighting", 320),
-      visibleText: trimList(draft.observation.visibleText, "visibleText", 320),
-    },
-    formal: {
-      shapes: trimList(draft.formal.shapes, "shapes", 320),
-      lines: trimList(draft.formal.lines, "lines", 320),
-      planes: trimList(draft.formal.planes, "planes", 320),
-      rhythm: trimList(draft.formal.rhythm, "rhythm", 320),
-      scale: trimList(draft.formal.scale, "scale", 320),
-      density: trimList(draft.formal.density, "density", 320),
-      edges: trimList(draft.formal.edges, "edges", 320),
-      contrast: trimList(draft.formal.contrast, "contrast", 320),
-      perspective: trimList(draft.formal.perspective, "perspective", 320),
-    },
-    context: {
-      medium: trimList(draft.context.medium, "medium", 320),
-      process: trimList(draft.context.process, "process", 320),
-      relationToPhotography: trimList(draft.context.relationToPhotography, "relationToPhotography", 320),
-      culturalReferences: trimList(draft.context.culturalReferences, "culturalReferences", 320),
-    },
-    propositions: trimList(draft.propositions, "propositions", 500),
-    uncertainty: trimList(draft.uncertainty, "uncertainty", 320),
-    visualKind: draft.visualKind,
-    confidence: draft.confidence,
-  };
-
-  const meaningful = [
-    ...Object.values(next.observation),
-    ...Object.values(next.formal),
-    ...Object.values(next.context),
-    next.propositions,
-    next.uncertainty,
-  ].some((values) => values.length > 0);
-
-  return meaningful ? next : null;
 }
 
 function replaceValue(values: string[], index: number, nextValue: string): string[] {
@@ -222,7 +90,7 @@ export default function VisualAnalysisEditor({ analysis, onCancel, onSave }: Vis
   );
 
   async function submit() {
-    const validated = validateClientPayload(draft);
+    const validated = validateVisualAnalysis(draft);
     if (!validated) {
       setError("관찰, 형식, 맥락, 제안, 불확실성 중 적어도 하나는 남겨야 합니다.");
       setSaveAttempted(true);

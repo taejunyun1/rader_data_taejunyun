@@ -25,6 +25,16 @@ const PROCESSING_HINTS: Record<string, string> = {
   FAILED: "원본 확인 → 미리보기 생성 → 분석 저장 단계 중 하나에서 멈췄습니다.",
 };
 
+const EXTRACTION_STATUS_LABELS: Record<string, string> = {
+  UPLOADING: "업로드 중",
+  QUEUED: "대기 중",
+  RUNNING: "처리 중",
+  SUCCEEDED: "완료",
+  PARTIAL: "부분 완료",
+  FAILED: "실패",
+  CANCELLED: "취소됨",
+};
+
 const SECTION_LABELS: Record<string, string> = {
   subject: "관찰",
   composition: "구도",
@@ -123,6 +133,8 @@ export default function VisualInspector({ asset, loading, error, compact, onClos
             <span>{asset.processingStatus}</span>
             <span>{asset.rightsStatus}</span>
           </div>
+
+          <ProvenanceSection asset={asset} />
 
           {asset.processingStatus === "FAILED" && (
             <section className="visual-inspector__failure">
@@ -257,5 +269,43 @@ function StringList({ items }: { items: string[] }) {
     <div className="visual-inspector__stack">
       {items.map((item) => <p key={item}>{item}</p>)}
     </div>
+  );
+}
+
+function ProvenanceSection({ asset }: { asset: VisualAssetDetail }) {
+  return (
+    <section className="visual-inspector__provenance">
+      <h5>출처와 처리 기록</h5>
+      <div className="visual-inspector__provenance-block">
+        <h6>후보 문맥</h6>
+        {asset.candidateKey && <p>후보 키 · {asset.candidateKey}</p>}
+        {asset.figureLabel && <p>도판 표기 · {asset.figureLabel}</p>}
+        {asset.pageNumber != null && <p>페이지 · {asset.pageNumber}</p>}
+        {asset.rightsReviewedAt && <p>권리 검토 · {asset.rightsReviewedAt}</p>}
+        {asset.sourceUrl && <p>원문 주소 · {asset.sourceUrl}</p>}
+      </div>
+
+      {asset.relations.length > 0 && (
+        <div className="visual-inspector__provenance-block">
+          <h6>관계</h6>
+          {asset.relations.map((relation) => (
+            <p key={relation.id}>
+              {relation.relationKind} · {relation.description || relation.toVisualAssetId || relation.relatedSourceId || "연결된 자료"}
+            </p>
+          ))}
+        </div>
+      )}
+
+      {asset.extractionRun && (
+        <div className="visual-inspector__provenance-block">
+          <h6>추출 실행</h6>
+          <p>상태 · {EXTRACTION_STATUS_LABELS[asset.extractionRun.status] ?? asset.extractionRun.status}</p>
+          <p>처리 · {asset.extractionRun.processedUnits} / {asset.extractionRun.totalUnits}</p>
+          <p>선정 · {asset.extractionRun.selectedCount} · 검토 · {asset.extractionRun.reviewCount} · 제외 · {asset.extractionRun.filteredCount} · 사용 불가 · {asset.extractionRun.unavailableCount}</p>
+          {asset.extractionRun.finishedAt && <p>완료 시각 · {asset.extractionRun.finishedAt}</p>}
+          {asset.extractionRun.error && <p>실행 오류 · {asset.extractionRun.error}</p>}
+        </div>
+      )}
+    </section>
   );
 }

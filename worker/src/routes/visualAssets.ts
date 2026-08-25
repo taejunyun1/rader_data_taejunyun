@@ -15,6 +15,7 @@ import {
   getVisualAsset,
   getVisualAssetDetail,
   getVisualVersion,
+  getVisualVersionForAnalysis,
   listVisualAssets,
   toVisualAssetSummary,
   updateAutoSuggestionReviewStatus,
@@ -51,7 +52,8 @@ async function loadAssetSummary(db: D1Database, visualAssetId: string) {
   const asset = await getVisualAsset(db, visualAssetId);
   if (!asset) return null;
   const capsule = await getVisualVersion(db, visualAssetId, "CAPSULE");
-  const analysis = capsule ? await getLatestVisualAnalysisForVersion(db, visualAssetId, capsule.id) : null;
+  const analysisVersion = await getVisualVersionForAnalysis(db, visualAssetId);
+  const analysis = analysisVersion ? await getLatestVisualAnalysisForVersion(db, visualAssetId, analysisVersion.id) : null;
   return toVisualAssetSummary(asset, capsule?.id ?? null, analysis);
 }
 
@@ -136,15 +138,15 @@ visualAssets.patch("/:id/analysis", async (c) => {
   const body = await c.req.json<{ action?: unknown; payload?: unknown }>().catch(() => ({} as { action?: unknown; payload?: unknown }));
   const action = body.action === "accept" || body.action === "dismiss" || body.action === "edit" ? body.action : null;
   if (!action) return c.json({ error: "analysis_action_invalid" }, 400);
-  const capsule = await getVisualVersion(c.env.DB, visualAssetId, "CAPSULE");
-  if (!capsule) return c.json({ error: "visual_capsule_not_ready" }, 409);
-  const currentAutoSuggestion = await getVisualAnalysisRowForVersion(c.env.DB, visualAssetId, "AUTO_SUGGESTION", capsule.id);
+  const analysisVersion = await getVisualVersionForAnalysis(c.env.DB, visualAssetId);
+  if (!analysisVersion) return c.json({ error: "visual_capsule_not_ready" }, 409);
+  const currentAutoSuggestion = await getVisualAnalysisRowForVersion(c.env.DB, visualAssetId, "AUTO_SUGGESTION", analysisVersion.id);
   if (!currentAutoSuggestion) return c.json({ error: "analysis_not_found" }, 404);
 
   if (action === "edit") {
     const payload = validateVisualAnalysis(body.payload);
     if (!payload) return c.json({ error: "analysis_payload_invalid" }, 400);
-    const editBase = await getLatestVisualAnalysisRowForVersion(c.env.DB, visualAssetId, capsule.id);
+    const editBase = await getLatestVisualAnalysisRowForVersion(c.env.DB, visualAssetId, analysisVersion.id);
     if (!editBase) return c.json({ error: "analysis_not_found" }, 404);
     const created = await createUserVerifiedVisualAnalysis(c.env.DB, {
       visualAssetId,

@@ -271,6 +271,12 @@ export async function getVisualVersion(db: D1Database, visualAssetId: string, va
   };
 }
 
+/** Resolve the version that owns the visual analysis, including metadata-only LINK_ONLY ORIGINALs. */
+export async function getVisualVersionForAnalysis(db: D1Database, visualAssetId: string): Promise<VisualAssetVersionRow | null> {
+  return (await getVisualVersion(db, visualAssetId, "CAPSULE"))
+    ?? getOriginalVisualVersion(db, visualAssetId);
+}
+
 export async function getLatestVisualAnalysis(db: D1Database, visualAssetId: string): Promise<VisualAnalysisSummary | null> {
   const row = await db.prepare(`${ANALYSIS_SELECT} WHERE visual_asset_id = ? ORDER BY created_at DESC LIMIT 1`)
     .bind(visualAssetId).first<DbRow>();
@@ -326,10 +332,13 @@ export async function getVisualAssetDetail(db: D1Database, id: string): Promise<
   const asset = await getVisualAsset(db, id);
   if (!asset) return null;
 
-  const capsule = await getVisualVersion(db, id, "CAPSULE");
+  const [capsule, analysisVersion] = await Promise.all([
+    getVisualVersion(db, id, "CAPSULE"),
+    getVisualVersionForAnalysis(db, id),
+  ]);
   const [autoSuggestion, userVerified, relations, extractionRun] = await Promise.all([
-    capsule ? getVisualAnalysisRowForVersion(db, id, "AUTO_SUGGESTION", capsule.id) : Promise.resolve(null),
-    capsule ? getVisualAnalysisRowForVersion(db, id, "USER_VERIFIED", capsule.id) : Promise.resolve(null),
+    analysisVersion ? getVisualAnalysisRowForVersion(db, id, "AUTO_SUGGESTION", analysisVersion.id) : Promise.resolve(null),
+    analysisVersion ? getVisualAnalysisRowForVersion(db, id, "USER_VERIFIED", analysisVersion.id) : Promise.resolve(null),
     listVisualRelations(db, id),
     getVisualExtractionRunForAsset(db, asset),
   ]);
@@ -359,9 +368,25 @@ export async function createUserVerifiedVisualAnalysis(
      WHERE id = ? AND visual_asset_id = ? AND visual_version_id = ?
        AND analysis_type IN ('AUTO_SUGGESTION', 'USER_VERIFIED')
        AND visual_version_id = (
-         SELECT id FROM visual_asset_versions
-         WHERE visual_asset_id = ? AND variant = 'CAPSULE' AND deleted_at IS NULL
-         ORDER BY version DESC LIMIT 1
+         SELECT current_version.id
+         FROM visual_asset_versions current_version
+         WHERE current_version.visual_asset_id = ?
+           AND current_version.deleted_at IS NULL
+           AND (
+             current_version.variant = 'CAPSULE'
+             OR (
+               current_version.variant = 'ORIGINAL'
+               AND NOT EXISTS (
+                 SELECT 1
+                 FROM visual_asset_versions capsule_version
+                 WHERE capsule_version.visual_asset_id = current_version.visual_asset_id
+                   AND capsule_version.variant = 'CAPSULE'
+                   AND capsule_version.deleted_at IS NULL
+               )
+             )
+           )
+         ORDER BY CASE WHEN current_version.variant = 'CAPSULE' THEN 0 ELSE 1 END, current_version.version DESC
+         LIMIT 1
        )`
   ).bind(input.baseAnalysisId, input.visualAssetId, input.baseVisualVersionId, input.visualAssetId).first<DbRow>();
   const parentRow = toVisualAnalysisRow(parent);
