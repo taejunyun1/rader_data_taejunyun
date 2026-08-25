@@ -379,6 +379,22 @@ describe("remote acquisition", () => {
       expect(result.byteSize).toBe(new TextEncoder().encode(body).byteLength);
     });
 
+    it.each([
+      "<html><body><svg xmlns=\"http://www.w3.org/2000/svg\"></svg></body></html>",
+      "<?xml version=\"1.0\"?><root><!-- wrapper --><svg xmlns=\"http://www.w3.org/2000/svg\"></svg></root>",
+    ])("rejects image/svg+xml bodies that only embed an <svg> fragment: %s", async (body) => {
+      const { fetchRemoteImage } = await import("../../../worker/src/visual/extraction/fetchImage");
+      const response = withResponseUrl(new Response(body, {
+        status: 200,
+        headers: { "content-type": "image/svg+xml; charset=utf-8" },
+      }), "https://public.example/not-root-svg.svg");
+
+      await expect(fetchRemoteImage("https://public.example/not-root-svg.svg", {
+        resolveDns: allowPublicDnsResolution,
+        fetchImpl: vi.fn().mockResolvedValue(response),
+      })).rejects.toThrow("IMAGE_TYPE_INVALID");
+    });
+
     it("advertises only the implemented image allowlist in the Accept header", async () => {
       const { fetchRemoteImage } = await import("../../../worker/src/visual/extraction/fetchImage");
       const body = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" /></svg>`;

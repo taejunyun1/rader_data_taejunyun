@@ -109,8 +109,38 @@ function hasWebpSignature(body: ArrayBuffer): boolean {
 }
 
 function hasSvgSignature(body: ArrayBuffer): boolean {
-  const preview = new TextDecoder().decode(new Uint8Array(body, 0, Math.min(body.byteLength, 4096)));
-  return /<svg\b/i.test(preview);
+  let preview = new TextDecoder().decode(new Uint8Array(body, 0, Math.min(body.byteLength, 4096)));
+  preview = preview.replace(/^\uFEFF/, "");
+
+  while (true) {
+    const trimmed = preview.replace(/^\s+/, "");
+    if (trimmed !== preview) {
+      preview = trimmed;
+      continue;
+    }
+
+    const xmlDeclaration = preview.match(/^<\?xml[\s\S]*?\?>/i)?.[0];
+    if (xmlDeclaration) {
+      preview = preview.slice(xmlDeclaration.length);
+      continue;
+    }
+
+    const comment = preview.match(/^<!--[\s\S]*?-->/)?.[0];
+    if (comment) {
+      preview = preview.slice(comment.length);
+      continue;
+    }
+
+    const doctype = preview.match(/^<!DOCTYPE[\s\S]*?>/i)?.[0];
+    if (doctype) {
+      preview = preview.slice(doctype.length);
+      continue;
+    }
+
+    break;
+  }
+
+  return /^<svg(?:\s|>|\/)/i.test(preview);
 }
 
 function hasFixedSignature(body: ArrayBuffer, signature: Uint8Array): boolean {
