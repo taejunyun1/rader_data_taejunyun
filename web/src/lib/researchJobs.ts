@@ -45,7 +45,12 @@ export function jobTitle(job: ResearchJob): string {
 
 export function jobResultTarget(job: ResearchJob): ResearchJobResultRef | null {
   if (job.resultRef?.view === "VISUAL" && "sourceId" in job.resultRef && typeof job.resultRef.sourceId === "string") {
-    return { view: "RESERVOIR", sourceId: job.resultRef.sourceId, acquisition: true };
+    return {
+      view: "RESERVOIR",
+      sourceId: job.resultRef.sourceId,
+      acquisition: true,
+      ...(job.resultRef.extractionRunId ? { extractionRunId: job.resultRef.extractionRunId } : {}),
+    };
   }
   return job.resultRef;
 }

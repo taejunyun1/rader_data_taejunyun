@@ -1,20 +1,29 @@
 # Task 8 visual reservoir report
 
-Date: 2026-08-25
+Date: 2026-08-26
 
 ## Scope completed
 
 - Added extraction status and empty-state messaging for web/PDF visual extraction flows.
 - Added filtered visual disclosure with explicit recovery actions that preserve automated audit history.
 - Added manual source assignment UI for unassigned personal visuals.
+- Guarded manual assignment with the selected source's current `activeVersionId`.
 - Synchronized unassigned visuals with the currently open source visual panel after assignment/review updates.
 - Updated Job Center labels and result navigation for visual extraction jobs.
+- Preserved `extractionRunId` through Job Center routing and opened the matching run status when it differs from the latest run.
 - Preserved focus and scroll state for visual inspector close and compact PDF progress sheet close.
+
+## Review follow-up
+
+- Reservoir source options now carry each source's `activeVersionId`; assignment PATCH requests send `{ sourceId, sourceVersionId }` and disable sources without an active version.
+- Visual extraction result navigation retains `extractionRunId` through shared job routing, App navigation state, and the Reservoir detail load. Reservoir resolves the requested run through the existing visual-extraction run endpoint when a newer run is present.
+- The Task 6 visual assignment API contract was not changed.
 
 ## Changed files
 
 - `web/src/components/layout/JobCenter.tsx`
 - `web/src/components/layout/JobCenter.test.tsx`
+- `shared/src/discovery.ts`
 - `web/src/components/reading/ReadingPane.tsx`
 - `web/src/components/visual/FilteredVisualsDisclosure.tsx`
 - `web/src/components/visual/VisualAssetPanel.tsx`
@@ -26,13 +35,14 @@ Date: 2026-08-25
 - `web/src/styles/reading.css`
 - `web/src/views/ReservoirView.test.tsx`
 - `web/src/views/ReservoirView.tsx`
+- `web/src/App.tsx`
 - `worker/src/routes/reservoir.ts`
 - `worker/src/routes/visualAssets.ts`
 
 ## Verification
 
 - `pnpm --dir web exec vitest run src/components/visual/VisualWorkspace.test.tsx src/components/layout/JobCenter.test.tsx src/views/ReservoirView.test.tsx src/lib/visualAssets.test.ts`
-  - Result: 4 files passed, 89 tests passed
+  - Result: 4 files passed, 90 tests passed
 - `pnpm typecheck`
   - Result: passed for `shared`, `web`, and `worker`
 
@@ -40,4 +50,5 @@ Date: 2026-08-25
 
 - The implementation keeps Task 8 within the existing reservoir/visual workflows and does not extend into later-task automation or broader ingestion changes.
 - Recovery preserves the original automated duplicate/decorative audit by appending a user override relation instead of rewriting prior relation rows.
+- Run navigation falls back to the source detail's latest run if the requested run cannot be loaded; the existing backend run endpoint remains the source of truth for a valid matching run.
 - Unrelated local changes were preserved. In particular, `.superpowers/sdd/task-2-report.md` was left untouched.

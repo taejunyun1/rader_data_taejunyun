@@ -2,7 +2,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PdfVisualExtractionResult } from "../lib/pdfVisualExtraction";
-import type { VisualAssetDetail, VisualAssetSummary } from "@radar/shared";
+import type { VisualAssetDetail, VisualAssetSummary, VisualExtractionRunSummary } from "@radar/shared";
 
 const pdfExtractionMocks = vi.hoisted(() => ({
   startOrResumePdfVisualExtraction: vi.fn(),
@@ -139,6 +139,7 @@ type TestSourceDetail = Omit<typeof sourceDetail, "source" | "acquisition"> & {
     textScope: "FULLTEXT" | "PARTIAL" | "METADATA_ONLY" | "EMPTY" | "UNKNOWN";
     originalTextUrl: string | null;
   };
+  visualExtractionRun?: VisualExtractionRunSummary | null;
 };
 
 let currentSourceDetail: TestSourceDetail;
@@ -158,13 +159,14 @@ let pdfExtractionResult: PdfVisualExtractionResult;
 let currentVisualDetail: VisualAssetDetail;
 let currentUnassignedVisualDetail: VisualAssetDetail;
 let currentUnassignedVisuals: VisualAssetSummary[];
+let currentFocusedExtractionRun: VisualExtractionRunSummary | null;
 
 beforeEach(() => {
   setViewport(1280);
   let requestedWatching = false;
   deepAnalysisResult = { status: 202, body: { job: { id: "deep-job" }, reused: false } };
   currentSourceDetail = sourceDetail;
-  reservoirItems = [{ id: "source-1", title: "자료 A", kind: "PAPER_ACADEMIC", reliability: "PRIMARY", status: "indexed", origin: "upload", year: 2025, canonicalUrl: "https://example.com/paper", createdAt: "2026-08-21", topics: "[\"사진\"]", keywordCount: 1, signalCount: 0, markedForNextResearch: 1, decisionStatus: null }];
+  reservoirItems = [{ id: "source-1", title: "자료 A", kind: "PAPER_ACADEMIC", reliability: "PRIMARY", status: "indexed", origin: "upload", year: 2025, canonicalUrl: "https://example.com/paper", activeVersionId: "version-source-1", createdAt: "2026-08-21", topics: "[\"사진\"]", keywordCount: 1, signalCount: 0, markedForNextResearch: 1, decisionStatus: null }];
   pendingSourceOneDetail = null;
   pendingSearch = null;
   pendingDeepHistory = {};
@@ -179,6 +181,7 @@ beforeEach(() => {
   currentVisualDetail = visualDetail;
   currentUnassignedVisualDetail = unassignedVisualDetail;
   currentUnassignedVisuals = [];
+  currentFocusedExtractionRun = null;
   pdfExtractionResult = {
     runId: "run-visual-1",
     status: "QUEUED",
@@ -205,6 +208,11 @@ beforeEach(() => {
     if (url === "/api/reservoir/source-1" && sourceOneDetailFailure) return Promise.resolve(new Response("", { status: 500 }));
     if (url === "/api/reservoir/source-1") return Promise.resolve(new Response(JSON.stringify(requestedWatching ? { ...currentSourceDetail, source: { ...currentSourceDetail.source, decisionStatus: "watch" } } : currentSourceDetail)));
     if (url === "/api/reservoir/source-2") return Promise.resolve(new Response(JSON.stringify(sourceDetailB)));
+    if (url === "/api/visual-extraction/runs/run-focused") {
+      return currentFocusedExtractionRun
+        ? Promise.resolve(new Response(JSON.stringify({ run: currentFocusedExtractionRun, checkpoint: { uploadedPages: [], totalPages: 0, remainingPages: 0, nextPageNumber: null } })))
+        : Promise.resolve(new Response("", { status: 404 }));
+    }
     if (url === "/api/visual-assets?unassigned=1") return Promise.resolve(new Response(JSON.stringify({ items: currentUnassignedVisuals })));
     if (url === "/api/visual-assets/asset-1") return Promise.resolve(new Response(JSON.stringify({ asset: currentVisualDetail })));
     if (url === "/api/visual-assets/asset-unassigned") return Promise.resolve(new Response(JSON.stringify({ asset: currentUnassignedVisualDetail })));
@@ -798,7 +806,7 @@ describe("ReservoirView", () => {
     expect(screen.queryByRole("button", { name: "보관하기" })).not.toBeInTheDocument();
   });
 
-  it("assigns an unassigned personal visual to a chosen source and synchronizes both panels", async () => {
+  it("assigns an unassigned personal visual to a chosen source version and synchronizes both panels", async () => {
     currentUnassignedVisuals = [unassignedVisualSummary];
     currentSourceDetail = {
       ...sourceDetail,
@@ -821,7 +829,7 @@ describe("ReservoirView", () => {
       "/api/visual-assets/asset-unassigned/assignment",
       expect.objectContaining({
         method: "PATCH",
-        body: JSON.stringify({ sourceId: "source-1" }),
+        body: JSON.stringify({ sourceId: "source-1", sourceVersionId: "version-source-1" }),
       }),
     ));
 
@@ -830,6 +838,43 @@ describe("ReservoirView", () => {
     });
     expect(screen.getByRole("region", { name: "시각 자료" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /개인 업로드 이미지/ })).toBeInTheDocument();
+  });
+
+  it("shows the extraction status for the run opened from Job Center instead of a newer run", async () => {
+    const latestRun: VisualExtractionRunSummary = {
+      id: "run-latest",
+      parentSourceId: "source-1",
+      parentVersionId: "version-source-1",
+      originKind: "PDF_PAGE_CROP",
+      status: "SUCCEEDED",
+      totalUnits: 85,
+      uploadedUnits: 85,
+      processedUnits: 85,
+      selectedCount: 4,
+      reviewCount: 0,
+      filteredCount: 81,
+      unavailableCount: 0,
+      errorCode: null,
+      error: null,
+      createdAt: "2026-08-25T10:00:00.000Z",
+      updatedAt: "2026-08-25T10:01:00.000Z",
+      finishedAt: "2026-08-25T10:01:00.000Z",
+    };
+    currentFocusedExtractionRun = {
+      ...latestRun,
+      id: "run-focused",
+      status: "PARTIAL",
+      selectedCount: 1,
+      reviewCount: 2,
+      filteredCount: 3,
+      finishedAt: null,
+    };
+    currentSourceDetail = { ...sourceDetail, visualExtractionRun: latestRun };
+
+    render(<ReservoirView focusSourceId="source-1" focusExtractionRunId="run-focused" />);
+
+    expect(await screen.findByText("일부 확인 필요")).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledWith("/api/visual-extraction/runs/run-focused");
   });
 
   it("keeps source selection, index scroll, reading scroll, and focus when the visual inspector closes", async () => {

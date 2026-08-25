@@ -58,7 +58,7 @@ export type ResearchJobResultRef =
   | { view: "DISTILL"; sessionId: string }
   | { view: "RADAR"; period: "WEEKLY" | "MONTHLY" | "YEARLY"; snapshotId?: string }
   | { view: "RESERVOIR"; sourceId: string; analysisId: string }
-  | { view: "RESERVOIR"; sourceId: string; acquisition: true }
+  | { view: "RESERVOIR"; sourceId: string; acquisition: true; extractionRunId?: string }
   | { view: "VISUAL"; visualAssetId: string; sourceId?: string; extractionRunId?: string }
   | { view: "VISUAL"; sourceId: string; extractionRunId: string };
 

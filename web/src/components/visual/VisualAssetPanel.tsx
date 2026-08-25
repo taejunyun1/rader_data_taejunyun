@@ -7,6 +7,7 @@ import VisualInspector from "./VisualInspector";
 interface VisualSourceOption {
   id: string;
   title: string;
+  sourceVersionId: string | null;
   meta?: string | null;
 }
 
@@ -114,6 +115,10 @@ export default function VisualAssetPanel({
       || option.meta?.toLowerCase().includes(query)
     )).slice(0, 6);
   }, [assignmentQuery, sourceOptions]);
+  const assignmentSource = useMemo(
+    () => sourceOptions.find((option) => option.id === assignmentSourceId) ?? null,
+    [assignmentSourceId, sourceOptions],
+  );
 
   if (localAssets.length === 0 && !extractionContext) return null;
 
@@ -200,14 +205,17 @@ export default function VisualAssetPanel({
   }
 
   async function assignSource() {
-    if (!selectedId || !assignmentSourceId) return;
+    if (!selectedId || !assignmentSource?.sourceVersionId) {
+      setAssignmentError("연결할 자료의 활성 원문 버전을 확인할 수 없습니다.");
+      return;
+    }
     setAssignmentPending(true);
     setAssignmentError("");
     try {
       const response = await fetch(`/api/visual-assets/${selectedId}/assignment`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sourceId: assignmentSourceId }),
+        body: JSON.stringify({ sourceId: assignmentSource.id, sourceVersionId: assignmentSource.sourceVersionId }),
       });
       if (!response.ok) throw new Error("visual_assignment_failed");
       const data = await response.json() as { asset?: VisualAssetSummary };
@@ -252,6 +260,7 @@ export default function VisualAssetPanel({
               <button
                 key={option.id}
                 type="button"
+                disabled={!option.sourceVersionId}
                 className={`ui-button-secondary${assignmentSourceId === option.id ? " is-active" : ""}`}
                 onClick={() => {
                   setAssignmentSourceId(option.id);

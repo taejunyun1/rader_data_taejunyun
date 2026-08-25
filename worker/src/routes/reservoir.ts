@@ -175,7 +175,7 @@ reservoir.get("/", async (c) => {
 
   const rows = await c.env.DB.prepare(
     `SELECT s.id, s.title, s.kind, s.reliability, s.status, s.origin, s.year, s.topics AS topics,
-            s.canonical_url AS canonicalUrl, s.created_at AS createdAt,
+            s.canonical_url AS canonicalUrl, s.active_version_id AS activeVersionId, s.created_at AS createdAt,
             CASE WHEN (SELECT us.action FROM user_signals us
                        WHERE us.source_id = s.id AND us.action IN ('keep','develop','watch','ignore') AND us.created_at > ?
                        ORDER BY us.created_at DESC LIMIT 1) IN ('keep','develop') THEN 1 ELSE 0 END AS markedForNextResearch,

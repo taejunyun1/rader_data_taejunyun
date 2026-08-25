@@ -111,6 +111,6 @@ describe("JobCenter", () => {
     expect(screen.getByText("일부 이미지 확인 필요 · 완료")).toBeInTheDocument();
 
     await userEvent.click(screen.getAllByRole("button", { name: "결과 보기" })[0]);
-    expect(onResult).toHaveBeenCalledWith({ view: "RESERVOIR", sourceId: "source-1", acquisition: true });
+    expect(onResult).toHaveBeenCalledWith({ view: "RESERVOIR", sourceId: "source-1", acquisition: true, extractionRunId: "run-web" });
   });
 });

@@ -30,6 +30,7 @@ interface ReservoirItem {
   origin: string | null;
   year: number | null;
   canonicalUrl: string | null;
+  activeVersionId?: string | null;
   createdAt: string;
   topics: string | null;
   keywordCount: number;
@@ -185,7 +186,7 @@ function toReadingDocument(detail: SourceDetail): ReadingDocument {
   };
 }
 
-export default function ReservoirView({ onJobCreated, focusSourceId, onFocusConsumed }: { onJobCreated?: () => Promise<void>; focusSourceId?: string; onFocusConsumed?: () => void }) {
+export default function ReservoirView({ onJobCreated, focusSourceId, focusExtractionRunId, onFocusConsumed }: { onJobCreated?: () => Promise<void>; focusSourceId?: string; focusExtractionRunId?: string; onFocusConsumed?: () => void }) {
   const [items, setItems] = useState<ReservoirItem[]>([]);
   const [kindFilter, setKindFilter] = useState("");
   const [topicFilter, setTopicFilter] = useState("");
@@ -282,9 +283,9 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
   }, []);
   useEffect(() => {
     if (!focusSourceId) return;
-    void openDetail(focusSourceId);
+    void openDetail(focusSourceId, { extractionRunId: focusExtractionRunId });
     onFocusConsumed?.();
-  }, [focusSourceId, onFocusConsumed]);
+  }, [focusExtractionRunId, focusSourceId, onFocusConsumed]);
   useEffect(() => {
     const requestId = topicRequest.current + 1;
     topicRequest.current = requestId;
@@ -335,7 +336,7 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
     resetSelection();
   }
 
-  async function openDetail(id: string, { preserveAction = false }: { preserveAction?: boolean } = {}) {
+  async function openDetail(id: string, { preserveAction = false, extractionRunId }: { preserveAction?: boolean; extractionRunId?: string } = {}) {
     const requestId = startInteraction({ preserveAction });
     selectedIdRef.current = id;
     setSelectedId(id);
@@ -349,7 +350,16 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
     try {
       const response = await fetch(`/api/reservoir/${id}`);
       if (!response.ok) throw new Error("detail_failed");
-      const next = await response.json() as SourceDetail;
+      let next = await response.json() as SourceDetail;
+      if (extractionRunId && next.visualExtractionRun?.id !== extractionRunId) {
+        const runResponse = await fetch(`/api/visual-extraction/runs/${encodeURIComponent(extractionRunId)}`);
+        if (runResponse.ok) {
+          const runData = await runResponse.json() as { run?: VisualExtractionRunSummary };
+          if (runData.run?.id === extractionRunId && runData.run.parentSourceId === id) {
+            next = { ...next, visualExtractionRun: runData.run };
+          }
+        }
+      }
       if (interactionRequest.current !== requestId) return requestId;
       setDetail(next);
       setDetailLoading(false);
@@ -612,13 +622,17 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
     const mapped = items.map((item) => ({
       id: item.id,
       title: formatSourceTitle(item.titleKo?.trim() || item.title),
+      sourceVersionId: item.activeVersionId ?? null,
       meta: [KIND_LABELS[item.kind] ?? item.kind, item.year].filter(Boolean).join(" · "),
     }));
     if (detail) {
       const currentSourceId = String(detail.source.id);
       const currentTitle = formatSourceTitle(String(detail.source.title ?? "현재 자료"));
       const currentMeta = [KIND_LABELS[String(detail.source.kind ?? "")] ?? String(detail.source.kind ?? ""), detail.source.year].filter(Boolean).join(" · ");
-      return [{ id: currentSourceId, title: currentTitle, meta: currentMeta }, ...mapped.filter((option) => option.id !== currentSourceId)];
+      const currentVersionId = typeof detail.source.activeVersionId === "string" && detail.source.activeVersionId.trim()
+        ? detail.source.activeVersionId
+        : null;
+      return [{ id: currentSourceId, title: currentTitle, sourceVersionId: currentVersionId, meta: currentMeta }, ...mapped.filter((option) => option.id !== currentSourceId)];
     }
     return mapped;
   }, [detail, items]);

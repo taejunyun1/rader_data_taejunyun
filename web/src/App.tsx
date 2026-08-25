@@ -15,18 +15,25 @@ export default function App() {
   const [view, setView] = useState<View>("RADAR");
   const [usage, setUsage] = useState<UsageBadge | null>(null);
   const { jobs, refresh, dismiss, retry } = useResearchJobs();
-  const [focus, setFocus] = useState<{ distillSessionId?: string; radarPeriod?: RadarPeriod; reservoirSourceId?: string }>({});
+  const [focus, setFocus] = useState<{ distillSessionId?: string; radarPeriod?: RadarPeriod; reservoirSourceId?: string; reservoirExtractionRunId?: string }>({});
 
   function openJobResult(result: ResearchJobResultRef) {
     setView(result.view === "VISUAL" ? "RESERVOIR" : result.view);
     if (result.view === "DISTILL") setFocus({ distillSessionId: result.sessionId });
     if (result.view === "RADAR") setFocus({ radarPeriod: result.period });
-    if (result.view === "RESERVOIR") setFocus({ reservoirSourceId: result.sourceId });
+    if (result.view === "RESERVOIR") setFocus({
+      reservoirSourceId: result.sourceId,
+      reservoirExtractionRunId: "acquisition" in result && result.acquisition ? result.extractionRunId : undefined,
+    });
   }
 
   const openReservoirSource = useCallback((sourceId: string) => {
-    setFocus({ reservoirSourceId: sourceId });
+    setFocus({ reservoirSourceId: sourceId, reservoirExtractionRunId: undefined });
     setView("RESERVOIR");
+  }, []);
+
+  const consumeReservoirFocus = useCallback(() => {
+    setFocus((current) => ({ ...current, reservoirSourceId: undefined, reservoirExtractionRunId: undefined }));
   }, []);
 
   const consumeFocus = useCallback((key: "distillSessionId" | "radarPeriod" | "reservoirSourceId") => {
@@ -45,7 +52,7 @@ export default function App() {
       {view === "RADAR" && <RadarView onNavigate={setView} onJobCreated={refresh} focusPeriod={focus.radarPeriod} onFocusConsumed={() => consumeFocus("radarPeriod")} />}
       {view === "INBOX" && <InboxView />}
       {view === "DISTILL" && <DistillView onJobCreated={refresh} focusSessionId={focus.distillSessionId} onFocusConsumed={() => consumeFocus("distillSessionId")} />}
-      {view === "RESERVOIR" && <ReservoirView onJobCreated={refresh} focusSourceId={focus.reservoirSourceId} onFocusConsumed={() => consumeFocus("reservoirSourceId")} />}
+      {view === "RESERVOIR" && <ReservoirView onJobCreated={refresh} focusSourceId={focus.reservoirSourceId} focusExtractionRunId={focus.reservoirExtractionRunId} onFocusConsumed={consumeReservoirFocus} />}
       {view === "DISCOVER" && <DiscoverView onNavigate={setView} onOpenReservoir={openReservoirSource} jobs={jobs} onJobCreated={refresh} />}
       {view === "USAGE" && <UsageView />}
       {view === "SETTINGS" && <SettingsView />}
