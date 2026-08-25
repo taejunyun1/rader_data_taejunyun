@@ -509,6 +509,198 @@ describe("visual asset detail mapping", () => {
   });
 });
 
+describe("visual extraction filter decisions", () => {
+  it("marks tracker and repeated-logo candidates as decorative before duplicate checks", async () => {
+    const { filterVisualCandidate } = await import("../../../worker/src/visual/extraction/filter");
+
+    const decision = filterVisualCandidate({
+      contentHash: "hash-1",
+      perceptualHash: "f0f0f0f0f0f0f0f0",
+      caption: "Museum logo",
+      nearbyText: null,
+      signals: ["tracker_pixel", "repeated_logo"],
+      existingAssets: [
+        { assetId: "asset-duplicate", contentHash: "hash-1", perceptualHash: "f0f0f0f0f0f0f0f0" },
+      ],
+    });
+
+    expect(decision.selectionStatus).toBe("DECORATIVE");
+    expect(decision.selectionReason).toBe("visual-filter-v1:decorative_signal");
+    expect(decision.duplicateOf).toBeNull();
+  });
+
+  it("returns DUPLICATE with a DUPLICATE_OF relation for exact or near duplicates", async () => {
+    const { filterVisualCandidate } = await import("../../../worker/src/visual/extraction/filter");
+
+    const exact = filterVisualCandidate({
+      contentHash: "hash-1",
+      perceptualHash: "0123456789abcdef",
+      caption: "Figure 1. Installation view",
+      nearbyText: "Detailed discussion beside the figure.",
+      signals: [],
+      existingAssets: [
+        { assetId: "asset-exact", contentHash: "hash-1", perceptualHash: "fedcba9876543210" },
+      ],
+    });
+    const near = filterVisualCandidate({
+      contentHash: "hash-2",
+      perceptualHash: "0123456789abcdee",
+      caption: "Figure 2. Installation detail",
+      nearbyText: "Close reading of the detail crop.",
+      signals: [],
+      existingAssets: [
+        { assetId: "asset-near", contentHash: "hash-9", perceptualHash: "0123456789abcdef" },
+      ],
+    });
+
+    expect(exact).toMatchObject({
+      selectionStatus: "DUPLICATE",
+      selectionReason: "visual-filter-v1:duplicate_exact",
+      duplicateOf: {
+        relationKind: "DUPLICATE_OF",
+        toVisualAssetId: "asset-exact",
+      },
+    });
+    expect(near).toMatchObject({
+      selectionStatus: "DUPLICATE",
+      selectionReason: "visual-filter-v1:duplicate_near",
+      duplicateOf: {
+        relationKind: "DUPLICATE_OF",
+        toVisualAssetId: "asset-near",
+      },
+    });
+  });
+
+  it("downgrades thin-context candidates to REVIEW and maps fetch failures to UNAVAILABLE", async () => {
+    const { filterVisualCandidate, unavailableVisualDecision } = await import("../../../worker/src/visual/extraction/filter");
+
+    const review = filterVisualCandidate({
+      contentHash: "hash-3",
+      perceptualHash: "aaaaaaaaaaaaaaaa",
+      caption: null,
+      nearbyText: "label",
+      signals: ["review_small_context"],
+      existingAssets: [],
+    });
+    const unavailable = unavailableVisualDecision("IMAGE_URL_BLOCKED");
+
+    expect(review.selectionStatus).toBe("REVIEW");
+    expect(review.selectionReason).toBe("visual-filter-v1:needs_context_review");
+    expect(unavailable.selectionStatus).toBe("UNAVAILABLE");
+    expect(unavailable.selectionReason).toBe("visual-filter-v1:unavailable_image_url_blocked");
+  });
+});
+
+describe("rights-first LINK_ONLY drafts", () => {
+  it("creates a metadata-only ORIGINAL version for UNKNOWN rights without persistent bytes", async () => {
+    const { buildLinkOnlyVisualDraft } = await import("../../../worker/src/visual/extraction/filter");
+
+    const draft = buildLinkOnlyVisualDraft({
+      now: "2026-08-25T05:00:00.000Z",
+      idFactory: (() => {
+        const ids = ["asset-link", "version-link"];
+        return () => ids.shift() ?? "missing-id";
+      })(),
+      parentSourceId: "source-1",
+      parentVersionId: "version-1",
+      originKind: "WEB_EMBED",
+      candidateKey: "candidate-link",
+      sourceUrl: "https://example.com/image.jpg",
+      finalUrl: "https://cdn.example.com/image.jpg",
+      figureLabel: "Figure 1",
+      caption: "Figure 1. Installation view",
+      nearbyText: "The article discusses the installation in detail.",
+      contentType: "image/jpeg",
+      byteSize: 2048,
+      contentHash: "hash-link",
+      rightsStatus: "UNKNOWN",
+      rightsBasis: "not reviewed",
+      decision: {
+        selectionStatus: "REVIEW",
+        selectionReason: "visual-filter-v1:needs_context_review",
+        ruleVersion: "visual-filter-v1",
+        duplicateOf: null,
+      },
+    });
+
+    expect(draft.persistBytes).toBe(false);
+    expect(draft.asset).toMatchObject({
+      id: "asset-link",
+      parentSourceId: "source-1",
+      parentVersionId: "version-1",
+      originKind: "WEB_EMBED",
+      sourceUrl: "https://example.com/image.jpg",
+      candidateKey: "candidate-link",
+      figureLabel: "Figure 1",
+      caption: "Figure 1. Installation view",
+      nearbyText: "The article discusses the installation in detail.",
+      selectionStatus: "REVIEW",
+      selectionReason: "visual-filter-v1:needs_context_review",
+      rightsStatus: "UNKNOWN",
+      rightsBasis: "not reviewed",
+      storageState: "LINK_ONLY",
+      processingStatus: "READY",
+      contentHash: "hash-link",
+    });
+    expect(draft.originalVersion).toMatchObject({
+      id: "version-link",
+      visualAssetId: "asset-link",
+      variant: "ORIGINAL",
+      r2Key: null,
+      mimeType: "image/jpeg",
+      byteSize: 2048,
+      contentHash: "hash-link",
+    });
+    expect(draft.provenance.finalUrl).toBe("https://cdn.example.com/image.jpg");
+    expect(draft.relations).toEqual([]);
+  });
+
+  it("preserves duplicate provenance as a relation without deleting or merging the asset", async () => {
+    const { buildLinkOnlyVisualDraft } = await import("../../../worker/src/visual/extraction/filter");
+
+    const draft = buildLinkOnlyVisualDraft({
+      now: "2026-08-25T05:10:00.000Z",
+      idFactory: (() => {
+        const ids = ["asset-dup", "version-dup", "relation-dup"];
+        return () => ids.shift() ?? "missing-id";
+      })(),
+      parentSourceId: "source-1",
+      parentVersionId: "version-1",
+      originKind: "DISCOVERY_EMBED",
+      candidateKey: "candidate-dup",
+      sourceUrl: "https://example.com/dup.jpg",
+      finalUrl: "https://cdn.example.com/dup.jpg",
+      figureLabel: null,
+      caption: "Repeated figure",
+      nearbyText: "Repeated figure in a slightly cropped layout.",
+      contentType: "image/jpeg",
+      byteSize: 4096,
+      contentHash: "hash-dup",
+      rightsStatus: "PUBLIC_LINK",
+      rightsBasis: "source page link only",
+      decision: {
+        selectionStatus: "DUPLICATE",
+        selectionReason: "visual-filter-v1:duplicate_near",
+        ruleVersion: "visual-filter-v1",
+        duplicateOf: {
+          relationKind: "DUPLICATE_OF",
+          toVisualAssetId: "asset-existing",
+          description: "near duplicate via dHash<=6",
+        },
+      },
+    });
+
+    expect(draft.asset.deletedAt).toBeNull();
+    expect(draft.relations).toEqual([
+      expect.objectContaining({
+        relationKind: "DUPLICATE_OF",
+        toVisualAssetId: "asset-existing",
+        description: "near duplicate via dHash<=6",
+      }),
+    ]);
+  });
+});
+
 function verifyVisualExtractionMigration(): {
   foreignKeyCheck: string;
   invalidRunStatusError: string;

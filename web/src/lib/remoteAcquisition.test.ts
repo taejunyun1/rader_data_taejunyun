@@ -321,6 +321,65 @@ describe("remote acquisition", () => {
     });
   });
 
+  describe("fetchRemoteImage", () => {
+    it("blocks direct private network image targets before issuing a request", async () => {
+      const { fetchRemoteImage } = await import("../../../worker/src/visual/extraction/fetchImage");
+      const fetchSpy = vi.fn();
+      vi.stubGlobal("fetch", fetchSpy);
+
+      await expect(fetchRemoteImage("http://127.0.0.1/private.png"))
+        .rejects.toThrow("IMAGE_URL_BLOCKED");
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it("rejects content-type and magic mismatches with IMAGE_TYPE_INVALID", async () => {
+      const { fetchRemoteImage } = await import("../../../worker/src/visual/extraction/fetchImage");
+      const response = withResponseUrl(new Response("<html>not-an-image</html>", {
+        status: 200,
+        headers: { "content-type": "image/png" },
+      }), "https://public.example/not-image.png");
+
+      await expect(fetchRemoteImage("https://public.example/not-image.png", {
+        resolveDns: allowPublicDnsResolution,
+        fetchImpl: vi.fn().mockResolvedValue(response),
+      })).rejects.toThrow("IMAGE_TYPE_INVALID");
+    });
+
+    it("rejects bodies larger than 10 MiB while streaming", async () => {
+      const { fetchRemoteImage } = await import("../../../worker/src/visual/extraction/fetchImage");
+      const oversized = makeStreamResponse([
+        new Uint8Array(10 * 1024 * 1024),
+        new Uint8Array(1),
+      ], {
+        "content-type": "image/png",
+      });
+
+      await expect(fetchRemoteImage("https://public.example/large.png", {
+        resolveDns: allowPublicDnsResolution,
+        fetchImpl: vi.fn().mockResolvedValue(oversized),
+      })).rejects.toThrow("IMAGE_SIZE_LIMIT");
+    });
+
+    it("returns a safe SVG image with the final URL and stable content hash", async () => {
+      const { fetchRemoteImage } = await import("../../../worker/src/visual/extraction/fetchImage");
+      const body = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" /></svg>`;
+      const response = withResponseUrl(new Response(body, {
+        status: 200,
+        headers: { "content-type": "image/svg+xml; charset=utf-8" },
+      }), "https://public.example/final.svg");
+
+      const result = await fetchRemoteImage("https://public.example/start.svg", {
+        resolveDns: allowPublicDnsResolution,
+        fetchImpl: vi.fn().mockResolvedValue(response),
+      });
+
+      expect(result.contentType).toBe("image/svg+xml");
+      expect(result.finalUrl).toBe("https://public.example/final.svg");
+      expect(result.contentHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(result.byteSize).toBe(new TextEncoder().encode(body).byteLength);
+    });
+  });
+
   it("converts DNS resolution timeout into FETCH_TIMEOUT within the 20-second acquisition boundary", async () => {
     vi.useFakeTimers();
     const { acquireRemoteSource } = await import("../../../worker/src/ingestion/acquireRemoteSource");

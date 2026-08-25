@@ -30,6 +30,11 @@ export interface RemoteFetchPolicy {
   accept?: RemoteFetchAccept;
 }
 
+export interface SafeRemoteBytesPolicy extends RemoteFetchPolicy {
+  acceptHeader?: string;
+  maxRedirects?: number;
+}
+
 export interface SafeRemoteText {
   body: ArrayBuffer;
   contentType: string;
@@ -54,7 +59,7 @@ export async function fetchRemoteDocument(
   policy: RemoteFetchPolicy = {},
 ): Promise<SafeRemoteDocument> {
   try {
-    const fetched = await fetchRemoteBytes(url, policy);
+    const fetched = await fetchSafeRemoteBytes(url, policy);
     return classifyRemoteDocument(fetched);
   } catch (error) {
     if (error instanceof RemoteFetchError) throw error;
@@ -68,7 +73,7 @@ export async function fetchRemoteText(
   policy: RemoteFetchPolicy = {},
 ): Promise<SafeRemoteText> {
   try {
-    return await fetchRemoteBytes(url, {
+    return await fetchSafeRemoteBytes(url, {
       ...policy,
       accept: "FEED",
     });
@@ -105,13 +110,15 @@ export function normalizePublicHttpUrl(value: string): string | null {
   return parsed.toString();
 }
 
-async function fetchRemoteBytes(
+export async function fetchSafeRemoteBytes(
   url: string,
-  policy: RemoteFetchPolicy,
+  policy: SafeRemoteBytesPolicy = {},
 ): Promise<SafeRemoteText> {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), FETCH_TIMEOUT_MS);
   const resolveDns = policy.resolveDns ?? createDnsResolver(policy.fetchImpl ?? fetch);
+  const acceptHeader = policy.acceptHeader ?? acceptHeaderFor(policy.accept ?? "DOCUMENT");
+  const maxRedirects = Math.max(0, policy.maxRedirects ?? MAX_REDIRECTS);
 
   try {
     const { response, finalUrl } = await fetchWithRedirects(
@@ -119,7 +126,8 @@ async function fetchRemoteBytes(
       ac.signal,
       resolveDns,
       policy.fetchImpl ?? fetch,
-      policy.accept ?? "DOCUMENT",
+      acceptHeader,
+      maxRedirects,
     );
     const contentType = normalizeContentType(response.headers.get("content-type"));
     const body = await readResponseBody(response, ac.signal, policy.maxResponseBytes ?? MAX_RESPONSE_BYTES);
@@ -134,24 +142,23 @@ async function fetchWithRedirects(
   signal: AbortSignal,
   resolveDns: DnsResolver,
   fetchImpl: typeof fetch,
-  accept: RemoteFetchAccept,
+  acceptHeader: string,
+  maxRedirects: number,
 ): Promise<{ response: Response; finalUrl: string }> {
   let currentUrl = await validateRemoteUrl(url, resolveDns, signal);
 
-  for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount++) {
+  for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount++) {
     const response = await fetchImpl(currentUrl, {
       headers: {
         "User-Agent": "ResearchRadar/0.1 (personal research tool)",
-        Accept: accept === "FEED"
-          ? "application/rss+xml,application/atom+xml,application/xml,text/xml,text/plain;q=0.9,*/*;q=0.2"
-          : "text/html,application/xhtml+xml,text/plain;q=0.9,application/pdf;q=0.9,*/*;q=0.3",
+        Accept: acceptHeader,
       },
       redirect: "manual",
       signal,
     });
 
     if (isRedirectStatus(response.status)) {
-      if (redirectCount === MAX_REDIRECTS) throw new RemoteFetchError("REDIRECT_BLOCKED", response.status);
+      if (redirectCount === maxRedirects) throw new RemoteFetchError("REDIRECT_BLOCKED", response.status);
       const location = response.headers.get("location");
       if (!location) throw new RemoteFetchError("REDIRECT_BLOCKED", response.status);
       currentUrl = await validateRemoteUrl(new URL(location, currentUrl).toString(), resolveDns, signal);
@@ -166,6 +173,12 @@ async function fetchWithRedirects(
   }
 
   throw new RemoteFetchError("REDIRECT_BLOCKED");
+}
+
+function acceptHeaderFor(accept: RemoteFetchAccept): string {
+  return accept === "FEED"
+    ? "application/rss+xml,application/atom+xml,application/xml,text/xml,text/plain;q=0.9,*/*;q=0.2"
+    : "text/html,application/xhtml+xml,text/plain;q=0.9,application/pdf;q=0.9,*/*;q=0.3";
 }
 
 async function validateRemoteUrl(url: string, resolveDns: DnsResolver, signal: AbortSignal): Promise<string> {
