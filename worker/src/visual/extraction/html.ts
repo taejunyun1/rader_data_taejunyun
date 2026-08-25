@@ -35,6 +35,11 @@ interface RawObservation {
   signals: string[];
 }
 
+interface SourceSetCandidate {
+  url: string;
+  descriptor: { kind: "width" | "density" | "order"; value: number };
+}
+
 const CONTAINER_TAGS = ["header", "footer", "nav", "aside"] as const;
 const AD_RE = /\b(ad|ads|advert|sponsor|promo|banner)\b/i;
 const LOGO_RE = /\blogo\b/i;
@@ -122,8 +127,9 @@ function buildObservation(
 
   const srcAttr = getAttribute(imgTag, "src");
   const srcResult = srcAttr ? canonicalizeUrl(srcAttr, baseUrl) : null;
-  const sourceSetUrls = collectSourceSetUrls(blockHtml, baseUrl);
-  const sourceUrl = srcResult?.url ?? sourceSetUrls[0] ?? null;
+  const sourceSetCandidates = collectSourceSetCandidates(blockHtml, baseUrl);
+  const sourceSetUrls = uniqueList(sourceSetCandidates.map((candidate) => candidate.url));
+  const sourceUrl = selectPrimarySourceUrl(sourceSetCandidates) ?? srcResult?.url ?? null;
   if (!sourceUrl) {
     return {
       candidateKey: `missing-source:${normalizeKey(toPlainText(blockHtml)).slice(0, 120)}`,
@@ -145,6 +151,7 @@ function buildObservation(
   const alt = normalizeText(getAttribute(imgTag, "alt"));
   const declaredWidth = toNumber(getAttribute(imgTag, "width"));
   const declaredHeight = toNumber(getAttribute(imgTag, "height"));
+  const hasContextualCue = Boolean(figureLabel || caption || nearbyText || hasMeaningfulAlt(alt));
   const signals = uniqueSignals([
     ...baseSignals,
     isFigure ? "context:figure" : "context:embedded",
@@ -158,12 +165,18 @@ function buildObservation(
   if (TRACKER_RE.test(sourceUrl) || (declaredWidth === 1 && declaredHeight === 1)) addSignal(signals, "tracker_pixel");
   if (AD_RE.test(blockHtml) || AD_RE.test(alt ?? "") || AD_RE.test(sourceUrl)) addSignal(signals, "ad_related");
   if (LOGO_RE.test(sourceUrl) || LOGO_RE.test(alt ?? "")) addSignal(signals, "logo_asset");
-  if ((declaredWidth ?? 0) <= 32 && (declaredHeight ?? 0) <= 32) addSignal(signals, "decorative_icon");
-  if ((declaredWidth ?? 0) > 0 && (declaredWidth ?? 0) <= 180 && (declaredHeight ?? 0) > 0 && (declaredHeight ?? 0) <= 120) {
+  if ((declaredWidth ?? 0) > 0 && (declaredWidth ?? 0) <= 32 && (declaredHeight ?? 0) > 0 && (declaredHeight ?? 0) <= 32) {
     addSignal(signals, "small_dimensions");
-    if (figureLabel || caption || nearbyText) addSignal(signals, "review_small_context");
+    if (hasContextualCue) {
+      addSignal(signals, "review_small_context");
+    } else {
+      addSignal(signals, "decorative_icon");
+    }
+  } else if ((declaredWidth ?? 0) > 0 && (declaredWidth ?? 0) <= 180 && (declaredHeight ?? 0) > 0 && (declaredHeight ?? 0) <= 120) {
+    addSignal(signals, "small_dimensions");
+    if (hasContextualCue) addSignal(signals, "review_small_context");
   }
-  if (!figureLabel && !caption && !nearbyText && ((alt ?? "").length <= 2 || ICON_RE.test(sourceUrl) || ICON_RE.test(alt ?? ""))) {
+  if (!hasContextualCue && ((alt ?? "").length <= 2 || ICON_RE.test(sourceUrl) || ICON_RE.test(alt ?? ""))) {
     addSignal(signals, "decorative_icon");
   }
 
@@ -252,19 +265,54 @@ function getAttribute(tag: string, name: string): string | null {
   return bare ? decodeHtmlEntities(bare.replace(/^['"]|['"]$/g, "")).trim() : null;
 }
 
-function collectSourceSetUrls(blockHtml: string, baseUrl: string): string[] {
-  const urls: string[] = [];
+function collectSourceSetCandidates(blockHtml: string, baseUrl: string): SourceSetCandidate[] {
+  const candidates: SourceSetCandidate[] = [];
   for (const match of blockHtml.matchAll(/\bsrcset=["']([^"']+)["']/gi)) {
     const srcset = match[1]?.trim();
     if (!srcset) continue;
+    let order = 0;
     for (const part of srcset.split(",")) {
-      const raw = part.trim().split(/\s+/)[0];
+      const pieces = part.trim().split(/\s+/).filter(Boolean);
+      const raw = pieces[0];
       if (!raw) continue;
       const normalized = canonicalizeUrl(raw, baseUrl);
-      if (normalized.url) urls.push(normalized.url);
+      if (!normalized.url) continue;
+      candidates.push({
+        url: normalized.url,
+        descriptor: parseSourceSetDescriptor(pieces[1] ?? null, order),
+      });
+      order += 1;
     }
   }
-  return uniqueList(urls);
+  return candidates;
+}
+
+function parseSourceSetDescriptor(raw: string | null, order: number): SourceSetCandidate["descriptor"] {
+  if (!raw) return { kind: "order", value: order };
+  const width = raw.match(/^(\d+(?:\.\d+)?)w$/i);
+  if (width) return { kind: "width", value: Number(width[1]) };
+  const density = raw.match(/^(\d+(?:\.\d+)?)x$/i);
+  if (density) return { kind: "density", value: Number(density[1]) };
+  return { kind: "order", value: order };
+}
+
+function selectPrimarySourceUrl(candidates: SourceSetCandidate[]): string | null {
+  if (!candidates.length) return null;
+  const ranked = [...candidates].sort(compareSourceSetCandidates);
+  return ranked[0]?.url ?? null;
+}
+
+function compareSourceSetCandidates(left: SourceSetCandidate, right: SourceSetCandidate): number {
+  const rank = (candidate: SourceSetCandidate): number => {
+    if (candidate.descriptor.kind === "width") return 3;
+    if (candidate.descriptor.kind === "density") return 2;
+    return 1;
+  };
+  const rankDiff = rank(right) - rank(left);
+  if (rankDiff !== 0) return rankDiff;
+  const valueDiff = right.descriptor.value - left.descriptor.value;
+  if (valueDiff !== 0) return valueDiff;
+  return right.url.localeCompare(left.url);
 }
 
 function canonicalizeUrl(raw: string, baseUrl: string): { url: string | null; signal?: string } {
@@ -333,6 +381,10 @@ function toPlainText(value: string): string {
 
 function normalizeText(value: string | null): string | null {
   return value ? toPlainText(value).replace(/\s+/g, " ").trim() || null : null;
+}
+
+function hasMeaningfulAlt(value: string | null): boolean {
+  return Boolean(value && value.replace(/\s+/g, " ").trim().length >= 3);
 }
 
 function normalizeKey(value: string | null): string {

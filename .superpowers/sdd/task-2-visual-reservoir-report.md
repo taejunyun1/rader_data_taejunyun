@@ -71,3 +71,40 @@ Passed for `shared`, `web`, and `worker`.
 - No automatic external image persistence was added.
 - No feed-thumbnail scraping was added before source promotion.
 - The existing unrelated `.superpowers/sdd/task-2-report.md` file was left untouched.
+
+## Fix Follow-Up
+
+Date: 2026-08-25
+Reason: reviewer findings after the initial Task 2 delivery
+
+### Addressed Findings
+
+- `srcset` parsing now reads width and density descriptors, preserves every resolved `sourceSetUrls` entry for provenance, and picks the strongest usable `srcset` candidate as `sourceUrl`. `img src` is only used when no usable `srcset` entry exists.
+- Tiny contextual visuals at `<=32x32` are no longer dropped solely for size. When they have figure context, caption, meaningful alt text, or meaningful nearby text, they stay in `candidates` with `review_small_context`.
+- Added direct regression coverage for `data:`, `blob:`, `javascript:`, and private-network candidate URLs being rejected.
+
+### Additional RED/GREEN Cycle
+
+RED:
+
+```bash
+pnpm --dir web exec vitest run src/lib/remoteAcquisition.test.ts src/lib/ingestion.test.ts
+```
+
+Observed failure:
+
+- contextual `24x24` figure was still rejected instead of remaining a review candidate
+
+GREEN:
+
+```bash
+pnpm --dir web exec vitest run src/lib/remoteAcquisition.test.ts src/lib/ingestion.test.ts
+```
+
+Passed: `60/60` tests
+
+Additional regression coverage added for:
+
+- thumbnail `img src` plus `800w/1600w` `srcset`, expecting the `1600w` candidate as `sourceUrl`
+- contextual `24x24` figure remaining in candidates with `review_small_context`
+- direct candidate rejection for `data:`, `blob:`, `javascript:`, and `127.0.0.1` URLs

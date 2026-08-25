@@ -107,16 +107,19 @@ describe("static HTML extraction", () => {
       extracted.selectedFragmentHtml,
     );
 
-    expect(result.candidates).toHaveLength(2);
+    expect(result.candidates).toHaveLength(3);
     expect(result.candidates).toEqual([
       expect.objectContaining({
-        sourceUrl: "https://example.com/images/infrared-floor.jpg?size=large",
-        sourceSetUrls: ["https://example.com/images/infrared-floor.jpg?size=large"],
+        sourceUrl: "https://example.com/images/infrared-floor-1600.jpg?size=large",
+        sourceSetUrls: [
+          "https://example.com/images/infrared-floor-800.jpg?size=medium",
+          "https://example.com/images/infrared-floor-1600.jpg?size=large",
+        ],
         alt: "Infrared installation view",
         figureLabel: "Figure 1",
         caption: "Infrared installation view from the exhibition floor.",
-        declaredWidth: 1200,
-        declaredHeight: 800,
+        declaredWidth: 320,
+        declaredHeight: 213,
       }),
       expect.objectContaining({
         sourceUrl: "https://cdn.example.com/images/detail-crop.jpg?size=medium",
@@ -128,8 +131,18 @@ describe("static HTML extraction", () => {
         declaredHeight: 90,
         signals: expect.arrayContaining(["review_small_context"]),
       }),
+      expect.objectContaining({
+        sourceUrl: "https://example.com/images/museum-glyph.png",
+        alt: "Museum glyph",
+        figureLabel: "Figure 3",
+        caption: "Museum glyph used as a curatorial marker.",
+        declaredWidth: 24,
+        declaredHeight: 24,
+        signals: expect.arrayContaining(["review_small_context"]),
+      }),
     ]);
     expect(result.candidates[0]?.nearbyText).toContain("floor projection");
+    expect(result.candidates[2]?.signals).not.toContain("decorative_icon");
     expect(result.rejected).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -150,6 +163,28 @@ describe("static HTML extraction", () => {
         }),
       ]),
     );
+  });
+
+  it.each([
+    ["data:image/png;base64,abc", "blocked_source_scheme"],
+    ["blob:https://example.com/blob-id", "blocked_source_scheme"],
+    ["javascript:alert(1)", "blocked_source_scheme"],
+    ["http://127.0.0.1/private.png", "private_source_url"],
+  ] satisfies Array<[string, string]>)("rejects direct candidate urls for %s", async (src, expectedSignal) => {
+    const { extractStaticHtml } = await import("../../../worker/src/ingestion/extractHtml");
+    const { inspectHtmlVisualCandidates } = await import("../../../worker/src/visual/extraction/html");
+    const html = `<main><article><figure><img src="${src}" alt="Blocked candidate" width="400" height="300" /><figcaption>Figure 1. Blocked image.</figcaption></figure><p>Supporting text around the blocked candidate.</p></article></main>`;
+
+    const extracted = extractStaticHtml(html, "https://example.com/post");
+    const result = inspectHtmlVisualCandidates(html, "https://example.com/post", extracted.selectedFragmentHtml);
+
+    expect(result.candidates).toHaveLength(0);
+    expect(result.rejected).toEqual([
+      expect.objectContaining({
+        sourceUrl: null,
+        signals: expect.arrayContaining([expectedSignal]),
+      }),
+    ]);
   });
 });
 
