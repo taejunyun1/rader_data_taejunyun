@@ -121,6 +121,17 @@ function mapRunResponse(data: PdfRunResponse): PdfVisualExtractionResult {
   };
 }
 
+function pausedPdfExtractionResult(runId: string, checkpoint: PdfRunResponse["checkpoint"], totalPages: number): PdfVisualExtractionResult {
+  return {
+    runId,
+    status: "PAUSED",
+    totalPages: Math.max(totalPages, checkpoint.totalPages),
+    uploadedPages: checkpoint.uploadedPages.length,
+    remainingPages: checkpoint.remainingPages,
+    nextPageNumber: checkpoint.nextPageNumber,
+  };
+}
+
 export async function renderPdfVisualPages(
   blob: Blob,
   checkpoint: PdfVisualRenderCheckpoint,
@@ -179,73 +190,73 @@ export async function startOrResumePdfVisualExtraction(input: {
   originalUrl: string;
   signal?: AbortSignal;
 }): Promise<PdfVisualExtractionResult> {
-  const originalResponse = await fetch(input.originalUrl, { signal: input.signal });
-  if (!originalResponse.ok) throw new Error("pdf_original_not_available");
-  const originalBlob = await originalResponse.blob();
-  const pageCount = await loadPdfPageCount(originalBlob);
+  let runData: PdfRunResponse | null = null;
+  let checkpoint: PdfRunResponse["checkpoint"] = {
+    uploadedPages: [],
+    totalPages: 0,
+    remainingPages: 0,
+    nextPageNumber: null,
+  };
+  let totalPages = 0;
 
-  const runResponse = await fetch("/api/visual-extraction/pdf/runs", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sourceId: input.sourceId, versionId: input.versionId, pageCount }),
-    signal: input.signal,
-  });
-  if (!runResponse.ok) throw new Error("pdf_visual_run_create_failed");
-  const runData = await runResponse.json() as PdfRunResponse;
+  try {
+    const originalResponse = await fetch(input.originalUrl, { signal: input.signal });
+    if (!originalResponse.ok) throw new Error("pdf_original_not_available");
+    const originalBlob = await originalResponse.blob();
+    const pageCount = await loadPdfPageCount(originalBlob);
 
-  const rendered = await renderPdfVisualPages(originalBlob, {
-    runId: runData.run.id,
-    uploadedPages: runData.checkpoint.uploadedPages,
-  }, input.signal);
-
-  for (const page of rendered.pages) {
-    if (input.signal?.aborted) {
-      return {
-        runId: runData.run.id,
-        status: "PAUSED",
-        totalPages: rendered.totalPages,
-        uploadedPages: runData.checkpoint.uploadedPages.length,
-        remainingPages: rendered.totalPages - runData.checkpoint.uploadedPages.length,
-        nextPageNumber: page.pageNumber,
-      };
-    }
-
-    const uploadResponse = await fetch(`/api/visual-extraction/pdf/runs/${runData.run.id}/pages/${page.pageNumber}`, {
-      method: "PUT",
+    const runResponse = await fetch("/api/visual-extraction/pdf/runs", {
+      method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sourceId: input.sourceId,
-        versionId: input.versionId,
-        width: page.width,
-        height: page.height,
-        contentHash: page.contentHash,
-        imageBase64: await blobToBase64(page.blob),
-      }),
+      body: JSON.stringify({ sourceId: input.sourceId, versionId: input.versionId, pageCount }),
       signal: input.signal,
     });
-    if (!uploadResponse.ok) throw new Error("pdf_visual_page_upload_failed");
-  }
+    if (!runResponse.ok) throw new Error("pdf_visual_run_create_failed");
+    runData = await runResponse.json() as PdfRunResponse;
+    checkpoint = runData.checkpoint;
 
-  if (input.signal?.aborted) {
-    return {
+    const rendered = await renderPdfVisualPages(originalBlob, {
       runId: runData.run.id,
-      status: "PAUSED",
-      totalPages: rendered.totalPages,
-      uploadedPages: runData.checkpoint.uploadedPages.length + rendered.pages.length,
-      remainingPages: Math.max(rendered.totalPages - (runData.checkpoint.uploadedPages.length + rendered.pages.length), 0),
-      nextPageNumber: rendered.pages.at(-1)?.pageNumber ?? runData.checkpoint.nextPageNumber,
-    };
-  }
+      uploadedPages: checkpoint.uploadedPages,
+    }, input.signal);
+    totalPages = rendered.totalPages;
 
-  const finalizeResponse = await fetch(`/api/visual-extraction/pdf/runs/${runData.run.id}/finalize`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sourceId: input.sourceId, versionId: input.versionId }),
-    signal: input.signal,
-  });
-  if (!finalizeResponse.ok) throw new Error("pdf_visual_finalize_failed");
-  const finalizeData = await finalizeResponse.json() as PdfRunResponse;
-  return mapRunResponse(finalizeData);
+    for (const page of rendered.pages) {
+      if (input.signal?.aborted) return pausedPdfExtractionResult(runData.run.id, checkpoint, totalPages);
+
+      const uploadResponse = await fetch(`/api/visual-extraction/pdf/runs/${runData.run.id}/pages/${page.pageNumber}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceId: input.sourceId,
+          versionId: input.versionId,
+          width: page.width,
+          height: page.height,
+          contentHash: page.contentHash,
+          imageBase64: await blobToBase64(page.blob),
+        }),
+        signal: input.signal,
+      });
+      if (!uploadResponse.ok) throw new Error("pdf_visual_page_upload_failed");
+      const uploadData = await uploadResponse.json() as PdfRunResponse;
+      checkpoint = uploadData.checkpoint;
+    }
+
+    if (input.signal?.aborted) return pausedPdfExtractionResult(runData.run.id, checkpoint, totalPages);
+
+    const finalizeResponse = await fetch(`/api/visual-extraction/pdf/runs/${runData.run.id}/finalize`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sourceId: input.sourceId, versionId: input.versionId }),
+      signal: input.signal,
+    });
+    if (!finalizeResponse.ok) throw new Error("pdf_visual_finalize_failed");
+    const finalizeData = await finalizeResponse.json() as PdfRunResponse;
+    return mapRunResponse(finalizeData);
+  } catch (error) {
+    if (runData && input.signal?.aborted) return pausedPdfExtractionResult(runData.run.id, checkpoint, totalPages);
+    throw error;
+  }
 }
 
 export async function cancelPdfVisualExtraction(runId: string): Promise<void> {

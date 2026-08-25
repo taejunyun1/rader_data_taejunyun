@@ -265,12 +265,36 @@ function readingApiDefaults(pathname: string) {
   return null;
 }
 
-async function installWebPdfFixture(page: Page) {
-  const pdfBytes = buildMultiPagePdf(41);
+interface WebPdfFixtureOptions {
+  pdfPageCount?: number;
+  initialPdfCleanupError?: string | null;
+}
+
+interface PdfRequestTrace {
+  method: string;
+  pathname: string;
+  body: unknown;
+}
+
+async function installWebPdfFixture(page: Page, options: WebPdfFixtureOptions = {}) {
+  const pdfPageCount = options.pdfPageCount ?? 41;
+  const initialPdfCleanupError = Object.prototype.hasOwnProperty.call(options, "initialPdfCleanupError")
+    ? options.initialPdfCleanupError ?? null
+    : "cleanup_retry_pending";
+  const pdfBytes = buildMultiPagePdf(pdfPageCount);
   let htmlLogoRecovered = false;
   let deepAnalysisBlocked = false;
   let pdfRunId = "run-pdf-1";
   const pdfUploadedPages = new Set<number>();
+  let pdfFinalized = false;
+  let secondPageUploadAttempt = 0;
+  let abortSecondPageUpload = false;
+  let releaseSecondPageUpload: (() => void) | null = null;
+  let resolveSecondPageUploadSeen: (() => void) | null = null;
+  const secondPageUploadSeen = new Promise<void>((resolve) => {
+    resolveSecondPageUploadSeen = resolve;
+  });
+  const pdfTrace: PdfRequestTrace[] = [];
 
   const htmlVisibleAsset: VisualAssetSummary = {
     id: "asset-html-link",
@@ -421,19 +445,29 @@ async function installWebPdfFixture(page: Page) {
       parentVersionId: "version-source-pdf",
       originKind: "PDF_PAGE_CROP",
       status: "PARTIAL",
-      totalUnits: 41,
-      uploadedUnits: 41,
+      totalUnits: pdfPageCount,
+      uploadedUnits: pdfPageCount,
       processedUnits: 40,
       selectedCount: 0,
       reviewCount: 1,
-      filteredCount: 39,
+      filteredCount: Math.max(pdfPageCount - 2, 0),
       unavailableCount: 1,
-      errorCode: "cleanup_retry_pending",
-      error: "cleanup_retry_pending",
+      errorCode: initialPdfCleanupError,
+      error: initialPdfCleanupError,
       createdAt: "2026-08-25T10:01:00.000Z",
       updatedAt: "2026-08-25T10:06:00.000Z",
       finishedAt: null,
     },
+  };
+
+  pdfDetail.extractionRun = {
+    ...pdfDetail.extractionRun,
+    totalUnits: pdfPageCount,
+    uploadedUnits: pdfPageCount,
+    processedUnits: Math.max(pdfPageCount - 1, 0),
+    filteredCount: Math.max(pdfPageCount - 2, 0),
+    errorCode: initialPdfCleanupError,
+    error: initialPdfCleanupError,
   };
 
   function htmlAssets(): VisualAssetSummary[] {
@@ -653,6 +687,15 @@ async function installWebPdfFixture(page: Page) {
   await page.route("**/api/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
+    if (url.pathname === "/api/reservoir/source-pdf/original" || url.pathname.startsWith("/api/visual-extraction/pdf/")) {
+      let body: unknown = null;
+      try {
+        body = request.postDataJSON();
+      } catch {
+        body = request.postData() ?? null;
+      }
+      pdfTrace.push({ method: request.method(), pathname: url.pathname, body });
+    }
     const defaults = readingApiDefaults(url.pathname);
     if (defaults) {
       await route.fulfill({ json: defaults });
@@ -727,19 +770,19 @@ async function installWebPdfFixture(page: Page) {
     }
     if (url.pathname === "/api/visual-extraction/pdf/runs" && request.method() === "POST") {
       const uploadedPages = [...pdfUploadedPages].sort((left, right) => left - right);
-      const nextPageNumber = uploadedPages.length >= 41 ? null : uploadedPages.length + 1;
+      const nextPageNumber = Array.from({ length: pdfPageCount }, (_, index) => index + 1).find((pageNumber) => !pdfUploadedPages.has(pageNumber)) ?? null;
       await route.fulfill({
         json: {
           run: {
             id: pdfRunId,
             status: uploadedPages.length > 0 ? "UPLOADING" : "RUNNING",
-            totalUnits: 41,
+            totalUnits: pdfPageCount,
             uploadedUnits: uploadedPages.length,
           },
           checkpoint: {
             uploadedPages,
-            totalPages: 41,
-            remainingPages: 41 - uploadedPages.length,
+            totalPages: pdfPageCount,
+            remainingPages: pdfPageCount - uploadedPages.length,
             nextPageNumber,
           },
         },
@@ -749,20 +792,32 @@ async function installWebPdfFixture(page: Page) {
     const uploadMatch = url.pathname.match(/^\/api\/visual-extraction\/pdf\/runs\/([^/]+)\/pages\/(\d+)$/);
     if (uploadMatch && request.method() === "PUT") {
       const pageNumber = Number(uploadMatch[2]);
+      if (pageNumber === 2 && secondPageUploadAttempt === 0) {
+        secondPageUploadAttempt += 1;
+        resolveSecondPageUploadSeen?.();
+        await new Promise<void>((resolve) => {
+          releaseSecondPageUpload = resolve;
+        });
+        releaseSecondPageUpload = null;
+        if (abortSecondPageUpload) {
+          await route.abort().catch(() => undefined);
+          return;
+        }
+      }
       pdfUploadedPages.add(pageNumber);
       await route.fulfill({
         json: {
           run: {
             id: pdfRunId,
             status: "UPLOADING",
-            totalUnits: 41,
+            totalUnits: pdfPageCount,
             uploadedUnits: pdfUploadedPages.size,
           },
           checkpoint: {
             uploadedPages: [...pdfUploadedPages].sort((left, right) => left - right),
-            totalPages: 41,
-            remainingPages: Math.max(41 - pdfUploadedPages.size, 0),
-            nextPageNumber: pdfUploadedPages.size >= 41 ? null : pageNumber + 1,
+            totalPages: pdfPageCount,
+            remainingPages: Math.max(pdfPageCount - pdfUploadedPages.size, 0),
+            nextPageNumber: Array.from({ length: pdfPageCount }, (_, index) => index + 1).find((candidate) => !pdfUploadedPages.has(candidate)) ?? null,
           },
         },
       });
@@ -770,6 +825,17 @@ async function installWebPdfFixture(page: Page) {
     }
     const finalizeMatch = url.pathname.match(/^\/api\/visual-extraction\/pdf\/runs\/([^/]+)\/finalize$/);
     if (finalizeMatch && request.method() === "POST") {
+      pdfFinalized = true;
+      pdfDetail.extractionRun = {
+        ...pdfDetail.extractionRun,
+        status: "PARTIAL",
+        totalUnits: pdfPageCount,
+        uploadedUnits: pdfUploadedPages.size,
+        processedUnits: Math.max(pdfUploadedPages.size - 1, 0),
+        filteredCount: Math.max(pdfPageCount - 2, 0),
+        errorCode: "cleanup_retry_pending",
+        error: "cleanup_retry_pending",
+      };
       await route.fulfill({
         status: 202,
         json: {
@@ -779,12 +845,12 @@ async function installWebPdfFixture(page: Page) {
           run: {
             id: pdfRunId,
             status: "QUEUED",
-            totalUnits: 41,
-            uploadedUnits: 41,
+            totalUnits: pdfPageCount,
+            uploadedUnits: pdfPageCount,
           },
           checkpoint: {
-            uploadedPages: Array.from({ length: 41 }, (_, index) => index + 1),
-            totalPages: 41,
+            uploadedPages: Array.from({ length: pdfPageCount }, (_, index) => index + 1),
+            totalPages: pdfPageCount,
             remainingPages: 0,
             nextPageNumber: null,
           },
@@ -801,6 +867,13 @@ async function installWebPdfFixture(page: Page) {
 
   return {
     didBlockDeepAnalysis: () => deepAnalysisBlocked,
+    waitForSecondPageUpload: () => secondPageUploadSeen,
+    abortSecondPageUpload: () => {
+      abortSecondPageUpload = true;
+      releaseSecondPageUpload?.();
+    },
+    getPdfTrace: () => pdfTrace,
+    wasPdfFinalized: () => pdfFinalized,
   };
 }
 
@@ -873,5 +946,96 @@ test.describe("visual extraction web and pdf coverage", () => {
     await page.getByRole("button", { name: "판단하기" }).click();
     await expect(page.getByRole("dialog", { name: "읽은 뒤 판단" })).toBeVisible();
     await expect(page.getByRole("dialog", { name: "PDF 시각 자료 추출" })).toHaveCount(0);
+  });
+
+  test("pauses after a page checkpoint, resumes from the server checkpoint, and exposes finalize cleanup diagnostics", async ({ page }) => {
+    const fixture = await installWebPdfFixture(page, { pdfPageCount: 2, initialPdfCleanupError: null });
+
+    await page.goto("/");
+    await openReservoirSource(page, "Stored PDF paper");
+
+    const firstRunResponse = page.waitForResponse((response) => (
+      response.url().includes("/api/visual-extraction/pdf/runs")
+      && response.request().method() === "POST"
+      && response.status() === 200
+    ));
+    const firstPageUploadResponse = page.waitForResponse((response) => (
+      response.url().includes("/api/visual-extraction/pdf/runs/run-pdf-1/pages/1")
+      && response.request().method() === "PUT"
+      && response.status() === 200
+    ));
+    await page.getByRole("button", { name: "시각 자료 찾기" }).click();
+    const firstRun = await firstRunResponse;
+    expect(firstRun.url()).toContain("/api/visual-extraction/pdf/runs");
+    expect(await firstRun.json()).toMatchObject({
+      run: { id: "run-pdf-1", status: "RUNNING", totalUnits: 2, uploadedUnits: 0 },
+      checkpoint: { uploadedPages: [], totalPages: 2, remainingPages: 2, nextPageNumber: 1 },
+    });
+    const firstPageUpload = await firstPageUploadResponse;
+    expect(firstPageUpload.url()).toContain("/pages/1");
+    expect(await firstPageUpload.json()).toMatchObject({
+      checkpoint: { uploadedPages: [1], totalPages: 2, remainingPages: 1, nextPageNumber: 2 },
+    });
+    await fixture.waitForSecondPageUpload();
+    await expect(page.getByRole("button", { name: "중지" })).toBeVisible();
+
+    await page.getByRole("button", { name: "중지" }).click();
+    fixture.abortSecondPageUpload();
+    await expect(page.getByText("1 / 2페이지 업로드됨", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "계속" })).toBeVisible();
+
+    const traceAfterPause = fixture.getPdfTrace();
+    expect(traceAfterPause.filter((entry) => entry.pathname.endsWith("/pages/1"))).toHaveLength(1);
+    expect(traceAfterPause.filter((entry) => entry.pathname.endsWith("/pages/2"))).toHaveLength(1);
+
+    const resumeRunResponse = page.waitForResponse((response) => (
+      response.url().endsWith("/api/visual-extraction/pdf/runs")
+      && response.request().method() === "POST"
+      && response.status() === 200
+    ));
+    const resumedPageUploadResponse = page.waitForResponse((response) => (
+      response.url().includes("/api/visual-extraction/pdf/runs/run-pdf-1/pages/2")
+      && response.request().method() === "PUT"
+      && response.status() === 200
+    ));
+    const finalizeResponse = page.waitForResponse((response) => (
+      response.url().endsWith("/api/visual-extraction/pdf/runs/run-pdf-1/finalize")
+      && response.request().method() === "POST"
+      && response.status() === 202
+    ));
+    await page.getByRole("button", { name: "계속" }).click();
+
+    const resumedRun = await resumeRunResponse;
+    expect(resumedRun.url()).toContain("/api/visual-extraction/pdf/runs");
+    expect(await resumedRun.json()).toMatchObject({
+      run: { id: "run-pdf-1", status: "UPLOADING", totalUnits: 2, uploadedUnits: 1 },
+      checkpoint: { uploadedPages: [1], totalPages: 2, remainingPages: 1, nextPageNumber: 2 },
+    });
+    const resumeRunBody = traceAfterPause;
+    expect(resumeRunBody.find((entry) => entry.pathname === "/api/visual-extraction/pdf/runs" && entry.method === "POST")?.body).toEqual({
+      sourceId: "source-pdf",
+      versionId: "version-source-pdf",
+      pageCount: 2,
+    });
+    const resumedUpload = await resumedPageUploadResponse;
+    expect(await resumedUpload.json()).toMatchObject({
+      checkpoint: { uploadedPages: [1, 2], totalPages: 2, remainingPages: 0, nextPageNumber: null },
+    });
+    const finalized = await finalizeResponse;
+    expect(await finalized.json()).toMatchObject({
+      queued: true,
+      job: { id: "job-pdf-visual", kind: "VISUAL_EXTRACTION", status: "QUEUED" },
+      checkpoint: { uploadedPages: [1, 2], totalPages: 2, remainingPages: 0, nextPageNumber: null },
+    });
+    expect(fixture.getPdfTrace().at(-1)?.body).toEqual({ sourceId: "source-pdf", versionId: "version-source-pdf" });
+    expect(fixture.wasPdfFinalized()).toBe(true);
+    expect(await page.getByRole("status").last().textContent()).toContain("2 / 2페이지 업로드됨");
+    await expect(page.getByText("모든 페이지 업로드를 마쳤습니다.")).toBeVisible();
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByRole("button", { name: "목록으로" }).click();
+    await page.getByRole("region", { name: "자료 목록" }).getByRole("button", { name: /Stored PDF paper/ }).click();
+    await page.getByRole("button", { name: /BBox crop from page 17/ }).click();
+    await expect(page.getByRole("dialog", { name: "시각 자료 상세" })).toContainText("실행 오류 · cleanup_retry_pending");
   });
 });
