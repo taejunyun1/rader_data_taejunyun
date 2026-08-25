@@ -120,6 +120,7 @@ describe("static HTML extraction", () => {
         caption: "Infrared installation view from the exhibition floor.",
         declaredWidth: 320,
         declaredHeight: 213,
+        signals: expect.arrayContaining(["private_source_url"]),
       }),
       expect.objectContaining({
         sourceUrl: "https://cdn.example.com/images/detail-crop.jpg?size=medium",
@@ -172,6 +173,8 @@ describe("static HTML extraction", () => {
     ["http://127.0.0.1/private.png", "private_source_url"],
     ["http://[fd00::1]/private.png", "private_source_url"],
     ["http://[fe80::1]/private.png", "private_source_url"],
+    ["http://[fe90::1]/private.png", "private_source_url"],
+    ["http://[::ffff:127.0.0.1]/private.png", "private_source_url"],
   ] satisfies Array<[string, string]>)("rejects direct candidate urls for %s", async (src, expectedSignal) => {
     const { extractStaticHtml } = await import("../../../worker/src/ingestion/extractHtml");
     const { inspectHtmlVisualCandidates } = await import("../../../worker/src/visual/extraction/html");

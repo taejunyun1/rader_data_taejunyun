@@ -40,6 +40,11 @@ interface SourceSetCandidate {
   descriptor: { kind: "width" | "density" | "order"; value: number };
 }
 
+interface SourceSetCollection {
+  candidates: SourceSetCandidate[];
+  signals: string[];
+}
+
 const CONTAINER_TAGS = ["header", "footer", "nav", "aside"] as const;
 const AD_RE = /\b(ad|ads|advert|sponsor|promo|banner)\b/i;
 const LOGO_RE = /\blogo\b/i;
@@ -127,9 +132,9 @@ function buildObservation(
 
   const srcAttr = getAttribute(imgTag, "src");
   const srcResult = srcAttr ? canonicalizeUrl(srcAttr, baseUrl) : null;
-  const sourceSetCandidates = collectSourceSetCandidates(blockHtml, baseUrl);
-  const sourceSetUrls = uniqueList(sourceSetCandidates.map((candidate) => candidate.url));
-  const sourceUrl = selectPrimarySourceUrl(sourceSetCandidates) ?? srcResult?.url ?? null;
+  const sourceSetCollection = collectSourceSetCandidates(blockHtml, baseUrl);
+  const sourceSetUrls = uniqueList(sourceSetCollection.candidates.map((candidate) => candidate.url));
+  const sourceUrl = selectPrimarySourceUrl(sourceSetCollection.candidates) ?? srcResult?.url ?? null;
   if (!sourceUrl) {
     return {
       candidateKey: `missing-source:${normalizeKey(toPlainText(blockHtml)).slice(0, 120)}`,
@@ -141,7 +146,7 @@ function buildObservation(
       nearbyText: null,
       declaredWidth: toNumber(getAttribute(imgTag, "width")),
       declaredHeight: toNumber(getAttribute(imgTag, "height")),
-      signals: uniqueSignals([...baseSignals, srcResult?.signal ?? "missing_source_url"]),
+      signals: uniqueSignals([...baseSignals, ...sourceSetCollection.signals, srcResult?.signal ?? "missing_source_url"]),
     };
   }
 
@@ -159,6 +164,7 @@ function buildObservation(
     ...(figureLabel ? ["has_figure_label"] : []),
     ...(caption ? ["has_caption"] : []),
     ...(nearbyText ? ["has_nearby_text"] : []),
+    ...sourceSetCollection.signals,
     ...(srcResult?.signal ? [srcResult.signal] : []),
   ]);
 
@@ -201,9 +207,11 @@ function shouldReject(observation: RawObservation): boolean {
     || observation.signals.includes("ad_related")
     || observation.signals.includes("decorative_icon")
     || observation.signals.includes("repeated_logo")
-    || observation.signals.includes("private_source_url")
-    || observation.signals.includes("blocked_source_scheme")
-    || observation.signals.includes("missing_source_url");
+    || (!observation.sourceUrl && (
+      observation.signals.includes("private_source_url")
+      || observation.signals.includes("blocked_source_scheme")
+      || observation.signals.includes("missing_source_url")
+    ));
 }
 
 function mergeObservation(target: Map<string, RawObservation>, observation: RawObservation): void {
@@ -265,8 +273,9 @@ function getAttribute(tag: string, name: string): string | null {
   return bare ? decodeHtmlEntities(bare.replace(/^['"]|['"]$/g, "")).trim() : null;
 }
 
-function collectSourceSetCandidates(blockHtml: string, baseUrl: string): SourceSetCandidate[] {
+function collectSourceSetCandidates(blockHtml: string, baseUrl: string): SourceSetCollection {
   const candidates: SourceSetCandidate[] = [];
+  const signals: string[] = [];
   for (const match of blockHtml.matchAll(/\bsrcset=["']([^"']+)["']/gi)) {
     const srcset = match[1]?.trim();
     if (!srcset) continue;
@@ -276,7 +285,11 @@ function collectSourceSetCandidates(blockHtml: string, baseUrl: string): SourceS
       const raw = pieces[0];
       if (!raw) continue;
       const normalized = canonicalizeUrl(raw, baseUrl);
-      if (!normalized.url) continue;
+      if (!normalized.url) {
+        if (normalized.signal) addSignal(signals, normalized.signal);
+        order += 1;
+        continue;
+      }
       candidates.push({
         url: normalized.url,
         descriptor: parseSourceSetDescriptor(pieces[1] ?? null, order),
@@ -284,7 +297,7 @@ function collectSourceSetCandidates(blockHtml: string, baseUrl: string): SourceS
       order += 1;
     }
   }
-  return candidates;
+  return { candidates, signals: uniqueSignals(signals) };
 }
 
 function parseSourceSetDescriptor(raw: string | null, order: number): SourceSetCandidate["descriptor"] {
@@ -342,19 +355,79 @@ function canonicalizeUrl(raw: string, baseUrl: string): { url: string | null; si
 }
 
 function isPrivateUrl(url: URL): boolean {
-  const host = url.hostname.toLowerCase();
-  const normalizedHost = host.replace(/^\[|\]$/g, "");
+  const normalizedHost = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (normalizedHost === "localhost" || normalizedHost.endsWith(".local")) return true;
-  if (normalizedHost === "::1") return true;
-  if (/^\d+\.\d+\.\d+\.\d+$/.test(normalizedHost)) {
-    const parts = normalizedHost.split(".").map(Number);
-    const [a, b] = parts;
-    if (a === 10 || a === 127 || a === 0) return true;
-    if (a === 169 && b === 254) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 172 && b != null && b >= 16 && b <= 31) return true;
+  const ipv4 = parseIpv4Host(normalizedHost) ?? parseIpv4MappedHost(normalizedHost);
+  if (ipv4) return isPrivateIpv4(ipv4);
+  const ipv6 = expandIpv6Hextets(normalizedHost);
+  if (!ipv6) return false;
+  const firstHextet = ipv6[0];
+  if (firstHextet == null) return false;
+  if (ipv6.slice(0, 7).every((segment, index) => index < 7 ? segment === 0 : true) && ipv6[7] === 1) return true;
+  return (firstHextet & 0xfe00) === 0xfc00 || (firstHextet & 0xffc0) === 0xfe80;
+}
+
+function parseIpv4Host(host: string): number[] | null {
+  if (!/^\d+\.\d+\.\d+\.\d+$/.test(host)) return null;
+  const parts = host.split(".").map(Number);
+  return parts.length === 4 && parts.every((part) => Number.isInteger(part) && part >= 0 && part <= 255) ? parts : null;
+}
+
+function parseIpv4MappedHost(host: string): number[] | null {
+  const hextets = expandIpv6Hextets(host);
+  if (!hextets) return null;
+  if (!hextets.slice(0, 5).every((segment) => segment === 0) || hextets[5] !== 0xffff) return null;
+  const left = hextets[6];
+  const right = hextets[7];
+  if (left == null || right == null) return null;
+  return [(left >> 8) & 0xff, left & 0xff, (right >> 8) & 0xff, right & 0xff];
+}
+
+function isPrivateIpv4(parts: number[]): boolean {
+  const [a, b] = parts;
+  if (a === 10 || a === 127 || a === 0) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 192 && b === 168) return true;
+  return a === 172 && b != null && b >= 16 && b <= 31;
+}
+
+function expandIpv6Hextets(host: string): number[] | null {
+  if (!host.includes(":")) return null;
+  const normalized = host.toLowerCase();
+  if (normalized.indexOf("::") !== normalized.lastIndexOf("::")) return null;
+
+  const hasIpv4Tail = normalized.includes(".");
+  let working = normalized;
+  const tailSegments: string[] = [];
+  if (hasIpv4Tail) {
+    const lastColon = working.lastIndexOf(":");
+    if (lastColon < 0) return null;
+    const ipv4Tail = working.slice(lastColon + 1);
+    const ipv4 = parseIpv4Host(ipv4Tail);
+    if (!ipv4) return null;
+    const [a, b, c, d] = ipv4;
+    if (a == null || b == null || c == null || d == null) return null;
+    tailSegments.push(((a << 8) | b).toString(16));
+    tailSegments.push(((c << 8) | d).toString(16));
+    working = working.slice(0, lastColon);
   }
-  return normalizedHost.startsWith("fc") || normalizedHost.startsWith("fd") || normalizedHost.startsWith("fe80:");
+
+  const [leftRaw, rightRaw = ""] = working.split("::");
+  const left = leftRaw ? leftRaw.split(":").filter(Boolean) : [];
+  const right = rightRaw ? rightRaw.split(":").filter(Boolean) : [];
+  const explicit = [...left, ...right, ...tailSegments];
+  if (explicit.some((segment) => !/^[0-9a-f]{1,4}$/i.test(segment))) return null;
+  const zeroFill = working.includes("::") ? 8 - explicit.length : 0;
+  if (zeroFill < 0) return null;
+  if (!working.includes("::") && explicit.length !== 8) return null;
+  const expanded = [
+    ...left,
+    ...Array.from({ length: zeroFill }, () => "0"),
+    ...right,
+    ...tailSegments,
+  ];
+  if (expanded.length !== 8) return null;
+  return expanded.map((segment) => Number.parseInt(segment, 16));
 }
 
 function splitFigureCaption(value: string | null): [string | null, string | null] {

@@ -145,3 +145,40 @@ Additional regression coverage added for:
 - `http://[fd00::1]/private.png` and `http://[fe80::1]/private.png` candidate rejection
 - reusable active version with an existing `visual_extraction_runs` row does not enqueue again
 - reusable active version with no existing extraction run still retries enqueue
+
+## Fix Follow-Up 3
+
+Date: 2026-08-25
+Reason: latest Task 2 review findings
+
+### Addressed Findings
+
+- `isPrivateUrl` is now robust for IPv6 private-address detection. It strips brackets, expands IPv6 hextets, blocks the full `fe80::/10` link-local range (`fe80` through `febf`), blocks the full `fc00::/7` ULA range (`fc00` and `fd00` families), and recognizes IPv4-mapped IPv6 hosts such as `::ffff:127.0.0.1` by applying the existing IPv4 private-range rules.
+- `collectSourceSetCandidates` no longer drops blocked `srcset` entries silently. It preserves deterministic rejection signals like `private_source_url` and `blocked_source_scheme` even when another public `srcset` candidate wins and remains the selected `sourceUrl`.
+
+### Additional RED/GREEN Cycle
+
+RED:
+
+```bash
+pnpm --dir web exec vitest run src/lib/remoteAcquisition.test.ts src/lib/ingestion.test.ts
+```
+
+Observed failures:
+
+- `fe90::1` and IPv4-mapped loopback candidate URLs were still accepted instead of being rejected as private
+- blocked `srcset` entries were still disappearing instead of leaving deterministic provenance signals on the winning public candidate
+
+GREEN:
+
+```bash
+pnpm --dir web exec vitest run src/lib/remoteAcquisition.test.ts src/lib/ingestion.test.ts
+```
+
+Passed: `66/66` tests
+
+Additional regression coverage added for:
+
+- `http://[fe90::1]/private.png` candidate rejection
+- `http://[::ffff:127.0.0.1]/private.png` candidate rejection via IPv4-mapped IPv6 handling
+- fixture-backed `picture srcset` case with a blocked private entry plus public entries, asserting the public candidate remains selected and carries `private_source_url`
