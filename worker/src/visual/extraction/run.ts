@@ -90,6 +90,26 @@ export function shouldDeletePdfPageTemp(status: "SUCCEEDED" | "FAILED"): boolean
   return status === "SUCCEEDED";
 }
 
+export async function deletePdfExtractionUnitTemp(
+  env: Env,
+  input: {
+    runId: string;
+    unitNumber: number;
+    candidateKey: string;
+    tempR2Key: string;
+    deletedAt?: string;
+  },
+): Promise<void> {
+  await env.ORIGINALS.delete(input.tempR2Key);
+  await ExtractionStore.markUnitProcessed(env.DB, {
+    runId: input.runId,
+    unitNumber: input.unitNumber,
+    candidateKey: input.candidateKey,
+    status: "DELETED",
+    processedAt: input.deletedAt,
+  });
+}
+
 export function shouldPersistPdfTransform(selectionStatus: string): boolean {
   return selectionStatus === "SELECTED" || selectionStatus === "REVIEW";
 }
@@ -522,7 +542,12 @@ async function runPdfVisualExtraction(env: Env, input: RunVisualExtractionInput,
       contentHash: unit.contentHash,
     });
     if (unit.tempR2Key && shouldDeletePdfPageTemp("SUCCEEDED")) {
-      await env.ORIGINALS.delete(unit.tempR2Key).catch((error) => {
+      await deletePdfExtractionUnitTemp(env, {
+        runId: run.id,
+        unitNumber: unit.unitNumber,
+        candidateKey: unit.candidateKey,
+        tempR2Key: unit.tempR2Key,
+      }).catch((error) => {
         outcomeCounts.cleanupFailures += 1;
         logVisualExtractionDiagnostic({
           level: "warn",

@@ -880,6 +880,137 @@ describe("pdf resume and duplicate transform gates", () => {
     expect(shouldDeletePdfPageTemp("FAILED")).toBe(false);
   });
 
+  it("marks an inline-deleted PDF temp unit as DELETED so cleanup does not recount it", async () => {
+    const { deletePdfExtractionUnitTemp } = await import("../../../worker/src/visual/extraction/run");
+    const { cleanupExpiredVisualExtractionTemps } = await import("../../../worker/src/visual/cleanup");
+    const db = createExtractionDb({
+      runs: [{
+        id: "run-inline-cleanup",
+        parentSourceId: "source-1",
+        parentVersionId: "version-1",
+        originKind: "PDF_PAGE_CROP",
+        status: "SUCCEEDED",
+        totalUnits: 1,
+        uploadedUnits: 1,
+        processedUnits: 1,
+        selectedCount: 1,
+        reviewCount: 0,
+        filteredCount: 0,
+        unavailableCount: 0,
+        errorCode: null,
+        error: null,
+        createdAt: "2026-08-24T00:00:00.000Z",
+        updatedAt: "2026-08-24T01:00:00.000Z",
+        finishedAt: "2026-08-24T01:00:00.000Z",
+      }],
+      units: [{
+        id: "unit-inline-cleanup",
+        runId: "run-inline-cleanup",
+        unitNumber: 1,
+        candidateKey: "page-1",
+        status: "SUCCEEDED",
+        tempR2Key: "visual-temp/run-inline-cleanup/page-1.webp",
+        width: 1200,
+        height: 900,
+        contentHash: "page-hash",
+        errorCode: null,
+        error: null,
+        createdAt: "2026-08-24T00:00:00.000Z",
+        processedAt: "2026-08-24T01:00:00.000Z",
+        deletedAt: null,
+      }],
+    });
+    const deleteTemp = vi.fn().mockResolvedValue(undefined);
+    const env = { DB: db, ORIGINALS: { delete: deleteTemp } } as unknown as Env;
+
+    await deletePdfExtractionUnitTemp(env, {
+      runId: "run-inline-cleanup",
+      unitNumber: 1,
+      candidateKey: "page-1",
+      tempR2Key: "visual-temp/run-inline-cleanup/page-1.webp",
+      deletedAt: "2026-08-26T01:00:00.000Z",
+    });
+
+    expect(deleteTemp).toHaveBeenCalledWith("visual-temp/run-inline-cleanup/page-1.webp");
+    expect(db.state.units[0]).toMatchObject({ status: "DELETED", deletedAt: "2026-08-26T01:00:00.000Z" });
+    await expect(cleanupExpiredVisualExtractionTemps(env, { now: "2026-08-27T01:00:00.000Z" })).resolves.toEqual({
+      scanned: 0,
+      deleted: 0,
+      cleanupFailures: 0,
+      skippedActiveOrRecent: 0,
+    });
+    expect(deleteTemp).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the successful unit retryable when inline R2 temp deletion fails", async () => {
+    const { deletePdfExtractionUnitTemp } = await import("../../../worker/src/visual/extraction/run");
+    const { cleanupExpiredVisualExtractionTemps } = await import("../../../worker/src/visual/cleanup");
+    const db = createExtractionDb({
+      runs: [{
+        id: "run-inline-retry",
+        parentSourceId: "source-1",
+        parentVersionId: "version-1",
+        originKind: "PDF_PAGE_CROP",
+        status: "SUCCEEDED",
+        totalUnits: 1,
+        uploadedUnits: 1,
+        processedUnits: 1,
+        selectedCount: 1,
+        reviewCount: 0,
+        filteredCount: 0,
+        unavailableCount: 0,
+        errorCode: null,
+        error: null,
+        createdAt: "2026-08-24T00:00:00.000Z",
+        updatedAt: "2026-08-24T01:00:00.000Z",
+        finishedAt: "2026-08-24T01:00:00.000Z",
+      }],
+      units: [{
+        id: "unit-inline-retry",
+        runId: "run-inline-retry",
+        unitNumber: 1,
+        candidateKey: "page-1",
+        status: "SUCCEEDED",
+        tempR2Key: "visual-temp/run-inline-retry/page-1.webp",
+        width: 1200,
+        height: 900,
+        contentHash: "page-hash",
+        errorCode: null,
+        error: null,
+        createdAt: "2026-08-24T00:00:00.000Z",
+        processedAt: "2026-08-24T01:00:00.000Z",
+        deletedAt: null,
+      }],
+    });
+    const deleteTemp = vi.fn()
+      .mockRejectedValueOnce(new Error("simulated_r2_delete_failure"))
+      .mockResolvedValueOnce(undefined);
+    const env = { DB: db, ORIGINALS: { delete: deleteTemp } } as unknown as Env;
+
+    await expect(deletePdfExtractionUnitTemp(env, {
+      runId: "run-inline-retry",
+      unitNumber: 1,
+      candidateKey: "page-1",
+      tempR2Key: "visual-temp/run-inline-retry/page-1.webp",
+      deletedAt: "2026-08-26T01:00:00.000Z",
+    })).rejects.toThrow("simulated_r2_delete_failure");
+
+    expect(db.state.units[0]).toMatchObject({
+      status: "SUCCEEDED",
+      tempR2Key: "visual-temp/run-inline-retry/page-1.webp",
+      deletedAt: null,
+    });
+
+    await expect(cleanupExpiredVisualExtractionTemps(env, { now: "2026-08-26T01:00:00.000Z" })).resolves.toEqual({
+      scanned: 1,
+      deleted: 1,
+      cleanupFailures: 0,
+      skippedActiveOrRecent: 0,
+    });
+    expect(db.state.units[0]?.deletedAt).toBe("2026-08-26T01:00:00.000Z");
+    expect(deleteTemp).toHaveBeenCalledTimes(2);
+  });
+
   it("allows permitted or personal PDF crops across the transform boundary only for SELECTED or REVIEW", async () => {
     const { shouldPersistPdfTransform } = await import("../../../worker/src/visual/extraction/run");
 
@@ -2103,6 +2234,39 @@ describe("scheduled visual cleanup isolation", () => {
     expect(infoLog).toHaveBeenCalledWith(expect.stringContaining("\"snapshot\":\"snapshot-1\""));
     expect(infoLog).toHaveBeenCalledWith(expect.stringContaining("\"discovery\":3"));
   });
+
+  it("uses a dedicated hourly cleanup schedule without running research cron handlers", async () => {
+    const config = JSON.parse(readFileSync(join(process.cwd(), "../worker/wrangler.jsonc"), "utf8")) as {
+      triggers?: { crons?: string[] };
+    };
+    expect(config.triggers?.crons).toContain("0 * * * *");
+
+    const cleanupExpiredVisualExtractionTemps = vi.fn().mockResolvedValue({
+      scanned: 1,
+      deleted: 1,
+      cleanupFailures: 0,
+      skippedActiveOrRecent: 0,
+    });
+    const syncHomepageReading = vi.fn();
+    const createWeeklySnapshotWithSynthesis = vi.fn();
+    const runDiscovery = vi.fn();
+    const loadParams = vi.fn();
+
+    vi.doMock("../../../worker/src/visual/cleanup", () => ({ cleanupExpiredVisualExtractionTemps }));
+    vi.doMock("../../../worker/src/homepage/reading", () => ({ syncHomepageReading }));
+    vi.doMock("../../../worker/src/radar/snapshot", () => ({ createWeeklySnapshotWithSynthesis }));
+    vi.doMock("../../../worker/src/discovery/run", () => ({ runDiscovery }));
+    vi.doMock("../../../worker/src/lib/params", () => ({ loadParams }));
+
+    const worker = await import("../../../worker/src/index");
+    await worker.default.scheduled({ cron: "0 * * * *" } as ScheduledEvent, { DB: {} as D1Database } as Env);
+
+    expect(cleanupExpiredVisualExtractionTemps).toHaveBeenCalledTimes(1);
+    expect(syncHomepageReading).not.toHaveBeenCalled();
+    expect(createWeeklySnapshotWithSynthesis).not.toHaveBeenCalled();
+    expect(runDiscovery).not.toHaveBeenCalled();
+    expect(loadParams).not.toHaveBeenCalled();
+  });
 });
 
 function verifyVisualExtractionMigration(): {
@@ -3059,6 +3223,13 @@ function createExtractionDb(seed: {
             });
           }
 
+          if (query.includes("UPDATE visual_extraction_units") && query.includes("WHERE id = ?")) {
+            const [deletedAt, unitId] = params as [string, string];
+            const unit = state.units.find((entry) => entry.id === unitId && entry.deletedAt == null);
+            if (unit) unit.deletedAt = deletedAt;
+            return { success: true, meta: { changes: unit ? 1 : 0 } };
+          }
+
           if (query.includes("UPDATE visual_extraction_units")) {
             const [status, width, height, contentHash, errorCode, error, processedAt, deletedAt, runId, unitNumber, candidateKey] = params as [
               string,
@@ -3129,11 +3300,31 @@ function createExtractionDb(seed: {
               .sort((left, right) => left.unitNumber - right.unitNumber) as T[];
             return { results };
           }
-          if (query.includes("FROM visual_extraction_units") && query.includes("temp_r2_key IS NOT NULL")) {
+          if (query.includes("FROM visual_extraction_units") && query.includes("temp_r2_key IS NOT NULL") && query.includes("status IN ('UPLOADED', 'FAILED')")) {
             const [olderThan] = params as [string];
             const results = state.units
               .filter((unit) => unit.tempR2Key && unit.deletedAt == null && (unit.status === "UPLOADED" || unit.status === "FAILED") && unit.createdAt < olderThan)
               .sort((left, right) => left.createdAt.localeCompare(right.createdAt)) as T[];
+            return { results };
+          }
+          if (query.includes("FROM visual_extraction_units") && query.includes("temp_r2_key IS NOT NULL")) {
+            const results = state.units
+              .filter((unit) => unit.tempR2Key && unit.deletedAt == null && unit.status !== "DELETED")
+              .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+              .map((unit) => {
+                const run = state.runs.find((entry) => entry.id === unit.runId);
+                return {
+                  unitId: unit.id,
+                  runId: unit.runId,
+                  sourceId: run?.parentSourceId,
+                  versionId: run?.parentVersionId,
+                  unitNumber: unit.unitNumber,
+                  tempR2Key: unit.tempR2Key,
+                  runStatus: run?.status,
+                  finishedAt: run?.finishedAt,
+                  updatedAt: run?.updatedAt,
+                };
+              }) as T[];
             return { results };
           }
           return { results: [] as T[] };

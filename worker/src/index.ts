@@ -111,10 +111,14 @@ app.onError((err, c) => {
   return c.json({ error: "internal_error" }, 500);
 });
 
+export const VISUAL_TEMP_CLEANUP_CRON = "0 * * * *";
+
 export default {
   fetch: app.fetch,
   async scheduled(event: ScheduledEvent, env: Env) {
     await runVisualCleanupSafely(env, event.cron);
+
+    if (event.cron === VISUAL_TEMP_CLEANUP_CRON) return;
 
     if (event.cron === "0 1 * * *") {
       try {
