@@ -277,6 +277,16 @@ export async function getLatestVisualAnalysis(db: D1Database, visualAssetId: str
   return toVisualAnalysisSummary(row);
 }
 
+export async function getLatestVisualAnalysisForVersion(
+  db: D1Database,
+  visualAssetId: string,
+  visualVersionId: string,
+): Promise<VisualAnalysisSummary | null> {
+  const row = await db.prepare(`${ANALYSIS_SELECT} WHERE visual_asset_id = ? AND visual_version_id = ? ORDER BY created_at DESC LIMIT 1`)
+    .bind(visualAssetId, visualVersionId).first<DbRow>();
+  return toVisualAnalysisSummary(row);
+}
+
 export async function getVisualAnalysisRow(
   db: D1Database,
   visualAssetId: string,
@@ -287,14 +297,25 @@ export async function getVisualAnalysisRow(
   return toVisualAnalysisRow(row);
 }
 
+export async function getVisualAnalysisRowForVersion(
+  db: D1Database,
+  visualAssetId: string,
+  analysisType: "AUTO_SUGGESTION" | "USER_VERIFIED",
+  visualVersionId: string,
+): Promise<VisualAnalysisRow | null> {
+  const row = await db.prepare(`${ANALYSIS_SELECT} WHERE visual_asset_id = ? AND analysis_type = ? AND visual_version_id = ? ORDER BY created_at DESC LIMIT 1`)
+    .bind(visualAssetId, analysisType, visualVersionId).first<DbRow>();
+  return toVisualAnalysisRow(row);
+}
+
 export async function getVisualAssetDetail(db: D1Database, id: string): Promise<VisualAssetDetail | null> {
   const asset = await getVisualAsset(db, id);
   if (!asset) return null;
 
-  const [capsule, autoSuggestion, userVerified, relations, extractionRun] = await Promise.all([
-    getVisualVersion(db, id, "CAPSULE"),
-    getVisualAnalysisRow(db, id, "AUTO_SUGGESTION"),
-    getVisualAnalysisRow(db, id, "USER_VERIFIED"),
+  const capsule = await getVisualVersion(db, id, "CAPSULE");
+  const [autoSuggestion, userVerified, relations, extractionRun] = await Promise.all([
+    capsule ? getVisualAnalysisRowForVersion(db, id, "AUTO_SUGGESTION", capsule.id) : Promise.resolve(null),
+    capsule ? getVisualAnalysisRowForVersion(db, id, "USER_VERIFIED", capsule.id) : Promise.resolve(null),
     listVisualRelations(db, id),
     getVisualExtractionRunForAsset(db, asset),
   ]);
@@ -315,11 +336,21 @@ export async function createUserVerifiedVisualAnalysis(
     visualAssetId: string;
     payload: unknown;
     reviewStatus: "ACCEPTED" | "EDITED";
+    baseAnalysisId: string;
+    baseVisualVersionId: string;
   },
 ): Promise<VisualAnalysisSummary | null> {
-  const parent = await getVisualAnalysisRow(db, input.visualAssetId, "USER_VERIFIED")
-    ?? await getVisualAnalysisRow(db, input.visualAssetId, "AUTO_SUGGESTION");
-  if (!parent) return null;
+  const parent = await db.prepare(
+    `${ANALYSIS_SELECT}
+     WHERE id = ? AND visual_asset_id = ? AND visual_version_id = ? AND analysis_type = 'AUTO_SUGGESTION'
+       AND visual_version_id = (
+         SELECT id FROM visual_asset_versions
+         WHERE visual_asset_id = ? AND variant = 'CAPSULE' AND deleted_at IS NULL
+         ORDER BY version DESC LIMIT 1
+       )`
+  ).bind(input.baseAnalysisId, input.visualAssetId, input.baseVisualVersionId, input.visualAssetId).first<DbRow>();
+  const parentRow = toVisualAnalysisRow(parent);
+  if (!parentRow) return null;
   const id = uuid();
   const now = new Date().toISOString();
   await db.prepare(
@@ -330,16 +361,16 @@ export async function createUserVerifiedVisualAnalysis(
   ).bind(
     id,
     input.visualAssetId,
-    parent.visualVersionId,
-    parent.provenanceClass,
+    parentRow.visualVersionId,
+    parentRow.provenanceClass,
     JSON.stringify(input.payload),
-    parent.modelId,
-    parent.promptVersion,
-    parent.confidence,
+    parentRow.modelId,
+    parentRow.promptVersion,
+    parentRow.confidence,
     input.reviewStatus,
     now,
     now,
-    parent.id,
+    parentRow.id,
   ).run();
   await db.prepare(
     `UPDATE visual_assets
@@ -352,15 +383,16 @@ export async function createUserVerifiedVisualAnalysis(
     now,
     input.visualAssetId,
   ).run();
-  return getLatestVisualAnalysis(db, input.visualAssetId);
+  return getLatestVisualAnalysisForVersion(db, input.visualAssetId, input.baseVisualVersionId);
 }
 
 export async function updateAutoSuggestionReviewStatus(
   db: D1Database,
   visualAssetId: string,
   reviewStatus: VisualAnalysisSummary["reviewStatus"],
+  visualVersionId: string,
 ): Promise<boolean> {
-  const autoSuggestion = await getVisualAnalysisRow(db, visualAssetId, "AUTO_SUGGESTION");
+  const autoSuggestion = await getVisualAnalysisRowForVersion(db, visualAssetId, "AUTO_SUGGESTION", visualVersionId);
   if (!autoSuggestion) return false;
   const now = new Date().toISOString();
   await db.batch([

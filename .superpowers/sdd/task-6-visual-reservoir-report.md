@@ -1,6 +1,6 @@
 # Task 6 Visual Reservoir Report
 
-Date: 2026-08-25
+Date: 2026-08-26
 
 ## Scope Completed
 
@@ -10,12 +10,18 @@ Date: 2026-08-25
 - Implemented `PATCH /api/visual-assets/:id/rights` with `PERMITTED` basis enforcement and rights review timestamp recording.
 - Implemented `POST /api/visual-assets/:id/retry` across transform, analysis, and extraction recovery paths using the existing research job dedupe key behavior.
 - Implemented `POST /api/visual-assets/:id/storage-transition` for `ARCHIVAL -> CAPSULE` and `CAPSULE -> TEXT_ONLY` with `USER_VERIFIED` gating, capsule/original presence checks, and `visual_asset_operations` journaling.
+- Corrected review provenance so accept/edit rows explicitly carry the current AUTO_SUGGESTION analysis/version as their parent; detail, analysis retry, dismiss, and storage verification are scoped to the current capsule version.
+- Corrected HTML extraction retry to reuse the supplied `extractionRunId` and process only failed/non-terminal units, including units outside the initial candidate window; PDF run provenance validation is aligned with the same guard.
+- Corrected assignment to join the source's active version back to that source in the guarded update, with optional stale-version rejection and no partial parent/status update.
+- Corrected storage failure handling so a deletion followed by DB-finalization failure leaves a failed operation plus pending state for recovery instead of claiming the old bytes remain.
 
 ## Files Changed
 
 - `worker/src/visual/store.ts`
 - `worker/src/routes/visualAssets.ts`
+- `worker/src/visual/extraction/run.ts`
 - `web/src/lib/visualAssets.test.ts`
+- `.superpowers/sdd/task-6-visual-reservoir-report.md`
 
 ## Verification
 
@@ -24,10 +30,11 @@ Date: 2026-08-25
 
 Results:
 
-- Focused Vitest passed: 52 tests.
+- Focused Vitest passed: 55 tests.
 - Workspace typecheck passed for `shared`, `worker`, and `web`.
+- `git diff --check` passed.
 
 ## Limitations
 
-- `storage-transition` performs the guarded delete and operation journal update inline in the route; it does not yet use a separate lifecycle module or background finalization flow.
-- `retry` reuses the parent extraction run id for extraction recovery, but the selective failed-unit reuse still depends on the existing extraction workflow behavior rather than a new route-local retry planner.
+- `storage-transition` still performs the delete and finalization inline; a separate background reconciler is out of Task 6 scope. When finalization is uncertain, the pending marker and failed operation make the transition retryable and prevent a false retained-bytes state.
+- HTML retry resolves the persisted candidate key against the immutable source HTML because the existing unit schema stores candidate keys rather than a full candidate snapshot; it does not broaden the retry to a new candidate scan/window.

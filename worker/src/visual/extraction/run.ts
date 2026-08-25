@@ -68,6 +68,18 @@ export function shouldProcessPdfExtractionUnit(status: string): boolean {
   return status !== "SUCCEEDED" && status !== "DELETED";
 }
 
+export function shouldProcessHtmlExtractionUnit(status: string): boolean {
+  return status !== "SUCCEEDED" && status !== "DELETED";
+}
+
+export function selectHtmlRetryCandidates<T extends { candidateKey: string }, U extends { candidateKey: string; status: string }>(
+  candidates: T[],
+  units: U[],
+): T[] {
+  const retryableKeys = new Set(units.filter((unit) => shouldProcessHtmlExtractionUnit(unit.status)).map((unit) => unit.candidateKey));
+  return candidates.filter((candidate) => retryableKeys.has(candidate.candidateKey));
+}
+
 export function shouldDeletePdfPageTemp(status: "SUCCEEDED" | "FAILED"): boolean {
   return status === "SUCCEEDED";
 }
@@ -158,11 +170,17 @@ async function loadSourceForExtraction(env: Env, input: RunVisualExtractionInput
 }
 
 async function runHtmlVisualExtraction(env: Env, input: RunVisualExtractionInput, source: LoadedSourceForExtraction): Promise<VisualExtractionRunResult> {
-  const run = await ExtractionStore.createOrResumeRun(env.DB, {
-    parentSourceId: source.sourceId,
-    parentVersionId: source.sourceVersionId,
-    originKind: "WEB_EMBED",
-  });
+  const run = input.extractionRunId
+    ? await ensureExistingRun(env.DB, input.extractionRunId, {
+      parentSourceId: source.sourceId,
+      parentVersionId: source.sourceVersionId,
+      originKind: "WEB_EMBED",
+    })
+    : await ExtractionStore.createOrResumeRun(env.DB, {
+      parentSourceId: source.sourceId,
+      parentVersionId: source.sourceVersionId,
+      originKind: "WEB_EMBED",
+    });
   await markRunRunning(env.DB, run.id);
 
   const diagnostics: VisualExtractionDiagnostics = {
@@ -172,7 +190,11 @@ async function runHtmlVisualExtraction(env: Env, input: RunVisualExtractionInput
   };
   const counts = { selected: 0, review: 0, filtered: 0, unavailable: 0 };
 
-  if (!source.r2Key) {
+  const existingUnits = input.extractionRunId
+    ? (await listExtractionUnits(env.DB, run.id)).filter((unit) => shouldProcessHtmlExtractionUnit(unit.status))
+    : [];
+
+  if (!source.r2Key || (input.extractionRunId && existingUnits.length === 0)) {
     await ExtractionStore.finishRun(env.DB, { runId: run.id, counts, status: "SUCCEEDED" });
     return { sourceId: source.sourceId, sourceVersionId: source.sourceVersionId, extractionRunId: run.id, status: "SUCCEEDED", counts, diagnostics };
   }
@@ -181,20 +203,47 @@ async function runHtmlVisualExtraction(env: Env, input: RunVisualExtractionInput
   if (!object) throw new Error("visual_extraction_original_missing");
   const html = await object.text();
   const inspected = inspectHtmlVisualCandidates(html, source.finalUrl ?? source.canonicalUrl ?? "https://example.invalid");
-  const candidates = inspected.candidates.slice(0, HTML_CANDIDATE_LIMIT) as HtmlExtractionCandidate[];
-  diagnostics.blocked.htmlCandidates = Math.max(inspected.candidates.length - candidates.length, 0);
-  const queued = candidates.slice(0, HTML_FETCH_LIMIT);
-  diagnostics.blocked.htmlFetch = Math.max(candidates.length - queued.length, 0);
+  const candidates = inspected.candidates as HtmlExtractionCandidate[];
+  const retryCandidates = input.extractionRunId
+    ? selectHtmlRetryCandidates(candidates, existingUnits)
+    : candidates.slice(0, HTML_CANDIDATE_LIMIT).slice(0, HTML_FETCH_LIMIT);
+  if (!input.extractionRunId) {
+    diagnostics.blocked.htmlCandidates = Math.max(candidates.length - HTML_CANDIDATE_LIMIT, 0);
+    diagnostics.blocked.htmlFetch = Math.max(Math.min(candidates.length, HTML_CANDIDATE_LIMIT) - HTML_FETCH_LIMIT, 0);
+  }
   const existingAssets = await loadExistingFingerprints(env.DB, source.sourceVersionId);
   let failedUnits = 0;
 
-  for (const [index, candidate] of queued.entries()) {
-    const unitNumber = index + 1;
-    await ExtractionStore.recordUnit(env.DB, {
-      runId: run.id,
-      unitNumber,
-      candidateKey: candidate.candidateKey,
-    });
+  const retryCandidateByKey = new Map(retryCandidates.map((candidate) => [candidate.candidateKey, candidate]));
+  const queued = input.extractionRunId
+    ? existingUnits.map((unit) => ({ unitNumber: unit.unitNumber, candidateKey: unit.candidateKey, candidate: retryCandidateByKey.get(unit.candidateKey) ?? null }))
+    : retryCandidates.map((candidate, index) => ({ unitNumber: index + 1, candidateKey: candidate.candidateKey, candidate }));
+
+  for (const queuedUnit of queued) {
+    const { unitNumber, candidate } = queuedUnit;
+    if (!candidate) {
+      failedUnits += 1;
+      counts.unavailable += 1;
+      if (input.extractionRunId) {
+        await ExtractionStore.markUnitProcessed(env.DB, {
+          runId: run.id,
+          unitNumber,
+          candidateKey: queuedUnit.candidateKey,
+          status: "FAILED",
+          errorCode: "visual_candidate_not_found_on_retry",
+          error: "candidate_missing_from_immutable_source_version",
+        });
+      }
+      continue;
+    }
+
+    if (!input.extractionRunId) {
+      await ExtractionStore.recordUnit(env.DB, {
+        runId: run.id,
+        unitNumber,
+        candidateKey: candidate.candidateKey,
+      });
+    }
     await ExtractionStore.markUnitProcessed(env.DB, {
       runId: run.id,
       unitNumber,
@@ -250,7 +299,11 @@ async function runHtmlVisualExtraction(env: Env, input: RunVisualExtractionInput
 
 async function runPdfVisualExtraction(env: Env, input: RunVisualExtractionInput, source: LoadedSourceForExtraction): Promise<VisualExtractionRunResult> {
   const run = input.extractionRunId
-    ? await ensureExistingRun(env.DB, input.extractionRunId)
+    ? await ensureExistingRun(env.DB, input.extractionRunId, {
+      parentSourceId: source.sourceId,
+      parentVersionId: source.sourceVersionId,
+      originKind: "PDF_PAGE_CROP",
+    })
     : await ExtractionStore.createOrResumeRun(env.DB, {
       parentSourceId: source.sourceId,
       parentVersionId: source.sourceVersionId,
@@ -383,9 +436,19 @@ async function markRunRunning(db: D1Database, runId: string): Promise<void> {
     .run();
 }
 
-async function ensureExistingRun(db: D1Database, runId: string): Promise<{ id: string }> {
-  const row = await db.prepare("SELECT id FROM visual_extraction_runs WHERE id = ?").bind(runId).first<{ id: string }>();
+async function ensureExistingRun(
+  db: D1Database,
+  runId: string,
+  expected?: { parentSourceId: string; parentVersionId: string; originKind: "WEB_EMBED" | "PDF_PAGE_CROP" },
+): Promise<{ id: string }> {
+  const row = await db.prepare(
+    `SELECT id, parent_source_id AS parentSourceId, parent_version_id AS parentVersionId, origin_kind AS originKind
+     FROM visual_extraction_runs WHERE id = ?`
+  ).bind(runId).first<{ id: string; parentSourceId: string; parentVersionId: string; originKind: string }>();
   if (!row) throw new Error("visual_extraction_run_not_found");
+  if (expected && (row.parentSourceId !== expected.parentSourceId || row.parentVersionId !== expected.parentVersionId || row.originKind !== expected.originKind)) {
+    throw new Error("visual_extraction_run_provenance_mismatch");
+  }
   return row;
 }
 

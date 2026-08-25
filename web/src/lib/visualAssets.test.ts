@@ -889,6 +889,25 @@ describe("pdf resume and duplicate transform gates", () => {
     expect(shouldPersistPdfTransform("DECORATIVE")).toBe(false);
     expect(shouldPersistPdfTransform("UNAVAILABLE")).toBe(false);
   });
+
+  it("selects only failed or non-terminal HTML units when retrying an existing extraction run", async () => {
+    const { selectHtmlRetryCandidates, shouldProcessHtmlExtractionUnit } = await import("../../../worker/src/visual/extraction/run");
+
+    expect(shouldProcessHtmlExtractionUnit("SUCCEEDED")).toBe(false);
+    expect(shouldProcessHtmlExtractionUnit("FAILED")).toBe(true);
+    expect(shouldProcessHtmlExtractionUnit("PROCESSING")).toBe(true);
+    expect(shouldProcessHtmlExtractionUnit("DELETED")).toBe(false);
+
+    const candidates = Array.from({ length: 13 }, (_, index) => ({
+      candidateKey: `candidate-${index + 1}`,
+    }));
+    const retryable = selectHtmlRetryCandidates(candidates, [
+      { candidateKey: "candidate-1", status: "SUCCEEDED" },
+      { candidateKey: "candidate-13", status: "FAILED" },
+    ]);
+
+    expect(retryable).toEqual([{ candidateKey: "candidate-13" }]);
+  });
 });
 
 describe("visual extraction runner", () => {
@@ -1126,7 +1145,7 @@ describe("visual asset routes", () => {
     });
   });
 
-  it("edits a suggestion by appending a new USER_VERIFIED row that chains to the latest verified analysis", async () => {
+  it("edits a suggestion by appending a new USER_VERIFIED row that chains to the current auto suggestion base", async () => {
     const fixture = createVisualAssetRouteFixture();
     fixture.insertSource({ id: "source-1", activeVersionId: "version-source-1" });
     fixture.insertSourceVersion({ id: "version-source-1", sourceId: "source-1", version: 1 });
@@ -1164,10 +1183,87 @@ describe("visual asset routes", () => {
     const analyses = fixture.analysisRowsFor("asset-edit").filter((row) => row.analysis_type === "USER_VERIFIED");
     expect(analyses).toHaveLength(2);
     expect(analyses.at(-1)).toMatchObject({
-      parent_analysis_id: "analysis-user-1",
+      parent_analysis_id: "analysis-auto",
       review_status: "EDITED",
       payload_json: JSON.stringify(editedPayload),
     });
+  });
+
+  it("anchors re-analysis review and storage retention to the current capsule, not stale verified history", async () => {
+    const fixture = createVisualAssetRouteFixture();
+    fixture.insertSource({ id: "source-1", activeVersionId: "version-source-1" });
+    fixture.insertSourceVersion({ id: "version-source-1", sourceId: "source-1", version: 1 });
+    fixture.insertAsset({
+      id: "asset-reanalysis",
+      parentSourceId: "source-1",
+      parentVersionId: "version-source-1",
+      storageState: "ARCHIVAL",
+      rightsStatus: "PERMITTED",
+      rightsBasis: "contract",
+      rightsReviewedAt: "2026-08-25T05:30:00.000Z",
+      isPersonalWork: 0,
+    });
+    fixture.insertAssetVersion({ id: "asset-reanalysis-original", visualAssetId: "asset-reanalysis", version: 1, variant: "ORIGINAL", r2Key: "visuals/asset-reanalysis/original.jpg" });
+    fixture.insertAssetVersion({ id: "asset-reanalysis-old-capsule", visualAssetId: "asset-reanalysis", version: 1, variant: "CAPSULE", r2Key: "visuals/asset-reanalysis/old-capsule.webp" });
+    fixture.insertAssetVersion({ id: "asset-reanalysis-current-capsule", visualAssetId: "asset-reanalysis", version: 2, variant: "CAPSULE", r2Key: "visuals/asset-reanalysis/current-capsule.webp" });
+    fixture.insertAnalysis({
+      id: "analysis-old-auto",
+      visualAssetId: "asset-reanalysis",
+      visualVersionId: "asset-reanalysis-old-capsule",
+      analysisType: "AUTO_SUGGESTION",
+      payload: validVisualAnalysisPayload("old-auto"),
+      reviewStatus: "ACCEPTED",
+      createdAt: "2026-08-25T05:31:00.000Z",
+    });
+    fixture.insertAnalysis({
+      id: "analysis-old-user",
+      visualAssetId: "asset-reanalysis",
+      visualVersionId: "asset-reanalysis-old-capsule",
+      analysisType: "USER_VERIFIED",
+      parentAnalysisId: "analysis-old-auto",
+      payload: validVisualAnalysisPayload("old-user"),
+      reviewStatus: "ACCEPTED",
+      createdAt: "2026-08-25T05:32:00.000Z",
+    });
+    fixture.insertAnalysis({
+      id: "analysis-current-auto",
+      visualAssetId: "asset-reanalysis",
+      visualVersionId: "asset-reanalysis-current-capsule",
+      analysisType: "AUTO_SUGGESTION",
+      payload: validVisualAnalysisPayload("current-auto"),
+      reviewStatus: "PENDING",
+      createdAt: "2026-08-25T05:33:00.000Z",
+    });
+
+    const { default: visualAssets } = await import("../../../worker/src/routes/visualAssets");
+    const blocked = await visualAssets.request("/asset-reanalysis/storage-transition", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target: "CAPSULE", confirmation: "DELETE_ORIGINAL" }),
+    }, fixture.env);
+    expect(blocked.status).toBe(409);
+
+    const review = await visualAssets.request("/asset-reanalysis/analysis", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "edit", payload: validVisualAnalysisPayload("current-user") }),
+    }, fixture.env);
+    expect(review.status).toBe(200);
+
+    const analyses = fixture.analysisRowsFor("asset-reanalysis");
+    expect(analyses.find((row) => row.id === "analysis-old-user")).toBeDefined();
+    expect(analyses.find((row) => row.analysis_type === "USER_VERIFIED" && row.visual_version_id === "asset-reanalysis-current-capsule")).toMatchObject({
+      parent_analysis_id: "analysis-current-auto",
+      payload_json: JSON.stringify(validVisualAnalysisPayload("current-user")),
+    });
+
+    const transitioned = await visualAssets.request("/asset-reanalysis/storage-transition", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target: "CAPSULE", confirmation: "DELETE_ORIGINAL" }),
+    }, fixture.env);
+    expect(transitioned.status).toBe(200);
+    expect(fixture.assetRow("asset-reanalysis")).toMatchObject({ storage_state: "CAPSULE", pending_storage_state: null });
   });
 
   it("dismisses only the auto suggestion review state and preserves the asset plus prior analysis history", async () => {
@@ -1230,6 +1326,49 @@ describe("visual asset routes", () => {
       body: JSON.stringify({ sourceId: "source-empty" }),
     }, fixture.env);
     expect(missingVersion.status).toBe(409);
+
+    fixture.insertSource({ id: "source-other", activeVersionId: null });
+    fixture.insertSource({ id: "source-cross", activeVersionId: "version-owned-by-other" });
+    fixture.insertSourceVersion({ id: "version-owned-by-other", sourceId: "source-other", version: 1 });
+    const crossSourceActive = await visualAssets.request("/asset-assign/assignment", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sourceId: "source-cross" }),
+    }, fixture.env);
+    expect(crossSourceActive.status).toBe(409);
+    expect(fixture.assetRow("asset-assign")).toMatchObject({
+      parent_source_id: null,
+      parent_version_id: null,
+      assignment_status: "UNASSIGNED",
+    });
+
+    fixture.insertSource({ id: "source-stale", activeVersionId: "version-stale" });
+    fixture.insertSourceVersion({ id: "version-stale", sourceId: "source-stale", version: 1 });
+    fixture.insertSourceVersion({ id: "version-current", sourceId: "source-stale", version: 2 });
+    const staleExpected = await visualAssets.request("/asset-assign/assignment", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sourceId: "source-stale", sourceVersionId: "version-current" }),
+    }, fixture.env);
+    expect(staleExpected.status).toBe(409);
+    expect(fixture.assetRow("asset-assign")).toMatchObject({
+      parent_source_id: null,
+      parent_version_id: null,
+      assignment_status: "UNASSIGNED",
+    });
+
+    fixture.sqlite.prepare("UPDATE sources SET active_version_id = 'version-current' WHERE id = 'source-stale'").run();
+    const currentExpected = await visualAssets.request("/asset-assign/assignment", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sourceId: "source-stale", sourceVersionId: "version-current" }),
+    }, fixture.env);
+    expect(currentExpected.status).toBe(200);
+    expect(fixture.assetRow("asset-assign")).toMatchObject({
+      parent_source_id: "source-stale",
+      parent_version_id: "version-current",
+      assignment_status: "ASSIGNED",
+    });
 
     const response = await visualAssets.request("/asset-assign/assignment", {
       method: "PATCH",
@@ -1428,6 +1567,54 @@ describe("visual asset routes", () => {
         from_state: "ARCHIVAL",
         to_state: "CAPSULE",
         status: "SUCCEEDED",
+      }),
+    ]);
+  });
+
+  it("keeps a recoverable operation marker when DB finalization fails after R2 deletion", async () => {
+    const fixture = createVisualAssetRouteFixture();
+    fixture.insertAsset({
+      id: "asset-transition-failure",
+      storageState: "ARCHIVAL",
+      pendingStorageState: null,
+      processingStatus: "READY",
+      rightsStatus: "PERMITTED",
+      rightsBasis: "contract",
+      rightsReviewedAt: "2026-08-25T06:40:00.000Z",
+      isPersonalWork: 0,
+    });
+    fixture.insertAssetVersion({ id: "asset-transition-failure-original", visualAssetId: "asset-transition-failure", version: 1, variant: "ORIGINAL", r2Key: "visuals/asset-transition-failure/original.jpg" });
+    fixture.insertAssetVersion({ id: "asset-transition-failure-capsule", visualAssetId: "asset-transition-failure", version: 1, variant: "CAPSULE", r2Key: "visuals/asset-transition-failure/capsule.webp" });
+    fixture.insertAnalysis({
+      id: "analysis-transition-failure-user",
+      visualAssetId: "asset-transition-failure",
+      visualVersionId: "asset-transition-failure-capsule",
+      analysisType: "USER_VERIFIED",
+      payload: validVisualAnalysisPayload("transition-failure-user"),
+      reviewStatus: "ACCEPTED",
+      createdAt: "2026-08-25T06:41:00.000Z",
+    });
+    fixture.failNextBatchAfterR2Delete();
+
+    const { default: visualAssets } = await import("../../../worker/src/routes/visualAssets");
+    const response = await visualAssets.request("/asset-transition-failure/storage-transition", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target: "CAPSULE", confirmation: "DELETE_ORIGINAL" }),
+    }, fixture.env);
+
+    expect(response.status).toBe(500);
+    expect(fixture.deleteCalls).toEqual(["visuals/asset-transition-failure/original.jpg"]);
+    expect(fixture.assetRow("asset-transition-failure")).toMatchObject({
+      storage_state: "ARCHIVAL",
+      pending_storage_state: "CAPSULE",
+    });
+    expect(fixture.assetVersionRow("asset-transition-failure-original")?.deleted_at).toBeNull();
+    expect(fixture.operationRowsFor("asset-transition-failure")).toEqual([
+      expect.objectContaining({
+        operation_kind: "DELETE_ORIGINAL",
+        status: "FAILED",
+        error: expect.stringContaining("finalize"),
       }),
     ]);
   });
@@ -1812,7 +1999,13 @@ function createVisualAssetRouteFixture() {
       WHERE status IN ('QUEUED', 'RUNNING');
   `);
 
-  const d1 = sqliteToD1(sqlite);
+  let failAfterR2Delete = false;
+  let failNextBatch = false;
+  const d1 = sqliteToD1(sqlite, () => {
+    if (!failNextBatch) return false;
+    failNextBatch = false;
+    return true;
+  });
   const deleteCalls: string[] = [];
   const workflowCreate = vi.fn(async ({ id }: { id: string }) => ({ id: `workflow:${id}` }));
   const env = {
@@ -1821,6 +2014,10 @@ function createVisualAssetRouteFixture() {
       get: vi.fn(),
       delete: vi.fn(async (key: string) => {
         deleteCalls.push(key);
+        if (failAfterR2Delete) {
+          failAfterR2Delete = false;
+          failNextBatch = true;
+        }
       }),
     },
     RESEARCH_JOBS_WORKFLOW: { create: workflowCreate },
@@ -1831,6 +2028,9 @@ function createVisualAssetRouteFixture() {
     sqlite,
     workflowCreate,
     deleteCalls,
+    failNextBatchAfterR2Delete() {
+      failAfterR2Delete = true;
+    },
     insertSource(input: {
       id: string;
       activeVersionId: string | null;
@@ -2083,7 +2283,7 @@ function createVisualAssetRouteFixture() {
   };
 }
 
-function sqliteToD1(sqlite: DatabaseSync): D1Database {
+function sqliteToD1(sqlite: DatabaseSync, shouldFailBatch: () => boolean = () => false): D1Database {
   return {
     prepare(sql: string): D1PreparedStatement {
       const statement = sqlite.prepare(sql);
@@ -2106,6 +2306,7 @@ function sqliteToD1(sqlite: DatabaseSync): D1Database {
       } as D1PreparedStatement;
     },
     async batch(statements: D1PreparedStatement[]) {
+      if (shouldFailBatch()) throw new Error("simulated_db_finalize_failure");
       const results = [];
       for (const statement of statements) results.push(await statement.run());
       return results;
