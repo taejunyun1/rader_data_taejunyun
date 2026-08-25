@@ -864,6 +864,32 @@ describe("pdf visual crop and common filtering", () => {
   });
 });
 
+describe("pdf resume and duplicate transform gates", () => {
+  it("retries failed or processing units, skips terminal success, and retains failed-page retry inputs", async () => {
+    const {
+      shouldProcessPdfExtractionUnit,
+      shouldDeletePdfPageTemp,
+    } = await import("../../../worker/src/visual/extraction/run");
+
+    expect(shouldProcessPdfExtractionUnit("SUCCEEDED")).toBe(false);
+    expect(shouldProcessPdfExtractionUnit("FAILED")).toBe(true);
+    expect(shouldProcessPdfExtractionUnit("PROCESSING")).toBe(true);
+    expect(shouldProcessPdfExtractionUnit("DELETED")).toBe(false);
+    expect(shouldDeletePdfPageTemp("SUCCEEDED")).toBe(true);
+    expect(shouldDeletePdfPageTemp("FAILED")).toBe(false);
+  });
+
+  it("allows permitted or personal PDF crops across the transform boundary only for SELECTED or REVIEW", async () => {
+    const { shouldPersistPdfTransform } = await import("../../../worker/src/visual/extraction/run");
+
+    expect(shouldPersistPdfTransform("SELECTED")).toBe(true);
+    expect(shouldPersistPdfTransform("REVIEW")).toBe(true);
+    expect(shouldPersistPdfTransform("DUPLICATE")).toBe(false);
+    expect(shouldPersistPdfTransform("DECORATIVE")).toBe(false);
+    expect(shouldPersistPdfTransform("UNAVAILABLE")).toBe(false);
+  });
+});
+
 describe("visual extraction runner", () => {
   it("routes HTML versions through the HTML pipeline and preserves run-level diagnostics", async () => {
     const { runVisualExtraction } = await import("../../../worker/src/visual/extraction/run");

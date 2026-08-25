@@ -64,6 +64,18 @@ export interface LoadedSourceForExtraction {
   extractedText: string | null;
 }
 
+export function shouldProcessPdfExtractionUnit(status: string): boolean {
+  return status !== "SUCCEEDED" && status !== "DELETED";
+}
+
+export function shouldDeletePdfPageTemp(status: "SUCCEEDED" | "FAILED"): boolean {
+  return status === "SUCCEEDED";
+}
+
+export function shouldPersistPdfTransform(selectionStatus: string): boolean {
+  return selectionStatus === "SELECTED" || selectionStatus === "REVIEW";
+}
+
 export function decidePdfVisualCandidate(input: {
   pageNumber: number;
   candidate: PdfPageCandidate;
@@ -252,7 +264,7 @@ async function runPdfVisualExtraction(env: Env, input: RunVisualExtractionInput,
     blocked: { htmlCandidates: 0, htmlFetch: 0, pdfPages: 0 },
   };
   const counts = { selected: 0, review: 0, filtered: 0, unavailable: 0 };
-  const units = (await listExtractionUnits(env.DB, run.id)).filter((unit) => unit.status !== "DELETED");
+  const units = (await listExtractionUnits(env.DB, run.id)).filter((unit) => shouldProcessPdfExtractionUnit(unit.status));
   const queuedUnits = units.slice(0, PDF_PAGE_LIMIT);
   diagnostics.blocked.pdfPages = Math.max(units.length - queuedUnits.length, 0);
   const rightsStatus = pdfRightsStatus(source.origin);
@@ -299,8 +311,10 @@ async function runPdfVisualExtraction(env: Env, input: RunVisualExtractionInput,
           let persisted: { assetId: string };
           if (isLinkOnlyPdfRights(rightsStatus)) {
             persisted = await persistPdfLinkOnlyVisual(env, source, unit, candidate, crop, rightsStatus, rightsBasis, decision, index, contentHash, perceptualHash);
-          } else {
+          } else if (shouldPersistPdfTransform(decision.selectionStatus)) {
             persisted = await persistPdfTransformCandidate(env, source, unit, candidate, crop, rightsStatus, rightsBasis, index, decision, contentHash, perceptualHash);
+          } else {
+            persisted = await persistPdfDuplicateMetadata(env, source, unit, candidate, rightsStatus, rightsBasis, index, decision, contentHash, perceptualHash);
           }
           existingAssets.push({ assetId: persisted.assetId, contentHash, perceptualHash });
         } catch {
@@ -309,7 +323,6 @@ async function runPdfVisualExtraction(env: Env, input: RunVisualExtractionInput,
         }
       }
 
-      await env.ORIGINALS.delete(unit.tempR2Key).catch(() => undefined);
     } catch (error) {
       pageFailed = true;
       counts.unavailable += 1;
@@ -325,17 +338,34 @@ async function runPdfVisualExtraction(env: Env, input: RunVisualExtractionInput,
       continue;
     }
 
-    if (pageFailed) failedUnits += 1;
+    if (pageFailed) {
+      failedUnits += 1;
+      await ExtractionStore.markUnitProcessed(env.DB, {
+        runId: run.id,
+        unitNumber: unit.unitNumber,
+        candidateKey: unit.candidateKey,
+        status: "FAILED",
+        width: unit.width,
+        height: unit.height,
+        contentHash: unit.contentHash,
+        errorCode: "pdf_page_partial",
+        error: "one_or_more_page_candidates_failed",
+      });
+      continue;
+    }
+
     await ExtractionStore.markUnitProcessed(env.DB, {
       runId: run.id,
       unitNumber: unit.unitNumber,
       candidateKey: unit.candidateKey,
-      status: pageFailed ? "FAILED" : "SUCCEEDED",
+      status: "SUCCEEDED",
       width: unit.width,
       height: unit.height,
       contentHash: unit.contentHash,
-      ...(pageFailed ? { errorCode: "pdf_page_partial", error: "one_or_more_page_candidates_failed" } : {}),
     });
+    if (unit.tempR2Key && shouldDeletePdfPageTemp("SUCCEEDED")) {
+      await env.ORIGINALS.delete(unit.tempR2Key).catch(() => undefined);
+    }
   }
 
   const status = failedUnits > 0 ? "PARTIAL" : "SUCCEEDED";
@@ -421,7 +451,9 @@ async function persistHtmlLinkOnlyVisual(
     rightsBasis: "external_image_requires_rights_review",
     decision: input.decision,
   });
-  const persisted = existing ?? await persistLinkOnlyDraft(env.DB, draft);
+  const persisted = existing?.versionId
+    ? { assetId: existing.assetId, versionId: existing.versionId }
+    : await persistLinkOnlyDraft(env.DB, draft);
   await analyzeVisualVersionBytes(env, {
     visualAssetId: persisted.assetId,
     visualVersionId: persisted.versionId,
@@ -450,6 +482,7 @@ async function persistPdfLinkOnlyVisual(
 ): Promise<{ assetId: string }> {
   const candidateKey = buildPdfCandidateKey(unit.unitNumber, candidate, index);
   const existing = await findExistingCandidate(env.DB, source.sourceVersionId, "PDF_PAGE_CROP", candidateKey);
+  if (existing && !existing.versionId) return { assetId: existing.assetId };
   const draft = buildLinkOnlyVisualDraft({
     parentSourceId: source.sourceId,
     parentVersionId: source.sourceVersionId,
@@ -470,7 +503,10 @@ async function persistPdfLinkOnlyVisual(
     rightsBasis,
     decision,
   });
-  const persisted = existing ?? await persistLinkOnlyDraft(env.DB, draft);
+  const persisted = existing?.versionId
+    ? { assetId: existing.assetId, versionId: existing.versionId }
+    : await persistLinkOnlyDraft(env.DB, draft);
+  if (existing?.analysisId) return { assetId: persisted.assetId };
   await analyzeVisualVersionBytes(env, {
     visualAssetId: persisted.assetId,
     visualVersionId: persisted.versionId,
@@ -483,6 +519,67 @@ async function persistPdfLinkOnlyVisual(
     storageState: "LINK_ONLY",
   });
   return { assetId: persisted.assetId };
+}
+
+async function persistPdfDuplicateMetadata(
+  env: Env,
+  source: LoadedSourceForExtraction,
+  unit: ExtractionUnitRow,
+  candidate: PdfPageCandidate,
+  rightsStatus: "PERMITTED" | "PERSONAL",
+  rightsBasis: string,
+  index: number,
+  decision: ReturnType<typeof filterVisualCandidate>,
+  contentHash: string,
+  perceptualHash: string,
+): Promise<{ assetId: string }> {
+  if (decision.selectionStatus !== "DUPLICATE" || !decision.duplicateOf) {
+    throw new Error("pdf_duplicate_relation_missing");
+  }
+  const candidateKey = buildPdfCandidateKey(unit.unitNumber, candidate, index);
+  const existing = await findExistingCandidate(env.DB, source.sourceVersionId, "PDF_PAGE_CROP", candidateKey);
+  if (existing) return { assetId: existing.assetId };
+
+  const assetId = uuid();
+  const now = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO visual_assets
+       (id, parent_source_id, parent_version_id, origin_kind, source_url, page_number, figure_label, bbox_json,
+        candidate_key, caption, nearby_text, asset_role, visual_kind, selection_status, selection_reason,
+        rights_status, rights_basis, rights_reviewed_at, is_personal_work, assignment_status, storage_state,
+        pending_storage_state, processing_status, last_error, content_hash, perceptual_hash, perceptual_hash_method,
+        created_at, updated_at, deleted_at)
+       VALUES (?, ?, ?, 'PDF_PAGE_CROP', ?, ?, ?, ?, ?, ?, ?, 'REFERENCE', 'OTHER', ?, ?, ?, ?, ?, ?, 'ASSIGNED', 'LINK_ONLY', NULL, 'READY', NULL, ?, ?, 'IMAGES_RGBA_DHASH_V1', ?, ?, NULL)`
+    ).bind(
+      assetId,
+      source.sourceId,
+      source.sourceVersionId,
+      source.finalUrl ?? source.canonicalUrl,
+      unit.unitNumber,
+      candidate.figureLabel,
+      JSON.stringify({ ...candidate.bbox, page: unit.unitNumber }),
+      candidateKey,
+      candidate.caption,
+      buildPdfNearbyText(unit.unitNumber, candidate),
+      decision.selectionStatus,
+      decision.selectionReason,
+      rightsStatus,
+      rightsBasis,
+      now,
+      rightsStatus === "PERSONAL" ? 1 : 0,
+      contentHash,
+      perceptualHash,
+      now,
+      now,
+    ),
+    env.DB.prepare(
+      `INSERT INTO visual_relations
+       (id, from_visual_asset_id, to_visual_asset_id, related_source_id, related_thread_id, relation_kind, created_by, description, created_at)
+       VALUES (?, ?, ?, NULL, NULL, ?, 'SYSTEM', ?, ?)`
+    ).bind(uuid(), assetId, decision.duplicateOf?.toVisualAssetId, decision.duplicateOf?.relationKind ?? "DUPLICATE_OF", decision.duplicateOf?.description ?? "duplicate candidate provenance", now),
+  ]);
+  return { assetId };
 }
 
 async function persistPdfTransformCandidate(
@@ -500,7 +597,12 @@ async function persistPdfTransformCandidate(
 ): Promise<{ assetId: string }> {
   const candidateKey = buildPdfCandidateKey(unit.unitNumber, candidate, index);
   const existing = await findExistingCandidate(env.DB, source.sourceVersionId, "PDF_PAGE_CROP", candidateKey);
-  if (existing) return { assetId: existing.assetId };
+  if (existing) {
+    if (shouldPersistPdfTransform(decision.selectionStatus) && existing.processingStatus === "TRANSFORM_PENDING") {
+      await enqueueResearchJob(env, { kind: "VISUAL_TRANSFORM", input: { visualAssetId: existing.assetId } }, "system:visual-extraction");
+    }
+    return { assetId: existing.assetId };
+  }
 
   const assetId = uuid();
   const versionId = uuid();
@@ -520,7 +622,7 @@ async function persistPdfTransformCandidate(
           rights_status, rights_basis, rights_reviewed_at, is_personal_work, assignment_status, storage_state,
           pending_storage_state, processing_status, last_error, content_hash, perceptual_hash, perceptual_hash_method,
           created_at, updated_at, deleted_at)
-         VALUES (?, ?, ?, 'PDF_PAGE_CROP', ?, ?, ?, ?, ?, ?, ?, 'REFERENCE', 'OTHER', ?, ?, ?, ?, ?, 0, 'ASSIGNED', 'ARCHIVAL', 'CAPSULE', 'TRANSFORM_PENDING', NULL, ?, ?, 'IMAGES_RGBA_DHASH_V1', ?, ?, NULL)`
+         VALUES (?, ?, ?, 'PDF_PAGE_CROP', ?, ?, ?, ?, ?, ?, ?, 'REFERENCE', 'OTHER', ?, ?, ?, ?, ?, ?, 'ASSIGNED', 'ARCHIVAL', 'CAPSULE', 'TRANSFORM_PENDING', NULL, ?, ?, 'IMAGES_RGBA_DHASH_V1', ?, ?, NULL)`
       ).bind(
         assetId,
         source.sourceId,
@@ -537,6 +639,7 @@ async function persistPdfTransformCandidate(
         rightsStatus,
         rightsBasis,
         now,
+        rightsStatus === "PERSONAL" ? 1 : 0,
         contentHash,
         perceptualHash,
         now,
@@ -650,10 +753,25 @@ async function findExistingCandidate(
   parentVersionId: string,
   originKind: "WEB_EMBED" | "PDF_PAGE_CROP",
   candidateKey: string,
-): Promise<{ assetId: string; versionId: string } | null> {
+): Promise<{
+  assetId: string;
+  versionId: string | null;
+  analysisId: string | null;
+  processingStatus: string | null;
+  selectionStatus: string | null;
+  storageState: string | null;
+} | null> {
   const row = await db.prepare(
     `SELECT a.id AS assetId,
-            v.id AS versionId
+            v.id AS versionId,
+            a.processing_status AS processingStatus,
+            a.selection_status AS selectionStatus,
+            a.storage_state AS storageState,
+            (SELECT an.id
+             FROM visual_analyses an
+             WHERE an.visual_asset_id = a.id
+               AND an.analysis_type = 'AUTO_SUGGESTION'
+             ORDER BY an.created_at DESC LIMIT 1) AS analysisId
      FROM visual_assets a
      LEFT JOIN visual_asset_versions v
        ON v.visual_asset_id = a.id
@@ -664,9 +782,16 @@ async function findExistingCandidate(
        AND a.candidate_key = ?
        AND a.deleted_at IS NULL
      LIMIT 1`
-  ).bind(parentVersionId, originKind, candidateKey).first<{ assetId: string; versionId: string | null }>();
-  if (!row?.assetId || !row.versionId) return null;
-  return { assetId: row.assetId, versionId: row.versionId };
+  ).bind(parentVersionId, originKind, candidateKey).first<{
+    assetId: string;
+    versionId: string | null;
+    analysisId: string | null;
+    processingStatus: string | null;
+    selectionStatus: string | null;
+    storageState: string | null;
+  }>();
+  if (!row?.assetId) return null;
+  return row;
 }
 
 function pdfRightsStatus(origin: string | null): "PERMITTED" | "PERSONAL" | "UNKNOWN" | "RESTRICTED" | "PUBLIC_LINK" {
