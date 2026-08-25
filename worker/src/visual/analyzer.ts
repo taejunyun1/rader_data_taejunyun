@@ -1,6 +1,7 @@
 import { extractJson } from "../analysis/deepPrompt";
 import { embedText } from "../lib/embed";
 import { uuid } from "../ingestion/ids";
+import type { VisualStorageState } from "@radar/shared";
 import { getVisualAsset, getVisualVersion, markVisualProcessingError } from "./store";
 import { validateVisualAnalysis, visualAnalysisPrompt, visualAnalysisText, type VisualAnalysisPayload } from "./analysisSchema";
 
@@ -32,6 +33,18 @@ function responseText(value: unknown): string {
     if (typeof record[key] === "string") return record[key] as string;
   }
   return "";
+}
+
+interface AnalyzeVisualBytesInput {
+  visualAssetId: string;
+  visualVersionId: string;
+  bytes: ArrayBuffer;
+  filename?: string;
+  mimeType: string;
+  width: number | null;
+  height: number | null;
+  caption: string | null;
+  storageState: VisualStorageState;
 }
 
 export async function analyzeVisualAsset(env: Env, visualAssetId: string, requestedVersionId?: string): Promise<VisualAnalysisResult> {
@@ -71,50 +84,79 @@ export async function analyzeVisualAsset(env: Env, visualAssetId: string, reques
   try {
     const object = await env.ORIGINALS.get(version.r2Key);
     if (!object) throw new Error("visual_capsule_missing");
-    const image = `data:image/webp;base64,${base64(await object.arrayBuffer())}`;
-    const aiResult = await env.AI.run(env.MODEL_VISION, {
-      messages: [
-        { role: "system", content: "You are a careful visual research assistant. Output only valid JSON." },
-        { role: "user", content: visualAnalysisPrompt({ width: version.width, height: version.height, caption: asset.caption }) },
-      ],
-      image,
-      max_tokens: 1800,
-    } as unknown as Record<string, unknown>);
-    const payload = validateVisualAnalysis(extractJson(responseText(aiResult)));
-    if (!payload) throw new Error("visual_analysis_invalid_output");
-    const analysisId = uuid();
-    const timestamp = new Date().toISOString();
-    const analysisJson = JSON.stringify(payload);
-    await env.DB.batch([
-      env.DB.prepare(
-        `INSERT INTO visual_analyses
-         (id, visual_asset_id, visual_version_id, analysis_type, provenance_class, payload_json,
-          model_id, prompt_version, cost_usd, confidence, review_status, created_at)
-         VALUES (?, ?, ?, 'AUTO_SUGGESTION', 'INTERPRETATION', ?, ?, 'visual-v1', 0, ?, 'PENDING', ?)`
-      ).bind(analysisId, visualAssetId, version.id, analysisJson, env.MODEL_VISION, payload.confidence, timestamp),
-      env.DB.prepare("UPDATE visual_assets SET visual_kind = ?, processing_status = 'READY', storage_state = 'CAPSULE', pending_storage_state = NULL, last_error = NULL, updated_at = ? WHERE id = ?")
-        .bind(payload.visualKind, timestamp, visualAssetId),
-    ]);
-
-    let embedded = false;
-    try {
-      const vector = await embedText(env, visualAnalysisText(payload));
-      const vectorId = `visual:${visualAssetId}:${version.id}`;
-      await env.VECTOR_INDEX.upsert([{ id: vectorId, values: vector, metadata: { visualAssetId, visualVersionId: version.id, visualKind: payload.visualKind } }]);
-      await env.DB.prepare(
-        `INSERT OR REPLACE INTO visual_embeddings
-         (id, visual_asset_id, visual_version_id, basis, model_id, dimensions, vector_id, created_at)
-         VALUES (?, ?, ?, 'ANALYSIS_TEXT', ?, ?, ?, ?)`
-      ).bind(uuid(), visualAssetId, version.id, "@cf/baai/bge-m3", vector.length, vectorId, timestamp).run();
-      embedded = true;
-    } catch (error) {
-      console.warn(JSON.stringify({ level: "warn", scope: "visual-embed", visualAssetId, message: error instanceof Error ? error.message : String(error) }));
-    }
-    return { visualAssetId, visualVersionId: version.id, analysisId, model: env.MODEL_VISION, costUsd: 0, embedded, payload };
+    return analyzeVisualVersionBytes(env, {
+      visualAssetId,
+      visualVersionId: version.id,
+      bytes: await object.arrayBuffer(),
+      filename: `${visualAssetId}.webp`,
+      mimeType: version.mimeType,
+      width: version.width,
+      height: version.height,
+      caption: asset.caption,
+      storageState: "CAPSULE",
+    });
   } catch (error) {
     await markVisualProcessingError(env.DB, visualAssetId, error instanceof Error ? error.message : "visual_analysis_failed");
     throw error;
   }
+}
+
+export async function analyzeVisualVersionBytes(env: Env, input: AnalyzeVisualBytesInput): Promise<VisualAnalysisResult> {
+  const payload = await runVisualModel(env, input);
+  const analysisId = uuid();
+  const timestamp = new Date().toISOString();
+  const analysisJson = JSON.stringify(payload);
+
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO visual_analyses
+       (id, visual_asset_id, visual_version_id, analysis_type, provenance_class, payload_json,
+        model_id, prompt_version, cost_usd, confidence, review_status, created_at)
+       VALUES (?, ?, ?, 'AUTO_SUGGESTION', 'INTERPRETATION', ?, ?, 'visual-v1', 0, ?, 'PENDING', ?)`
+    ).bind(analysisId, input.visualAssetId, input.visualVersionId, analysisJson, env.MODEL_VISION, payload.confidence, timestamp),
+    env.DB.prepare("UPDATE visual_assets SET visual_kind = ?, storage_state = ?, processing_status = 'READY', pending_storage_state = NULL, last_error = NULL, updated_at = ? WHERE id = ?")
+      .bind(payload.visualKind, input.storageState, timestamp, input.visualAssetId),
+  ]);
+
+  let embedded = false;
+  try {
+    const vector = await embedText(env, visualAnalysisText(payload));
+    const vectorId = `visual:${input.visualAssetId}:${input.visualVersionId}`;
+    await env.VECTOR_INDEX.upsert([{ id: vectorId, values: vector, metadata: { visualAssetId: input.visualAssetId, visualVersionId: input.visualVersionId, visualKind: payload.visualKind } }]);
+    await env.DB.prepare(
+      `INSERT OR REPLACE INTO visual_embeddings
+       (id, visual_asset_id, visual_version_id, basis, model_id, dimensions, vector_id, created_at)
+       VALUES (?, ?, ?, 'ANALYSIS_TEXT', ?, ?, ?, ?)`
+    ).bind(uuid(), input.visualAssetId, input.visualVersionId, "@cf/baai/bge-m3", vector.length, vectorId, timestamp).run();
+    embedded = true;
+  } catch (error) {
+    console.warn(JSON.stringify({ level: "warn", scope: "visual-embed", visualAssetId: input.visualAssetId, message: error instanceof Error ? error.message : String(error) }));
+  }
+
+  return {
+    visualAssetId: input.visualAssetId,
+    visualVersionId: input.visualVersionId,
+    analysisId,
+    model: env.MODEL_VISION,
+    costUsd: 0,
+    embedded,
+    payload,
+  };
+}
+
+async function runVisualModel(env: Env, input: AnalyzeVisualBytesInput): Promise<VisualAnalysisPayload> {
+  const image = `data:${input.mimeType};base64,${base64(input.bytes)}`;
+  const aiResult = await env.AI.run(env.MODEL_VISION, {
+    messages: [
+      { role: "system", content: "You are a careful visual research assistant. Output only valid JSON." },
+      { role: "user", content: visualAnalysisPrompt({ filename: input.filename, width: input.width, height: input.height, caption: input.caption }) },
+    ],
+    image,
+    max_tokens: 1800,
+  } as unknown as Record<string, unknown>);
+  const payload = validateVisualAnalysis(extractJson(responseText(aiResult)));
+  if (!payload) throw new Error("visual_analysis_invalid_output");
+  return payload;
 }
 
 async function getVisualVersionById(db: D1Database, visualAssetId: string, versionId: string) {

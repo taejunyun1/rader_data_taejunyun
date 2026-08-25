@@ -125,6 +125,80 @@ describe("deep analysis core", () => {
   });
 });
 
+describe("ephemeral visual analysis boundary", () => {
+  it("stores LINK_ONLY visual analysis from provided bytes without requiring a capsule version", async () => {
+    const embedText = vi.fn().mockResolvedValue([0.1, 0.2, 0.3]);
+    vi.doMock("../../../worker/src/lib/embed", () => ({ embedText }));
+    const inserted: { analysis?: unknown[]; assetUpdate?: unknown[]; embedding?: unknown[] } = {};
+    const db = {
+      prepare(sql: string) {
+        let values: unknown[] = [];
+        return {
+          bind(...next: unknown[]) {
+            values = next;
+            return this;
+          },
+          async first() {
+            return null;
+          },
+          async run() {
+            if (sql.includes("INSERT INTO visual_analyses")) inserted.analysis = values;
+            if (sql.includes("UPDATE visual_assets SET visual_kind")) inserted.assetUpdate = values;
+            if (sql.includes("INSERT OR REPLACE INTO visual_embeddings")) inserted.embedding = values;
+            return { success: true };
+          },
+        };
+      },
+      async batch(statements: Array<{ run: () => Promise<unknown> }>) {
+        for (const statement of statements) await statement.run();
+        return [];
+      },
+    } as unknown as D1Database;
+    const env = {
+      DB: db,
+      AI: {
+        run: vi.fn().mockResolvedValue({
+          text: JSON.stringify({
+            visualKind: "DOCUMENT_SCAN",
+            confidence: 0.82,
+            observation: { visibleText: ["Figure 2"], subject: ["printed page"] },
+            formal: { planes: ["flat page"] },
+            context: { medium: ["book scan"] },
+            propositions: ["캡션과 이미지의 관계를 대조한다."],
+            uncertainty: [],
+          }),
+        }),
+      },
+      MODEL_VISION: "vision-model",
+      VECTOR_INDEX: { upsert: vi.fn().mockResolvedValue(undefined) },
+    } as unknown as Env;
+    const { analyzeVisualVersionBytes } = await import("../../../worker/src/visual/analyzer");
+
+    const result = await analyzeVisualVersionBytes(env, {
+      visualAssetId: "asset-link",
+      visualVersionId: "version-link",
+      bytes: new TextEncoder().encode("webp-like-bytes").buffer,
+      filename: "page-4.webp",
+      mimeType: "image/webp",
+      width: 900,
+      height: 1200,
+      caption: "Figure 2. Annotated scan",
+      storageState: "LINK_ONLY",
+    });
+
+    expect(result.visualVersionId).toBe("version-link");
+    expect(inserted.analysis?.[1]).toBe("asset-link");
+    expect(inserted.analysis?.[2]).toBe("version-link");
+    expect(inserted.assetUpdate).toEqual([
+      "DOCUMENT_SCAN",
+      "LINK_ONLY",
+      expect.any(String),
+      "asset-link",
+    ]);
+    expect(inserted.embedding?.[1]).toBe("asset-link");
+  });
+});
+
 describe("deep analysis route gate", () => {
   it("returns structured 422 readiness fields before enqueueing a paid workflow", async () => {
     const enqueueResearchJob = vi.fn();
@@ -380,6 +454,47 @@ describe("deep analysis budget reservation", () => {
 
     expect(workflowDb.blockResearchJob).toHaveBeenCalledWith(workflowDb, "job-blocked", "monthly_budget_exhausted", "monthly_budget_exhausted");
     expect(workflowDb.analyzeDeepSource).not.toHaveBeenCalled();
+  });
+});
+
+describe("visual extraction workflow", () => {
+  it("executes the visual extraction runner instead of blocking the job as pipeline-not-ready", async () => {
+    const { ResearchJobWorkflow } = await loadDeepAnalysisWorkflow({
+      visualExtractionResults: [{
+        sourceId: "source-1",
+        sourceVersionId: "version-1",
+        extractionRunId: "run-visual-1",
+        status: "PARTIAL",
+        counts: { selected: 1, review: 1, filtered: 3, unavailable: 2 },
+        diagnostics: {
+          sourceKind: "HTML",
+          limits: { htmlCandidates: 40, htmlFetch: 12, pdfPages: 40 },
+          blocked: { htmlCandidates: 8, htmlFetch: 0, pdfPages: 0 },
+        },
+      }],
+    });
+    const job = {
+      id: "job-visual-extraction",
+      kind: "VISUAL_EXTRACTION",
+      input: { sourceId: "source-1", sourceVersionId: "version-1", extractionRunId: "run-visual-1" },
+    };
+    const db = workflowStatusDb(job as ReturnType<typeof deepJob>);
+    const workflow = Object.create(ResearchJobWorkflow.prototype) as { env: Env; run: typeof ResearchJobWorkflow.prototype.run };
+    workflow.env = { DB: db } as Env;
+
+    await workflow.run({ payload: { jobId: "job-visual-extraction" } } as never, workflowStep());
+
+    expect(db.completeResearchJob).toHaveBeenCalledWith(
+      db,
+      "job-visual-extraction",
+      expect.objectContaining({
+        extractionRunId: "run-visual-1",
+        counts: expect.objectContaining({ unavailable: 2 }),
+      }),
+      { view: "VISUAL", sourceId: "source-1", extractionRunId: "run-visual-1" },
+    );
+    expect(db.blockResearchJob).not.toHaveBeenCalled();
+    expect(db.failResearchJob).not.toHaveBeenCalled();
   });
 });
 
@@ -770,6 +885,18 @@ async function loadDeepAnalysisWorkflow(input: {
   releaseError?: Error;
   useRealReservation?: boolean;
   analyzeDeepSource?: (env: Env, sourceId: string, profile: "precision" | "maximum") => Promise<{ analysisId: string; model: string; costUsd: number }>;
+  visualExtractionResults?: Array<{
+    sourceId: string;
+    sourceVersionId: string;
+    extractionRunId: string;
+    status: "SUCCEEDED" | "PARTIAL" | "FAILED";
+    counts: { selected: number; review: number; filtered: number; unavailable: number };
+    diagnostics: {
+      sourceKind: "HTML" | "PDF";
+      limits: { htmlCandidates: number; htmlFetch: number; pdfPages: number };
+      blocked: { htmlCandidates: number; htmlFetch: number; pdfPages: number };
+    };
+  }>;
 }) {
   vi.doMock("../../../worker/src/jobs/store", () => ({
     getResearchJob: (db: ReturnType<typeof workflowStatusDb>, id: string) => db.getResearchJob(id),
@@ -802,6 +929,13 @@ async function loadDeepAnalysisWorkflow(input: {
       if (input.analyzeDeepSource) return input.analyzeDeepSource(env, sourceId, profile);
       if (input.analysisError) throw input.analysisError;
       return input.analysisResults?.shift() ?? { analysisId: "analysis-default", model: "review-model", costUsd: 0.01 };
+    },
+  }));
+  vi.doMock("../../../worker/src/visual/extraction/run", () => ({
+    runVisualExtraction: async (_env: Env, _jobInput: { sourceId: string; sourceVersionId: string; extractionRunId?: string }) => {
+      const next = input.visualExtractionResults?.shift();
+      if (!next) throw new Error("visual_extraction_missing_fixture");
+      return next;
     },
   }));
   return import("../../../worker/src/workflows/researchJob");

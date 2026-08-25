@@ -46,6 +46,8 @@ export interface LinkOnlyVisualDraftInput {
   figureLabel: string | null;
   caption: string | null;
   nearbyText: string | null;
+  pageNumber?: number | null;
+  bboxJson?: string | null;
   contentType: string;
   byteSize: number;
   contentHash: string;
@@ -181,9 +183,9 @@ export function buildLinkOnlyVisualDraft(input: LinkOnlyVisualDraftInput): LinkO
       parentVersionId: input.parentVersionId,
       originKind: input.originKind,
       sourceUrl: input.sourceUrl,
-      pageNumber: null,
+      pageNumber: input.pageNumber ?? null,
       figureLabel: input.figureLabel,
-      bboxJson: null,
+      bboxJson: input.bboxJson ?? null,
       candidateKey: input.candidateKey,
       caption: input.caption,
       nearbyText: input.nearbyText,

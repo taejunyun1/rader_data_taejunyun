@@ -17,6 +17,7 @@ import { transformVisualAsset } from "../visual/transform";
 import { analyzeVisualAsset } from "../visual/analyzer";
 import { markVisualProcessingError } from "../visual/store";
 import { enqueueResearchJob } from "../jobs/enqueue";
+import { runVisualExtraction, type VisualExtractionDiagnostics } from "../visual/extraction/run";
 
 class JobBlockedError extends Error {
   constructor(public readonly code: string, message: string) {
@@ -30,7 +31,7 @@ type WorkflowStepResult = {
     fieldSignalsCollected?: number;
     keptExisting?: number;
     queries?: string[];
-    diagnostics?: DiscoveryRunDiagnostics;
+    diagnostics?: DiscoveryRunDiagnostics | VisualExtractionDiagnostics;
     fieldSignalDiagnostics?: DiscoveryFieldSignalRunDiagnostics;
     sessionId?: string;
     costUsd?: number;
@@ -39,9 +40,16 @@ type WorkflowStepResult = {
     model?: string;
     sourceId?: string;
     visualAssetId?: string;
+    extractionRunId?: string;
     textScope?: TextScope;
     versionId?: string;
     charCount?: number;
+    counts?: {
+      selected: number;
+      review: number;
+      filtered: number;
+      unavailable: number;
+    };
   };
   resultRef: ResearchJobResultRef;
 };
@@ -182,7 +190,18 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
           resultRef: { view: "VISUAL", visualAssetId: analyzed.visualAssetId },
         };
       }
-      throw new JobBlockedError("visual_pipeline_not_ready", "visual_pipeline_not_ready");
+      await updateJobProgress(this.env.DB, job.id, 30, "시각 후보를 정리하는 중");
+      const input = job.input as { sourceId: string; sourceVersionId: string; extractionRunId?: string };
+      const extracted = await runVisualExtraction(this.env, input);
+      return {
+        result: {
+          sourceId: extracted.sourceId,
+          extractionRunId: extracted.extractionRunId,
+          counts: extracted.counts,
+          diagnostics: extracted.diagnostics,
+        },
+        resultRef: { view: "VISUAL", sourceId: extracted.sourceId, extractionRunId: extracted.extractionRunId },
+      };
     }
 
     if (job.kind !== "DEEP_ANALYSIS") {

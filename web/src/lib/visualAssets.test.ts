@@ -2,7 +2,12 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.resetModules();
+});
 
 describe("visual extraction migration", () => {
   it("creates extraction tables and enforces status, active-run, temp-expiry, and candidate idempotency constraints", () => {
@@ -698,6 +703,171 @@ describe("rights-first LINK_ONLY drafts", () => {
         description: "near duplicate via dHash<=6",
       }),
     ]);
+  });
+});
+
+describe("pdf visual candidate parsing", () => {
+  it("rejects invalid, overlapping, and decorative PDF page candidates before they reach transform", async () => {
+    const { parsePdfPageCandidates } = await import("../../../worker/src/visual/extraction/pdf");
+
+    const result = parsePdfPageCandidates([
+      {
+        bbox: { x: -0.05, y: 0.1, width: 0.4, height: 0.4 },
+        visualKind: "PHOTO",
+        figureLabel: "Figure 0",
+        caption: "Out of bounds",
+        reason: "candidate",
+        confidence: 0.7,
+      },
+      {
+        bbox: { x: 0.2, y: 0.2, width: 0, height: 0.5 },
+        visualKind: "ARTWORK",
+        figureLabel: "Figure 0b",
+        caption: "Zero width",
+        reason: "candidate",
+        confidence: 0.72,
+      },
+      {
+        bbox: { x: 0.06, y: 0.02, width: 0.16, height: 0.08 },
+        visualKind: "DECORATIVE",
+        figureLabel: null,
+        caption: "Header logo",
+        reason: "header logo",
+        confidence: 0.84,
+      },
+      {
+        bbox: { x: 0.12, y: 0.18, width: 0.44, height: 0.46 },
+        visualKind: "INSTALLATION",
+        figureLabel: "Figure 1",
+        caption: "Installation overview",
+        reason: "main figure",
+        confidence: 0.93,
+      },
+      {
+        bbox: { x: 0.121, y: 0.181, width: 0.439, height: 0.459 },
+        visualKind: "PHOTO",
+        figureLabel: "Figure 1a",
+        caption: "Near-duplicate crop",
+        reason: "duplicate figure",
+        confidence: 0.89,
+      },
+      {
+        bbox: { x: 0.02, y: 0.9, width: 0.96, height: 0.08 },
+        visualKind: "DECORATIVE",
+        figureLabel: null,
+        caption: "Repeated background band",
+        reason: "background",
+        confidence: 0.66,
+      },
+    ]);
+
+    expect(result.accepted).toEqual([
+      expect.objectContaining({
+        visualKind: "INSTALLATION",
+        figureLabel: "Figure 1",
+        caption: "Installation overview",
+      }),
+    ]);
+    expect(result.rejected.map((entry) => entry.reason)).toEqual(expect.arrayContaining([
+      "bbox_out_of_range",
+      "bbox_zero_area",
+      "decorative_header_footer",
+      "bbox_duplicate_overlap",
+      "decorative_repeated_background",
+    ]));
+  });
+});
+
+describe("visual extraction runner", () => {
+  it("routes HTML versions through the HTML pipeline and preserves run-level diagnostics", async () => {
+    const { runVisualExtraction } = await import("../../../worker/src/visual/extraction/run");
+    const loadSource = vi.fn().mockResolvedValue({
+      sourceId: "source-1",
+      sourceVersionId: "version-html",
+      inputFormat: "URL_HTML",
+      extractionMethod: "HTML_STATIC",
+      origin: "url",
+    });
+    const runHtmlExtraction = vi.fn().mockResolvedValue({
+      extractionRunId: "run-html",
+      status: "PARTIAL",
+      counts: { selected: 1, review: 2, filtered: 9, unavailable: 3 },
+      diagnostics: {
+        sourceKind: "HTML",
+        limits: { htmlCandidates: 40, htmlFetch: 12, pdfPages: 40 },
+        blocked: { htmlCandidates: 18, htmlFetch: 6, pdfPages: 0 },
+      },
+    });
+    const runPdfExtraction = vi.fn();
+
+    const result = await runVisualExtraction({} as Env, {
+      sourceId: "source-1",
+      sourceVersionId: "version-html",
+    }, {
+      loadSource,
+      runHtmlExtraction,
+      runPdfExtraction,
+    });
+
+    expect(loadSource).toHaveBeenCalledWith({} as Env, { sourceId: "source-1", sourceVersionId: "version-html" });
+    expect(runHtmlExtraction).toHaveBeenCalledTimes(1);
+    expect(runPdfExtraction).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      extractionRunId: "run-html",
+      status: "PARTIAL",
+      counts: { unavailable: 3 },
+      diagnostics: {
+        sourceKind: "HTML",
+        blocked: { htmlCandidates: 18, htmlFetch: 6, pdfPages: 0 },
+      },
+    });
+  });
+
+  it("routes PDF versions through the PDF pipeline with the existing extraction run id", async () => {
+    const { runVisualExtraction } = await import("../../../worker/src/visual/extraction/run");
+    const loadSource = vi.fn().mockResolvedValue({
+      sourceId: "source-1",
+      sourceVersionId: "version-pdf",
+      inputFormat: "PDF_TEXT",
+      extractionMethod: "BROWSER_PDFJS",
+      origin: "upload:pdf",
+    });
+    const runHtmlExtraction = vi.fn();
+    const runPdfExtraction = vi.fn().mockResolvedValue({
+      extractionRunId: "run-pdf",
+      status: "SUCCEEDED",
+      counts: { selected: 2, review: 1, filtered: 4, unavailable: 0 },
+      diagnostics: {
+        sourceKind: "PDF",
+        limits: { htmlCandidates: 40, htmlFetch: 12, pdfPages: 40 },
+        blocked: { htmlCandidates: 0, htmlFetch: 0, pdfPages: 12 },
+      },
+    });
+
+    const result = await runVisualExtraction({} as Env, {
+      sourceId: "source-1",
+      sourceVersionId: "version-pdf",
+      extractionRunId: "run-pdf",
+    }, {
+      loadSource,
+      runHtmlExtraction,
+      runPdfExtraction,
+    });
+
+    expect(runHtmlExtraction).not.toHaveBeenCalled();
+    expect(runPdfExtraction).toHaveBeenCalledWith(
+      {} as Env,
+      expect.objectContaining({
+        sourceId: "source-1",
+        sourceVersionId: "version-pdf",
+        extractionRunId: "run-pdf",
+      }),
+      expect.objectContaining({
+        inputFormat: "PDF_TEXT",
+        origin: "upload:pdf",
+      }),
+    );
+    expect(result.diagnostics.blocked.pdfPages).toBe(12);
   });
 });
 
