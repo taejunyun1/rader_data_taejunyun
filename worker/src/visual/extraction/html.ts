@@ -55,16 +55,20 @@ export function inspectHtmlVisualCandidates(html: string, baseUrl: string, selec
   const scope = selectedFragmentHtml?.trim() ? selectedFragmentHtml : extractTagFragment(html, "body") ?? html;
   const rejected = new Map<string, RawObservation>();
   const candidates = new Map<string, RawObservation>();
+  const containerFragments: string[] = [];
 
   for (const tag of CONTAINER_TAGS) {
     for (const fragment of collectTagFragments(html, tag)) {
+      containerFragments.push(fragment);
       for (const observation of scanFragment(fragment, baseUrl, [`container:${tag}`], fragment)) {
         mergeObservation(rejected, observation);
       }
     }
   }
 
-  for (const observation of scanFragment(scope, baseUrl, [], scope)) {
+  const contentScope = removeFragments(scope, containerFragments);
+
+  for (const observation of scanFragment(contentScope, baseUrl, [], contentScope)) {
     const target = shouldReject(observation) ? rejected : candidates;
     mergeObservation(target, observation);
   }

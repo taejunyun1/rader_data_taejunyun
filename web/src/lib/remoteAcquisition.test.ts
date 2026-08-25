@@ -144,6 +144,7 @@ describe("static HTML extraction", () => {
     ]);
     expect(result.candidates[0]?.nearbyText).toContain("floor projection");
     expect(result.candidates[2]?.signals).not.toContain("decorative_icon");
+    expect(result.candidates.map((candidate) => candidate.sourceUrl)).not.toContain("https://example.com/images/sidebar-plain-photo.jpg");
     expect(result.rejected).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -161,6 +162,35 @@ describe("static HTML extraction", () => {
         expect.objectContaining({
           sourceUrl: "https://ads.example.com/banner.jpg",
           signals: expect.arrayContaining(["container:aside", "ad_related"]),
+        }),
+        expect.objectContaining({
+          sourceUrl: "https://example.com/images/sidebar-plain-photo.jpg",
+          signals: expect.arrayContaining(["container:aside"]),
+        }),
+      ]),
+    );
+  });
+
+  it("keeps aside images rejected even when the selected fragment still contains the aside block", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const { inspectHtmlVisualCandidates } = await import("../../../worker/src/visual/extraction/html");
+    const sourceHtml = await readFile("tests/fixtures/visual/article-with-figures.html", "utf8");
+    const selectedArticleFragment = sourceHtml.match(/<article\b[^>]*>[\s\S]*<\/article>/i)?.[0];
+
+    expect(selectedArticleFragment).toContain("<aside");
+
+    const result = inspectHtmlVisualCandidates(
+      sourceHtml,
+      "https://example.com/articles/visuals?ref=feed",
+      selectedArticleFragment,
+    );
+
+    expect(result.candidates.map((candidate) => candidate.sourceUrl)).not.toContain("https://example.com/images/sidebar-plain-photo.jpg");
+    expect(result.rejected).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceUrl: "https://example.com/images/sidebar-plain-photo.jpg",
+          signals: expect.arrayContaining(["container:aside"]),
         }),
       ]),
     );

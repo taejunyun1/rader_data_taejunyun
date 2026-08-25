@@ -182,3 +182,36 @@ Additional regression coverage added for:
 - `http://[fe90::1]/private.png` candidate rejection
 - `http://[::ffff:127.0.0.1]/private.png` candidate rejection via IPv4-mapped IPv6 handling
 - fixture-backed `picture srcset` case with a blocked private entry plus public entries, asserting the public candidate remains selected and carries `private_source_url`
+
+## Fix Follow-Up 4
+
+Date: 2026-08-25
+Reason: remaining Task 2 reviewer issue
+
+### Addressed Finding
+
+- `inspectHtmlVisualCandidates` now removes `header`/`footer`/`nav`/`aside` fragments from the normal selected-content scope before the main `scanFragment` pass. Those container fragments are still scanned once for rejected outputs and keep their `container:<tag>` signals, but they are no longer scanned again as ordinary candidates when the selected fragment still contains them.
+
+### Additional RED/GREEN Cycle
+
+RED:
+
+```bash
+pnpm --dir web exec vitest run src/lib/remoteAcquisition.test.ts src/lib/ingestion.test.ts
+```
+
+Observed failure:
+
+- a neutral plain photo inside `<aside>` was still leaking into `candidates` when `inspectHtmlVisualCandidates` received a selected fragment that still contained the aside block
+
+GREEN:
+
+```bash
+pnpm --dir web exec vitest run src/lib/remoteAcquisition.test.ts src/lib/ingestion.test.ts
+```
+
+Passed: `67/67` tests
+
+Additional regression coverage added for:
+
+- fixture-backed selected-fragment case where the raw `<article>` still contains `<aside>`, asserting the neutral aside photo is rejected with `container:aside` and does not appear in `candidates`
