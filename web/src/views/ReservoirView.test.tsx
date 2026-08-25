@@ -2,6 +2,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PdfVisualExtractionResult } from "../lib/pdfVisualExtraction";
+import type { VisualAssetDetail, VisualAssetSummary } from "@radar/shared";
 
 const pdfExtractionMocks = vi.hoisted(() => ({
   startOrResumePdfVisualExtraction: vi.fn(),
@@ -34,6 +35,77 @@ const sourceDetailB = {
   analysis: { ...sourceDetail.analysis, summary: "두 번째 자료 분석" },
 };
 
+const visualSummary: VisualAssetSummary = {
+  id: "asset-1",
+  parentSourceId: "source-1",
+  parentVersionId: "version-source-1",
+  originKind: "WEB_EMBED",
+  sourceUrl: "https://example.com/figure-1",
+  pageNumber: null,
+  figureLabel: "Figure 1",
+  caption: "도판 1",
+  visualKind: "PHOTO",
+  selectionStatus: "REVIEW",
+  selectionReason: "visual-filter-v1:needs_review",
+  rightsStatus: "UNKNOWN",
+  storageState: "LINK_ONLY",
+  pendingStorageState: null,
+  processingStatus: "READY",
+  perceptualHash: "hash-1",
+  capsuleVersionId: null,
+  thumbnailUrl: null,
+  analysis: {
+    id: "analysis-auto",
+    payload: {
+      observation: { subject: ["AI 피사체"], composition: [], color: [], texture: [], spatialRelation: [], material: [], lighting: [], visibleText: [] },
+      formal: { shapes: ["AI 형태"], lines: [], planes: [], rhythm: [], scale: [], density: [], edges: [], contrast: [], perspective: [] },
+      context: { medium: ["AI 매체"], process: [], relationToPhotography: [], culturalReferences: [] },
+      propositions: ["AI 제안"],
+      uncertainty: ["AI 불확실성"],
+      visualKind: "PHOTO",
+      confidence: 0.7,
+    },
+    provenanceClass: "INTERPRETATION",
+    confidence: 0.7,
+    reviewStatus: "PENDING",
+    modelId: "vision-low",
+    promptVersion: "visual-v1",
+    createdAt: "2026-08-25T10:00:00.000Z",
+  },
+  createdAt: "2026-08-25T10:00:00.000Z",
+  updatedAt: "2026-08-25T10:00:00.000Z",
+};
+
+const visualDetail: VisualAssetDetail = {
+  ...visualSummary,
+  nearbyText: "원문 첫 문단 옆에서 이 이미지를 설명합니다.",
+  candidateKey: "figure-1",
+  bbox: null,
+  rightsBasis: "권리 검토 대기",
+  rightsReviewedAt: "2026-08-25T10:05:00.000Z",
+  autoSuggestion: visualSummary.analysis,
+  userVerified: {
+    id: "analysis-user",
+    payload: {
+      observation: { subject: ["검증 피사체"], composition: [], color: [], texture: [], spatialRelation: [], material: [], lighting: [], visibleText: [] },
+      formal: { shapes: ["검증 형태"], lines: [], planes: [], rhythm: [], scale: [], density: [], edges: [], contrast: [], perspective: [] },
+      context: { medium: ["검증 매체"], process: [], relationToPhotography: [], culturalReferences: [] },
+      propositions: ["검증 제안"],
+      uncertainty: ["검증 불확실성"],
+      visualKind: "PHOTO",
+      confidence: null,
+    },
+    provenanceClass: "INTERPRETATION",
+    confidence: null,
+    reviewStatus: "EDITED",
+    modelId: null,
+    promptVersion: null,
+    createdAt: "2026-08-25T10:10:00.000Z",
+  },
+  relations: [],
+  extractionRun: null,
+};
+
 let deepAnalysisResult: { status: number; body: Record<string, unknown> };
 type TestSourceDetail = Omit<typeof sourceDetail, "source" | "acquisition"> & {
   source: Omit<typeof sourceDetail.source, "canonicalUrl"> & { canonicalUrl: string | null };
@@ -57,6 +129,7 @@ let pendingTopicResponses: Array<Promise<Response>>;
 let viewSignalFailure = false;
 let sourceOneDetailFailure = false;
 let pdfExtractionResult: PdfVisualExtractionResult;
+let currentVisualDetail: VisualAssetDetail;
 
 beforeEach(() => {
   let requestedWatching = false;
@@ -74,6 +147,7 @@ beforeEach(() => {
   pendingTopicResponses = [];
   viewSignalFailure = false;
   sourceOneDetailFailure = false;
+  currentVisualDetail = visualDetail;
   pdfExtractionResult = {
     runId: "run-visual-1",
     status: "QUEUED",
@@ -100,6 +174,7 @@ beforeEach(() => {
     if (url === "/api/reservoir/source-1" && sourceOneDetailFailure) return Promise.resolve(new Response("", { status: 500 }));
     if (url === "/api/reservoir/source-1") return Promise.resolve(new Response(JSON.stringify(requestedWatching ? { ...currentSourceDetail, source: { ...currentSourceDetail.source, decisionStatus: "watch" } } : currentSourceDetail)));
     if (url === "/api/reservoir/source-2") return Promise.resolve(new Response(JSON.stringify(sourceDetailB)));
+    if (url === "/api/visual-assets/asset-1") return Promise.resolve(new Response(JSON.stringify({ asset: currentVisualDetail })));
     const deepHistoryMatch = url.match(/^\/api\/reservoir\/source-1\/deep-analysis\/(analysis-[12])$/);
     if (deepHistoryMatch && pendingDeepHistory[deepHistoryMatch[1]]) return pendingDeepHistory[deepHistoryMatch[1]];
     if (url === "/api/reservoir/source-1/deep-analysis" && init?.method === "POST") {
@@ -672,5 +747,21 @@ describe("ReservoirView", () => {
     expect(screen.getAllByText("관찰 중").length).toBeGreaterThanOrEqual(2);
     expect(screen.getAllByRole("button", { name: "판단 변경" })).toHaveLength(2);
     expect(screen.queryByRole("button", { name: "보관하기" })).not.toBeInTheDocument();
+  });
+
+  it("opens the visual inspector from the reservoir reading panel and shows the verified analysis by default", async () => {
+    currentSourceDetail = {
+      ...sourceDetail,
+      visuals: [visualSummary],
+    };
+    render(<ReservoirView />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /도판 1/ }));
+
+    expect(await screen.findByRole("complementary", { name: "시각 자료 상세" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "사용자 검증" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("검증 피사체")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "원문에서 보기" })).toHaveAttribute("href", "https://example.com/figure-1");
   });
 });
