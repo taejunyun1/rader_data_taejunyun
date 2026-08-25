@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { DEFAULT_DECISION_ACTIONS } from "./DecisionRail";
+import { useModalAccessibility } from "./modalAccessibility";
 import type { DecisionAction, ReadingDocument } from "./types";
 
 interface DecisionBottomSheetProps {
@@ -24,12 +25,6 @@ export const DECISION_STATUS_LABELS: Record<DecisionAction["id"], string> = {
   ignore: "제외됨",
 };
 
-function focusableElements(container: HTMLElement): HTMLElement[] {
-  return Array.from(container.querySelectorAll<HTMLElement>(
-    "button:not([disabled]), a[href], input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])",
-  ));
-}
-
 export default function DecisionBottomSheet({
   document: readingDocument,
   actions = DEFAULT_DECISION_ACTIONS,
@@ -43,62 +38,29 @@ export default function DecisionBottomSheet({
   secondaryAction,
   children,
 }: DecisionBottomSheetProps) {
+  const layerRef = useRef<HTMLDivElement | null>(null);
   const dialogRef = useRef<HTMLElement | null>(null);
   const firstActionRef = useRef<HTMLButtonElement | null>(null);
   const changeDecisionRef = useRef<HTMLButtonElement | null>(null);
-  const returnFocusRef = useRef<HTMLElement | null>(null);
   const [editingDecision, setEditingDecision] = useState(false);
 
   useEffect(() => {
     setEditingDecision(false);
   }, [readingDocument.id, decisionStatus, open]);
 
-  useEffect(() => {
-    if (!open) return;
-    const body = globalThis.document.body;
-    returnFocusRef.current = globalThis.document.activeElement instanceof HTMLElement ? globalThis.document.activeElement : null;
-    const previousOverflow = body.style.overflow;
-    body.style.overflow = "hidden";
-    firstActionRef.current?.focus();
-    return () => {
-      body.style.overflow = previousOverflow;
-      if (returnFocusRef.current?.isConnected) returnFocusRef.current.focus();
-    };
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    if (decisionStatus && !editingDecision) {
-      changeDecisionRef.current?.focus();
-      return;
-    }
-    firstActionRef.current?.focus();
-  }, [decisionStatus, editingDecision, open, readingDocument.id]);
+  const { handleKeyDown } = useModalAccessibility({
+    open,
+    dialogRef,
+    layerRef,
+    onClose,
+    getInitialFocusTarget: () => (decisionStatus && !editingDecision ? changeDecisionRef.current : firstActionRef.current),
+    initialFocusDeps: [decisionStatus, editingDecision, readingDocument.id],
+  });
 
   if (!open || !globalThis.document.body) return null;
 
-  function handleKeyDown(event: React.KeyboardEvent<HTMLElement>) {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      onClose();
-      return;
-    }
-    if (event.key !== "Tab" || !dialogRef.current) return;
-    const elements = focusableElements(dialogRef.current);
-    if (elements.length === 0) return;
-    const first = elements[0]!;
-    const last = elements[elements.length - 1]!;
-    if (event.shiftKey && globalThis.document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && globalThis.document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  }
-
   return createPortal(
-    <div className="decision-sheet-layer">
+    <div ref={layerRef} className="decision-sheet-layer">
       <button className="decision-sheet__scrim" type="button" aria-label="배경을 눌러 닫기" onClick={onClose} />
       <section
         ref={dialogRef}
@@ -107,6 +69,7 @@ export default function DecisionBottomSheet({
         aria-modal="true"
         aria-labelledby="decision-sheet-title"
         aria-describedby="decision-sheet-description"
+        tabIndex={-1}
         onKeyDown={handleKeyDown}
       >
         <div className="decision-sheet__handle" aria-hidden="true" />

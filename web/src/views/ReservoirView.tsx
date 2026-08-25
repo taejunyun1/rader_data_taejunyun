@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { QualityStatus, TextScope } from "@radar/shared/ingestion";
 import type { VisualAssetSummary, VisualExtractionRunSummary } from "@radar/shared";
 import type { SourceAccess } from "../lib/sourceAccess";
@@ -9,6 +10,7 @@ import { formatSourceTitle } from "../lib/sourcePresentation";
 import PageHeader from "../components/layout/PageHeader";
 import StatusMessage from "../components/ui/StatusMessage";
 import DecisionBottomSheet, { DECISION_STATUS_LABELS } from "../components/reading/DecisionBottomSheet";
+import { useModalAccessibility } from "../components/reading/modalAccessibility";
 import ReadingActionBar from "../components/reading/ReadingActionBar";
 import ReadingPane from "../components/reading/ReadingPane";
 import type { DeepAnalysisViewModel } from "../components/reading/DeepAnalysisPanel";
@@ -221,6 +223,9 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
   const selectedIdRef = useRef<string | null>(null);
   const pdfExtractionAbortRef = useRef<AbortController | null>(null);
   const pdfSheetTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const pdfSheetLayerRef = useRef<HTMLDivElement | null>(null);
+  const pdfSheetDialogRef = useRef<HTMLElement | null>(null);
+  const pdfSheetCloseRef = useRef<HTMLButtonElement | null>(null);
   const filterIntentRef = useRef<ReservoirFilterIntent>({ kind: "", topic: "", decision: "active", generation: 0 });
   const compactViewport = useCompactViewport();
 
@@ -391,12 +396,12 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
     setActionPending(true);
     setPendingAction(action);
     setDecisionError("");
+    setDecisionOpen(false);
     try {
       const response = await fetch("/api/signals", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceId, action }) });
       if (!response.ok) throw new Error("signal_failed");
       if (!isCurrent()) return;
       setMsg(`${action === "develop" ? "발전시키기" : action === "keep" ? "다음 리서치까지 보관" : action === "watch" ? "관찰하기" : "제외하기"}로 기록했습니다.`);
-      setDecisionOpen(false);
       if (action === "ignore") {
         clearSelection();
       } else {
@@ -439,6 +444,7 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
     const isCurrent = () => interactionRequest.current === requestId && actionRequest.current === actionRequestId;
     setActionPending(true);
     setMsg("다시 분석하는 중입니다.");
+    setDecisionOpen(false);
     try {
       const response = await fetch(`/api/inbox/retry/${sourceId}?analyze=1`, { method: "POST" });
       const data = await response.json() as { status?: string; error?: string };
@@ -463,6 +469,7 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
     const isCurrent = () => interactionRequest.current === requestId && actionRequest.current === actionRequestId;
     setActionPending(true);
     setMsg("원문 수집을 요청하는 중입니다.");
+    setDecisionOpen(false);
     try {
       const response = await fetch(`/api/inbox/retry/${sourceId}?fetch=1`, { method: "POST" });
       const data = await response.json() as { reused?: boolean; error?: string };
@@ -655,6 +662,15 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
       run: detail.visualExtractionRun ?? null,
     }
     : null;
+  const pdfSheetVisible = compactViewport && pdfSheetOpen && isPdfSource && hasPdfActiveVersion;
+  const { handleKeyDown: handlePdfSheetKeyDown } = useModalAccessibility({
+    open: pdfSheetVisible,
+    dialogRef: pdfSheetDialogRef,
+    layerRef: pdfSheetLayerRef,
+    onClose: closePdfSheet,
+    getInitialFocusTarget: () => pdfSheetCloseRef.current,
+    initialFocusDeps: [selectedId, pdfSheetOpen, pdfExtraction?.runId, pdfExtraction?.remainingPages],
+  });
   const pdfProgressPanel = (
     <PdfExtractionProgress
       state={pdfExtraction}
@@ -694,15 +710,24 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
         index={<SourceIndex title="저장소 자료" items={indexItems} selectedId={selectedId} onSelect={(id) => void openDetail(id)} />}
       reading={detailError ? <><ReadingActionBar message="상세 내용을 불러오지 못했습니다." onBack={clearSelection} /><StatusMessage kind="error" title={detailError} action={<button className="ui-button-secondary" onClick={() => selectedId && void openDetail(selectedId)}>다시 시도</button>} /></> : detailLoading ? <><ReadingActionBar message="자료 상세 내용을 불러오는 중…" onBack={clearSelection} /><StatusMessage kind="loading" title="자료 상세 내용을 불러오는 중…" description="원문과 분석 내용을 준비하고 있습니다." /></> : document ? <><ReadingActionBar statusLabel={detail?.source.decisionStatus ? DECISION_STATUS_LABELS[detail.source.decisionStatus as DecisionAction["id"]] : null} pending={actionPending} onBack={clearSelection} onOpenDecision={() => setDecisionOpen(true)} /><div className="deep-analysis-controls" aria-label="심층 정리 실행"><label htmlFor="deep-analysis-profile">심층 정리 품질</label><select id="deep-analysis-profile" value={deepProfile} onChange={(event) => setDeepProfile(event.target.value as "precision" | "maximum")} disabled={deepPending || deepDisabled}><option value="precision">정밀 · 긴 본문 구조화</option><option value="maximum">최고 정밀 · 논거와 연결 검토</option></select><button type="button" className="ui-button" onClick={() => void runDeepAnalysis()} disabled={deepPending || deepDisabled}>{deepDisabled ? "원문 수집 필요" : deepPending ? "심층 정리 중…" : "심층 정리하기"}</button></div>{isPdfSource && hasPdfActiveVersion && !compactViewport && pdfProgressPanel}{isPdfSource && hasPdfActiveVersion && compactViewport && <div className="deep-analysis-controls"><button ref={pdfSheetTriggerRef} type="button" className="ui-button" onClick={() => setPdfSheetOpen(true)}>{pdfExtraction && pdfExtraction.remainingPages > 0 ? "계속" : "시각 자료 찾기"}</button></div>}{deepBlockReason && <p className="deep-analysis-blocked" role="status">{deepBlockReason}</p>}<ReadingPane document={document} deepAnalysis={detail?.deepAnalysis} deepAnalysisHistory={detail?.deepAnalysisHistory} onOpenDeepHistory={(id) => void openDeepHistory(id)} supplementary={visualExtractionStatus ? <VisualAssetPanel assets={[]} extractionContext={visualExtractionStatus} title="시각 자료 상태" /> : undefined} />{detail?.visuals && <VisualAssetPanel assets={detail.visuals} extractionContext={visualExtractionStatus} showExtractionStatus={false} onAnalysisAction={reviewVisualAnalysis} onAssetUpdated={syncVisualAsset} />}</> : <StatusMessage kind="empty" title="읽을 자료를 선택하세요" description="왼쪽 목록에서 자료를 고르면 원문과 분석 내용을 함께 읽을 수 있습니다." />}
       />}
-      {compactViewport && pdfSheetOpen && isPdfSource && hasPdfActiveVersion && (
-        <div className="decision-sheet-layer" aria-hidden={false}>
+      {pdfSheetVisible && globalThis.document.body && createPortal(
+        <div ref={pdfSheetLayerRef} className="decision-sheet-layer">
           <button type="button" className="decision-sheet__scrim" aria-label="PDF 시각 자료 추출 닫기" onClick={closePdfSheet} />
-          <section className="decision-sheet" role="dialog" aria-modal="true" aria-label="PDF 시각 자료 추출">
+          <section
+            ref={pdfSheetDialogRef}
+            className="decision-sheet"
+            role="dialog"
+            aria-modal="true"
+            aria-label="PDF 시각 자료 추출"
+            tabIndex={-1}
+            onKeyDown={handlePdfSheetKeyDown}
+          >
             <div className="decision-sheet__handle" aria-hidden="true" />
-            <button type="button" className="decision-sheet__close" aria-label="닫기" onClick={closePdfSheet}>×</button>
+            <button ref={pdfSheetCloseRef} type="button" className="decision-sheet__close" aria-label="닫기" onClick={closePdfSheet}>×</button>
             {pdfProgressPanel}
           </section>
-        </div>
+        </div>,
+        globalThis.document.body,
       )}
       {document && <DecisionBottomSheet document={document} decisionStatus={detail?.source.decisionStatus as DecisionAction["id"] | null} open={decisionOpen} pending={actionPending} pendingAction={pendingAction} error={decisionError} onClose={() => setDecisionOpen(false)} onAction={(action) => void signal(action)} secondaryAction={{ label: "다시 분석하기", onClick: reanalyze }}><div className="source-detail-extra"><div className="source-detail-extra__heading"><h3>자료 기록</h3><button className="ui-button-secondary" type="button" disabled={actionPending || !canonicalUrl} onClick={() => void refetch()}>다시 가져오기</button></div><p>{detail?.versions.length ?? 0}개 버전 · {detail?.signals.length ?? 0}개 판단 기록</p>{!canonicalUrl && <p>원문 주소가 없어 다시 가져올 수 없습니다.</p>}</div></DecisionBottomSheet>}
       {searchHits && <p className="table-note">검색 결과 {searchHits.length}개 · 검색 결과를 선택하면 같은 읽기 화면에서 확인합니다.</p>}

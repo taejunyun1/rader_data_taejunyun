@@ -1,5 +1,7 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import type { VisualAnalysisSummary, VisualAssetDetail } from "@radar/shared";
+import { useModalAccessibility } from "../reading/modalAccessibility";
 import PdfCropPreview from "./PdfCropPreview";
 import VisualAnalysisEditor from "./VisualAnalysisEditor";
 
@@ -92,12 +94,24 @@ function previewMode(asset: VisualAssetDetail): "pdf" | "link" | "image" | "none
 export default function VisualInspector({ asset, loading, error, compact, onClose, onRetry, onSaveAnalysis, supplementaryContent }: VisualInspectorProps) {
   const [tab, setTab] = useState<AnalysisTab>("autoSuggestion");
   const [editing, setEditing] = useState(false);
+  const layerRef = useRef<HTMLDivElement | null>(null);
+  const dialogRef = useRef<HTMLElement | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     if (!asset) return;
     setTab(asset.userVerified ? "userVerified" : "autoSuggestion");
     setEditing(false);
   }, [asset]);
+
+  const { handleKeyDown } = useModalAccessibility({
+    open: compact,
+    dialogRef,
+    layerRef,
+    onClose,
+    getInitialFocusTarget: () => closeButtonRef.current,
+    initialFocusDeps: [asset?.id, loading, error],
+  });
 
   const role = compact ? "dialog" : "complementary";
   const activeAnalysis = tab === "userVerified" ? asset?.userVerified ?? asset?.autoSuggestion ?? null : asset?.autoSuggestion ?? asset?.userVerified ?? null;
@@ -108,19 +122,22 @@ export default function VisualInspector({ asset, loading, error, compact, onClos
   const propositions = arrayItems(payload, "propositions");
   const uncertainty = arrayItems(payload, "uncertainty");
 
-  return (
+  const content = (
     <aside
+      ref={dialogRef}
       className={`visual-inspector${compact ? " visual-inspector--sheet" : ""}`}
       role={role}
       aria-modal={compact ? "true" : undefined}
       aria-label="시각 자료 상세"
+      tabIndex={compact ? -1 : undefined}
+      onKeyDown={compact ? handleKeyDown : undefined}
     >
       <div className="visual-inspector__header">
         <div>
           <p className="reading-section__label">시각 자료 상세</p>
           <h4>{asset?.caption || "시각 자료"}</h4>
         </div>
-        <button type="button" className="ui-button-secondary" onClick={onClose}>닫기</button>
+        <button ref={closeButtonRef} type="button" className="ui-button-secondary" onClick={onClose}>닫기</button>
       </div>
 
       {loading && <p className="visual-inspector__hint">시각 자료 상세를 불러오는 중입니다.</p>}
@@ -235,6 +252,16 @@ export default function VisualInspector({ asset, loading, error, compact, onClos
         </>
       )}
     </aside>
+  );
+
+  if (!compact || !globalThis.document.body) return content;
+
+  return createPortal(
+    <div ref={layerRef} className="visual-inspector-layer">
+      <button type="button" className="visual-inspector__scrim" aria-label="시각 자료 상세 닫기" onClick={onClose} />
+      {content}
+    </div>,
+    globalThis.document.body,
   );
 }
 

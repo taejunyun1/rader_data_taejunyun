@@ -802,7 +802,7 @@ describe("ReservoirView", () => {
     await userEvent.click(screen.getByRole("button", { name: "판단 변경" }));
     expect(screen.getByText("현재 판단")).toBeInTheDocument();
     expect(screen.getAllByText("관찰 중").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getAllByRole("button", { name: "판단 변경" })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "판단 변경" })).toHaveLength(1);
     expect(screen.queryByRole("button", { name: "보관하기" })).not.toBeInTheDocument();
   });
 
@@ -923,6 +923,34 @@ describe("ReservoirView", () => {
     expect(screen.getByRole("button", { name: /자료 A/ })).toHaveAttribute("aria-current", "true");
     expect(indexRegion.scrollTop).toBe(110);
     expect(readingRegion.scrollTop).toBe(260);
+  });
+
+  it("traps focus inside the mobile pdf sheet, closes on Escape, and hides the background while open", async () => {
+    const user = userEvent.setup();
+    setViewport(640);
+    const { container } = render(<ReservoirView />);
+
+    await user.click(await screen.findByRole("button", { name: /자료 A/ }));
+    const trigger = screen.getByRole("button", { name: "시각 자료 찾기" });
+    await user.click(trigger);
+
+    const dialog = await screen.findByRole("dialog", { name: "PDF 시각 자료 추출" });
+    expect(container).toHaveAttribute("aria-hidden", "true");
+    expect(container).toHaveAttribute("inert");
+    expect(within(dialog).getByRole("button", { name: "닫기" })).toHaveFocus();
+
+    await user.tab({ shift: true });
+    expect(within(dialog).getByRole("button", { name: "시각 자료 찾기" })).toHaveFocus();
+
+    await user.tab();
+    expect(within(dialog).getByRole("button", { name: "닫기" })).toHaveFocus();
+
+    await user.keyboard("{Escape}");
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "PDF 시각 자료 추출" })).not.toBeInTheDocument());
+    expect(container).not.toHaveAttribute("aria-hidden");
+    expect(container).not.toHaveAttribute("inert");
+    expect(trigger).toHaveFocus();
   });
 
   it("opens the visual inspector from the reservoir reading panel and shows the verified analysis by default", async () => {

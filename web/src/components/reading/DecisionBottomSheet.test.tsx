@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -86,5 +86,47 @@ describe("DecisionBottomSheet", () => {
     render(<DecisionBottomSheet document={document} onClose={vi.fn()} onAction={vi.fn()} />);
 
     expect(screen.getByRole("button", { name: "발전시키기" })).toHaveFocus();
+  });
+
+  it("traps focus inside the dialog and hides the background while open", async () => {
+    const user = userEvent.setup();
+
+    function DialogHarness() {
+      const [open, setOpen] = useState(false);
+      return <>
+        <button type="button" onClick={() => setOpen(true)}>판단 열기</button>
+        <DecisionBottomSheet
+          document={document}
+          open={open}
+          onAction={vi.fn()}
+          onClose={() => setOpen(false)}
+        />
+      </>;
+    }
+
+    const { container } = render(<DialogHarness />);
+    const trigger = screen.getByRole("button", { name: "판단 열기" });
+    await user.click(trigger);
+
+    const dialog = await screen.findByRole("dialog", { name: "읽은 뒤 판단" });
+    expect(container).toHaveAttribute("aria-hidden", "true");
+    expect(container).toHaveAttribute("inert");
+    expect(within(dialog).getByRole("button", { name: "발전시키기" })).toHaveFocus();
+
+    await user.tab({ shift: true });
+    expect(within(dialog).getByRole("button", { name: "닫기" })).toHaveFocus();
+
+    await user.tab({ shift: true });
+    expect(within(dialog).getByRole("button", { name: "제외하기" })).toHaveFocus();
+
+    await user.tab();
+    expect(within(dialog).getByRole("button", { name: "닫기" })).toHaveFocus();
+
+    await user.keyboard("{Escape}");
+
+    expect(screen.queryByRole("dialog", { name: "읽은 뒤 판단" })).not.toBeInTheDocument();
+    expect(container).not.toHaveAttribute("aria-hidden");
+    expect(container).not.toHaveAttribute("inert");
+    expect(trigger).toHaveFocus();
   });
 });

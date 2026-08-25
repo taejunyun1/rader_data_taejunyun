@@ -413,6 +413,34 @@ describe("Visual workspace", () => {
     await waitFor(() => expect(card).toHaveFocus());
   });
 
+  it("traps focus inside the mobile inspector, closes on Escape, and hides the background while open", async () => {
+    const user = userEvent.setup();
+    setViewport(640);
+    const { container } = render(<VisualAssetPanel assets={[buildSummary()]} />);
+    const card = screen.getByRole("button", { name: /도판 1/ });
+    await user.click(card);
+
+    const dialog = await screen.findByRole("dialog", { name: "시각 자료 상세" });
+    expect(container).toHaveAttribute("aria-hidden", "true");
+    expect(container).toHaveAttribute("inert");
+    expect(within(dialog).getByRole("button", { name: "닫기" })).toHaveFocus();
+
+    const focusables = dialog.querySelectorAll<HTMLElement>("button:not([disabled]), a[href], input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])");
+    focusables[focusables.length - 1]?.focus();
+    await user.tab();
+    expect(within(dialog).getByRole("button", { name: "닫기" })).toHaveFocus();
+
+    await user.tab({ shift: true });
+    expect(focusables[focusables.length - 1]).toHaveFocus();
+
+    await user.keyboard("{Escape}");
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "시각 자료 상세" })).not.toBeInTheDocument());
+    expect(container).not.toHaveAttribute("aria-hidden");
+    expect(container).not.toHaveAttribute("inert");
+    expect(card).toHaveFocus();
+  });
+
   it("shows extraction state guidance for web and pdf sources before visible assets are ready", () => {
     const { rerender } = render(
       <VisualAssetPanel
