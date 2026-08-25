@@ -54,6 +54,45 @@ describe("ExtractionStore", () => {
     expect(db.state.runs.map((run) => run.parentVersionId)).toEqual(["version-1", "version-2"]);
   });
 
+  it("recovers the canonical run and unit after concurrent-style duplicate insertion attempts", async () => {
+    const { ExtractionStore } = await import("../../../worker/src/visual/extraction/store");
+    const db = createExtractionDb({
+      simulateRunInsertRace: {
+        parentSourceId: "source-1",
+        parentVersionId: "version-1",
+        originKind: "PDF_PAGE_CROP",
+        canonicalId: "run-canonical",
+        createdAt: "2026-08-25T01:00:00.000Z",
+      },
+      simulateUnitInsertRace: {
+        runId: "run-canonical",
+        unitNumber: 7,
+        candidateKey: "candidate-7",
+        canonicalId: "unit-canonical",
+        createdAt: "2026-08-25T01:00:10.000Z",
+      },
+    });
+
+    const run = await ExtractionStore.createOrResumeRun(db, {
+      parentSourceId: "source-1",
+      parentVersionId: "version-1",
+      originKind: "PDF_PAGE_CROP",
+      now: "2026-08-25T01:00:00.000Z",
+    });
+    const unit = await ExtractionStore.recordUnit(db, {
+      runId: run.id,
+      unitNumber: 7,
+      candidateKey: "candidate-7",
+      tempR2Key: "tmp/candidate-7.webp",
+      createdAt: "2026-08-25T01:00:10.000Z",
+    });
+
+    expect(run.id).toBe("run-canonical");
+    expect(unit.id).toBe("unit-canonical");
+    expect(db.state.runs).toHaveLength(1);
+    expect(db.state.units).toHaveLength(1);
+  });
+
   it("keeps unit recording idempotent and finishes zero-result runs as succeeded with explicit counts", async () => {
     const { ExtractionStore } = await import("../../../worker/src/visual/extraction/store");
     const db = createExtractionDb();
@@ -127,6 +166,54 @@ describe("ExtractionStore", () => {
     expect(finished.unavailableCount).toBe(1);
   });
 
+  it("keeps processing units non-terminal and blocks succeeded completion while pending units remain", async () => {
+    const { ExtractionStore } = await import("../../../worker/src/visual/extraction/store");
+    const db = createExtractionDb();
+    const run = await ExtractionStore.createOrResumeRun(db, {
+      parentSourceId: "source-1",
+      parentVersionId: "version-1",
+      originKind: "WEB_EMBED",
+      now: "2026-08-25T02:30:00.000Z",
+    });
+
+    await ExtractionStore.recordUnit(db, {
+      runId: run.id,
+      unitNumber: 1,
+      candidateKey: "candidate-1",
+      tempR2Key: "tmp/candidate-1.webp",
+      createdAt: "2026-08-25T02:30:00.000Z",
+    });
+    await ExtractionStore.recordUnit(db, {
+      runId: run.id,
+      unitNumber: 2,
+      candidateKey: "candidate-2",
+      tempR2Key: "tmp/candidate-2.webp",
+      createdAt: "2026-08-25T02:30:10.000Z",
+    });
+
+    const processing = await ExtractionStore.markUnitProcessed(db, {
+      runId: run.id,
+      unitNumber: 1,
+      candidateKey: "candidate-1",
+      status: "PROCESSING",
+      processedAt: "2026-08-25T02:31:00.000Z",
+    });
+    const finished = await ExtractionStore.finishRun(db, {
+      runId: run.id,
+      counts: {
+        selected: 0,
+        review: 1,
+        filtered: 0,
+        unavailable: 0,
+      },
+      finishedAt: "2026-08-25T02:32:00.000Z",
+    });
+
+    expect(processing.processedAt).toBeNull();
+    expect(finished.processedUnits).toBe(0);
+    expect(finished.status).toBe("RUNNING");
+  });
+
   it("reports partial success when some units fail, lists expired temp units, and cancels runs explicitly", async () => {
     const { ExtractionStore } = await import("../../../worker/src/visual/extraction/store");
     const db = createExtractionDb();
@@ -175,6 +262,13 @@ describe("ExtractionStore", () => {
       errorCode: "fetch_failed",
       error: "origin missing",
     });
+    await ExtractionStore.markUnitProcessed(db, {
+      runId: run.id,
+      unitNumber: 3,
+      candidateKey: "candidate-3",
+      status: "SUCCEEDED",
+      processedAt: "2026-08-25T03:01:45.000Z",
+    });
 
     const finished = await ExtractionStore.finishRun(db, {
       runId: run.id,
@@ -191,7 +285,7 @@ describe("ExtractionStore", () => {
     });
 
     expect(finished.status).toBe("PARTIAL");
-    expect(expired.map((unit) => unit.candidateKey)).toEqual(["candidate-2", "candidate-3"]);
+    expect(expired.map((unit) => unit.candidateKey)).toEqual(["candidate-2"]);
 
     const cancelled = await ExtractionStore.cancelRun(db, {
       runId: run.id,
@@ -202,6 +296,64 @@ describe("ExtractionStore", () => {
 
     expect(cancelled.status).toBe("CANCELLED");
     expect(cancelled.errorCode).toBe("user_cancelled");
+  });
+
+  it("marks deleted units with deleted_at, excludes them from uploaded counts, and allows succeeded completion after terminal units only", async () => {
+    const { ExtractionStore } = await import("../../../worker/src/visual/extraction/store");
+    const db = createExtractionDb();
+    const run = await ExtractionStore.createOrResumeRun(db, {
+      parentSourceId: "source-1",
+      parentVersionId: "version-1",
+      originKind: "DISCOVERY_EMBED",
+      now: "2026-08-25T03:30:00.000Z",
+    });
+
+    await ExtractionStore.recordUnit(db, {
+      runId: run.id,
+      unitNumber: 1,
+      candidateKey: "candidate-1",
+      tempR2Key: "tmp/candidate-1.webp",
+      createdAt: "2026-08-25T03:30:00.000Z",
+    });
+    await ExtractionStore.recordUnit(db, {
+      runId: run.id,
+      unitNumber: 2,
+      candidateKey: "candidate-2",
+      tempR2Key: "tmp/candidate-2.webp",
+      createdAt: "2026-08-25T03:30:10.000Z",
+    });
+
+    const deleted = await ExtractionStore.markUnitProcessed(db, {
+      runId: run.id,
+      unitNumber: 1,
+      candidateKey: "candidate-1",
+      status: "DELETED",
+      processedAt: "2026-08-25T03:31:00.000Z",
+    });
+    await ExtractionStore.markUnitProcessed(db, {
+      runId: run.id,
+      unitNumber: 2,
+      candidateKey: "candidate-2",
+      status: "SUCCEEDED",
+      processedAt: "2026-08-25T03:31:30.000Z",
+    });
+
+    const finished = await ExtractionStore.finishRun(db, {
+      runId: run.id,
+      counts: {
+        selected: 1,
+        review: 0,
+        filtered: 0,
+        unavailable: 0,
+      },
+      finishedAt: "2026-08-25T03:32:00.000Z",
+    });
+
+    expect(deleted.deletedAt).toBe("2026-08-25T03:31:00.000Z");
+    expect(deleted.processedAt).toBe("2026-08-25T03:31:00.000Z");
+    expect(finished.uploadedUnits).toBe(1);
+    expect(finished.processedUnits).toBe(2);
+    expect(finished.status).toBe("SUCCEEDED");
   });
 });
 
@@ -471,7 +623,24 @@ type UnitState = {
   deletedAt: string | null;
 };
 
-function createExtractionDb(seed: { runs?: RunState[]; units?: UnitState[] } = {}): D1Database & { state: { runs: RunState[]; units: UnitState[] } } {
+function createExtractionDb(seed: {
+  runs?: RunState[];
+  units?: UnitState[];
+  simulateRunInsertRace?: {
+    parentSourceId: string;
+    parentVersionId: string;
+    originKind: string;
+    canonicalId: string;
+    createdAt: string;
+  };
+  simulateUnitInsertRace?: {
+    runId: string;
+    unitNumber: number;
+    candidateKey: string;
+    canonicalId: string;
+    createdAt: string;
+  };
+} = {}): D1Database & { state: { runs: RunState[]; units: UnitState[] } } {
   const state = {
     runs: [...(seed.runs ?? [])],
     units: [...(seed.units ?? [])],
@@ -502,7 +671,7 @@ function createExtractionDb(seed: { runs?: RunState[]; units?: UnitState[] } = {
           return null;
         },
         async run() {
-          if (query.includes("INSERT INTO visual_extraction_runs")) {
+          if (query.includes("visual_extraction_runs") && query.includes("INSERT")) {
             const [id, parentSourceId, parentVersionId, originKind, status, totalUnits, uploadedUnits, processedUnits, selectedCount, reviewCount, filteredCount, unavailableCount, errorCode, error, createdAt, updatedAt, finishedAt] = params as [
               string,
               string,
@@ -522,6 +691,70 @@ function createExtractionDb(seed: { runs?: RunState[]; units?: UnitState[] } = {
               string,
               string | null,
             ];
+
+            if (
+              seed.simulateRunInsertRace &&
+              !query.includes("INSERT OR IGNORE") &&
+              seed.simulateRunInsertRace.parentSourceId === parentSourceId &&
+              seed.simulateRunInsertRace.parentVersionId === parentVersionId &&
+              seed.simulateRunInsertRace.originKind === originKind
+            ) {
+              state.runs.push({
+                id: seed.simulateRunInsertRace.canonicalId,
+                parentSourceId,
+                parentVersionId,
+                originKind,
+                status,
+                totalUnits,
+                uploadedUnits,
+                processedUnits,
+                selectedCount,
+                reviewCount,
+                filteredCount,
+                unavailableCount,
+                errorCode,
+                error,
+                createdAt: seed.simulateRunInsertRace.createdAt,
+                updatedAt,
+                finishedAt,
+              });
+              throw new Error("UNIQUE constraint failed: visual_extraction_runs.parent_version_id, visual_extraction_runs.origin_kind");
+            }
+            if (
+              seed.simulateRunInsertRace &&
+              query.includes("INSERT OR IGNORE") &&
+              seed.simulateRunInsertRace.parentSourceId === parentSourceId &&
+              seed.simulateRunInsertRace.parentVersionId === parentVersionId &&
+              seed.simulateRunInsertRace.originKind === originKind
+            ) {
+              state.runs.push({
+                id: seed.simulateRunInsertRace.canonicalId,
+                parentSourceId,
+                parentVersionId,
+                originKind,
+                status,
+                totalUnits,
+                uploadedUnits,
+                processedUnits,
+                selectedCount,
+                reviewCount,
+                filteredCount,
+                unavailableCount,
+                errorCode,
+                error,
+                createdAt: seed.simulateRunInsertRace.createdAt,
+                updatedAt,
+                finishedAt,
+              });
+              delete seed.simulateRunInsertRace;
+              return { success: true, meta: { changes: 0 } };
+            }
+            if (
+              query.includes("INSERT OR IGNORE") &&
+              state.runs.some((entry) => entry.parentVersionId === parentVersionId && entry.originKind === originKind && ["UPLOADING", "QUEUED", "RUNNING"].includes(entry.status))
+            ) {
+              return { success: true, meta: { changes: 0 } };
+            }
             state.runs.push({
               id,
               parentSourceId,
@@ -543,7 +776,7 @@ function createExtractionDb(seed: { runs?: RunState[]; units?: UnitState[] } = {
             });
           }
 
-          if (query.includes("INSERT INTO visual_extraction_units")) {
+          if (query.includes("visual_extraction_units") && query.includes("INSERT")) {
             const [id, runId, unitNumber, candidateKey, status, tempR2Key, width, height, contentHash, errorCode, error, createdAt, processedAt, deletedAt] = params as [
               string,
               string,
@@ -560,6 +793,64 @@ function createExtractionDb(seed: { runs?: RunState[]; units?: UnitState[] } = {
               string | null,
               string | null,
             ];
+
+            if (
+              seed.simulateUnitInsertRace &&
+              !query.includes("INSERT OR IGNORE") &&
+              seed.simulateUnitInsertRace.runId === runId &&
+              seed.simulateUnitInsertRace.unitNumber === unitNumber &&
+              seed.simulateUnitInsertRace.candidateKey === candidateKey
+            ) {
+              state.units.push({
+                id: seed.simulateUnitInsertRace.canonicalId,
+                runId,
+                unitNumber,
+                candidateKey,
+                status,
+                tempR2Key,
+                width,
+                height,
+                contentHash,
+                errorCode,
+                error,
+                createdAt: seed.simulateUnitInsertRace.createdAt,
+                processedAt,
+                deletedAt,
+              });
+              throw new Error("UNIQUE constraint failed: visual_extraction_units.run_id, visual_extraction_units.unit_number, visual_extraction_units.candidate_key");
+            }
+            if (
+              seed.simulateUnitInsertRace &&
+              query.includes("INSERT OR IGNORE") &&
+              seed.simulateUnitInsertRace.runId === runId &&
+              seed.simulateUnitInsertRace.unitNumber === unitNumber &&
+              seed.simulateUnitInsertRace.candidateKey === candidateKey
+            ) {
+              state.units.push({
+                id: seed.simulateUnitInsertRace.canonicalId,
+                runId,
+                unitNumber,
+                candidateKey,
+                status,
+                tempR2Key,
+                width,
+                height,
+                contentHash,
+                errorCode,
+                error,
+                createdAt: seed.simulateUnitInsertRace.createdAt,
+                processedAt,
+                deletedAt,
+              });
+              delete seed.simulateUnitInsertRace;
+              return { success: true, meta: { changes: 0 } };
+            }
+            if (
+              query.includes("INSERT OR IGNORE") &&
+              state.units.some((entry) => entry.runId === runId && entry.unitNumber === unitNumber && entry.candidateKey === candidateKey)
+            ) {
+              return { success: true, meta: { changes: 0 } };
+            }
             state.units.push({
               id,
               runId,
@@ -579,10 +870,11 @@ function createExtractionDb(seed: { runs?: RunState[]; units?: UnitState[] } = {
           }
 
           if (query.includes("UPDATE visual_extraction_units")) {
-            const [status, width, height, contentHash, errorCode, error, processedAt, runId, unitNumber, candidateKey] = params as [
+            const [status, width, height, contentHash, errorCode, error, processedAt, deletedAt, runId, unitNumber, candidateKey] = params as [
               string,
               number | null,
               number | null,
+              string | null,
               string | null,
               string | null,
               string | null,
@@ -600,6 +892,7 @@ function createExtractionDb(seed: { runs?: RunState[]; units?: UnitState[] } = {
               unit.errorCode = errorCode;
               unit.error = error;
               unit.processedAt = processedAt;
+              unit.deletedAt = deletedAt;
             }
           }
 
@@ -639,10 +932,10 @@ function createExtractionDb(seed: { runs?: RunState[]; units?: UnitState[] } = {
           return { success: true, meta: { changes: 1 } };
         },
         async all<T = unknown>() {
-          if (query.includes("FROM visual_extraction_units") && query.includes("WHERE run_id = ? AND deleted_at IS NULL")) {
+          if (query.includes("FROM visual_extraction_units") && query.includes("WHERE run_id = ?")) {
             const [runId] = params as [string];
             const results = state.units
-              .filter((unit) => unit.runId === runId && unit.deletedAt == null)
+              .filter((unit) => unit.runId === runId)
               .sort((left, right) => left.unitNumber - right.unitNumber) as T[];
             return { results };
           }

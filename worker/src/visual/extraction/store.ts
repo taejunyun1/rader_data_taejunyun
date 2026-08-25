@@ -107,7 +107,7 @@ async function listRunUnits(db: D1Database, runId: string): Promise<VisualExtrac
             error_code AS errorCode, error, created_at AS createdAt,
             processed_at AS processedAt, deleted_at AS deletedAt
      FROM visual_extraction_units
-     WHERE run_id = ? AND deleted_at IS NULL
+     WHERE run_id = ?
      ORDER BY unit_number ASC`
   ).bind(runId).all<DbRow>();
   return (rows.results ?? []).map(mapUnit);
@@ -122,13 +122,15 @@ function countUploaded(units: VisualExtractionUnitRow[]): number {
 }
 
 function countProcessed(units: VisualExtractionUnitRow[]): number {
-  return units.filter((unit) => unit.processedAt != null || unit.status === "SUCCEEDED" || unit.status === "FAILED" || unit.status === "DELETED").length;
+  return units.filter((unit) => unit.status === "SUCCEEDED" || unit.status === "FAILED" || unit.status === "DELETED").length;
 }
 
 function deriveFinishedStatus(
   units: VisualExtractionUnitRow[],
   input: FinishExtractionRunInput,
 ): VisualExtractionRunRow["status"] {
+  const hasNonTerminal = units.some((unit) => unit.status === "UPLOADED" || unit.status === "PROCESSING");
+  if (hasNonTerminal) return "RUNNING";
   if (input.status) return input.status;
   const failed = units.filter((unit) => unit.status === "FAILED").length;
   if (failed === 0) return "SUCCEEDED";
@@ -138,116 +140,80 @@ function deriveFinishedStatus(
 
 export const ExtractionStore = {
   async createOrResumeRun(db: D1Database, input: CreateOrResumeRunInput): Promise<VisualExtractionRunRow> {
-    const existing = await getActiveRun(db, input);
-    if (existing) return existing;
-
     const timestamp = nowIso(input.now);
-    const run: VisualExtractionRunRow = {
-      id: uuid(),
-      parentSourceId: input.parentSourceId,
-      parentVersionId: input.parentVersionId,
-      originKind: input.originKind,
-      status: "UPLOADING",
-      totalUnits: 0,
-      uploadedUnits: 0,
-      processedUnits: 0,
-      selectedCount: 0,
-      reviewCount: 0,
-      filteredCount: 0,
-      unavailableCount: 0,
-      errorCode: null,
-      error: null,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      finishedAt: null,
-    };
-
     await db.prepare(
-      `INSERT INTO visual_extraction_runs
+      `INSERT OR IGNORE INTO visual_extraction_runs
        (id, parent_source_id, parent_version_id, origin_kind, status,
         total_units, uploaded_units, processed_units, selected_count,
         review_count, filtered_count, unavailable_count, error_code,
         error, created_at, updated_at, finished_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(
-      run.id,
-      run.parentSourceId,
-      run.parentVersionId,
-      run.originKind,
-      run.status,
-      run.totalUnits,
-      run.uploadedUnits,
-      run.processedUnits,
-      run.selectedCount,
-      run.reviewCount,
-      run.filteredCount,
-      run.unavailableCount,
-      run.errorCode,
-      run.error,
-      run.createdAt,
-      run.updatedAt,
-      run.finishedAt,
+      uuid(),
+      input.parentSourceId,
+      input.parentVersionId,
+      input.originKind,
+      "UPLOADING",
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      null,
+      null,
+      timestamp,
+      timestamp,
+      null,
     ).run();
 
-    return run;
+    const canonical = await getActiveRun(db, input);
+    if (!canonical) throw new Error("visual_extraction_run_not_found");
+    return canonical;
   },
 
   async recordUnit(db: D1Database, input: RecordExtractionUnitInput): Promise<VisualExtractionUnitRow> {
-    const existing = await getUnit(db, input.runId, input.unitNumber, input.candidateKey);
-    if (existing) return existing;
-
-    const unit: VisualExtractionUnitRow = {
-      id: uuid(),
-      runId: input.runId,
-      unitNumber: input.unitNumber,
-      candidateKey: input.candidateKey,
-      status: "UPLOADED",
-      tempR2Key: input.tempR2Key ?? null,
-      width: input.width ?? null,
-      height: input.height ?? null,
-      contentHash: input.contentHash ?? null,
-      errorCode: null,
-      error: null,
-      createdAt: nowIso(input.createdAt),
-      processedAt: null,
-      deletedAt: null,
-    };
-
+    const createdAt = nowIso(input.createdAt);
     await db.prepare(
-      `INSERT INTO visual_extraction_units
+      `INSERT OR IGNORE INTO visual_extraction_units
        (id, run_id, unit_number, candidate_key, status, temp_r2_key,
         width, height, content_hash, error_code, error, created_at,
         processed_at, deleted_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(
-      unit.id,
-      unit.runId,
-      unit.unitNumber,
-      unit.candidateKey,
-      unit.status,
-      unit.tempR2Key,
-      unit.width,
-      unit.height,
-      unit.contentHash,
-      unit.errorCode,
-      unit.error,
-      unit.createdAt,
-      unit.processedAt,
-      unit.deletedAt,
+      uuid(),
+      input.runId,
+      input.unitNumber,
+      input.candidateKey,
+      "UPLOADED",
+      input.tempR2Key ?? null,
+      input.width ?? null,
+      input.height ?? null,
+      input.contentHash ?? null,
+      null,
+      null,
+      createdAt,
+      null,
+      null,
     ).run();
 
-    return unit;
+    const canonical = await getUnit(db, input.runId, input.unitNumber, input.candidateKey);
+    if (!canonical) throw new Error("visual_extraction_unit_not_found");
+    return canonical;
   },
 
   async markUnitProcessed(db: D1Database, input: MarkExtractionUnitProcessedInput): Promise<VisualExtractionUnitRow> {
     const existing = await getUnit(db, input.runId, input.unitNumber, input.candidateKey);
     if (!existing) throw new Error("visual_extraction_unit_not_found");
 
-    const processedAt = nowIso(input.processedAt);
+    const terminalAt = nowIso(input.processedAt);
+    const processedAt = input.status === "PROCESSING" ? null : terminalAt;
+    const deletedAt = input.status === "DELETED" ? terminalAt : null;
     await db.prepare(
       `UPDATE visual_extraction_units
        SET status = ?, width = ?, height = ?, content_hash = ?,
-           error_code = ?, error = ?, processed_at = ?
+           error_code = ?, error = ?, processed_at = ?, deleted_at = ?
        WHERE run_id = ? AND unit_number = ? AND candidate_key = ?`
     ).bind(
       input.status,
@@ -257,6 +223,7 @@ export const ExtractionStore = {
       input.errorCode ?? null,
       input.error ?? null,
       processedAt,
+      deletedAt,
       input.runId,
       input.unitNumber,
       input.candidateKey,
@@ -271,6 +238,7 @@ export const ExtractionStore = {
       errorCode: input.errorCode ?? null,
       error: input.error ?? null,
       processedAt,
+      deletedAt,
     };
   },
 
