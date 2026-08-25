@@ -28,7 +28,7 @@ export async function transformVisualAsset(env: Env, visualAssetId: string, prof
     if (existingObject) {
       const hash = asset.perceptualHash ?? await imageDHash(env, await existingObject.arrayBuffer());
       await env.DB.prepare("UPDATE visual_assets SET perceptual_hash = COALESCE(perceptual_hash, ?), perceptual_hash_method = COALESCE(perceptual_hash_method, ?), processing_status = ?, last_error = NULL, updated_at = ? WHERE id = ?")
-        .bind(hash, VISUAL_HASH_METHOD, asset.assignmentStatus === "ASSIGNED" ? "ANALYSIS_PENDING" : "READY", new Date().toISOString(), visualAssetId).run();
+        .bind(hash, VISUAL_HASH_METHOD, "ANALYSIS_PENDING", new Date().toISOString(), visualAssetId).run();
       return { visualAssetId, sourceId: asset.parentSourceId, capsuleVersionId: existing.id, perceptualHash: hash };
     }
   }
@@ -70,7 +70,7 @@ export async function transformVisualAsset(env: Env, visualAssetId: string, prof
          VALUES (?, ?, 1, 'CAPSULE', ?, 'image/webp', ?, ?, ?, ?, ?, ?, ?)`
       ).bind(capsuleVersionId, visualAssetId, capsuleKey, capsuleInfo.width, capsuleInfo.height, capsuleBytes.byteLength, capsuleHash, JSON.stringify({ profile, sourceWidth: sourceInfo.width, sourceHeight: sourceInfo.height }), originalVersion.id, now),
       env.DB.prepare("UPDATE visual_assets SET perceptual_hash = ?, perceptual_hash_method = ?, processing_status = ?, last_error = NULL, updated_at = ? WHERE id = ?")
-        .bind(hash, VISUAL_HASH_METHOD, asset.assignmentStatus === "ASSIGNED" ? "ANALYSIS_PENDING" : "READY", now, visualAssetId),
+        .bind(hash, VISUAL_HASH_METHOD, "ANALYSIS_PENDING", now, visualAssetId),
     ]);
   } catch (error) {
     await env.ORIGINALS.delete(capsuleKey).catch(() => undefined);

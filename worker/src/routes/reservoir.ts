@@ -4,6 +4,7 @@ import type { QualityStatus, TextScope } from "@radar/shared/ingestion";
 import { parseDeepProfile, DEEP_PROFILES } from "../analysis/deepProfiles";
 import { monthSpendUsd } from "../lib/openai";
 import { enqueueResearchJob } from "../jobs/enqueue";
+import { listVisualAssets } from "../visual/store";
 
 const reservoir = new Hono<{ Bindings: Env }>();
 const MAX_SOURCE_TEXT_CHARS = 500_000;
@@ -284,7 +285,7 @@ reservoir.get("/:sourceId", async (c) => {
     acquisitionHasNormalizedText,
   });
 
-  const [analysis, deepAnalysis, deepHistory, kws, qs, frags, versions, sigs] = await Promise.all([
+  const [analysis, deepAnalysis, deepHistory, kws, qs, frags, versions, sigs, visuals] = await Promise.all([
     c.env.DB
       .prepare(
         `SELECT payload_json, model, prompt_version, created_at FROM source_analysis
@@ -311,6 +312,7 @@ reservoir.get("/:sourceId", async (c) => {
       .prepare("SELECT action, created_at FROM user_signals WHERE source_id = ? ORDER BY created_at DESC LIMIT 20")
       .bind(id)
       .all<{ action: string; created_at: string }>(),
+    listVisualAssets(c.env.DB, { parentSourceId: id }),
   ]);
 
   let analysisPayload: unknown = null;
@@ -345,6 +347,7 @@ reservoir.get("/:sourceId", async (c) => {
     fragments: frags.results ?? [],
     versions: versions.results ?? [],
     signals: sigs.results ?? [],
+    visuals: visuals.items,
   });
 });
 

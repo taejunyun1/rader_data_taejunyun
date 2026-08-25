@@ -16,6 +16,17 @@ export type VisualProcessingStatus = "UPLOADED" | "TRANSFORM_PENDING" | "TRANSFO
 export type VisualAnalysisType = "AUTO_SUGGESTION" | "USER_VERIFIED";
 export type VisualAnalysisReviewStatus = "PENDING" | "ACCEPTED" | "EDITED" | "DISMISSED";
 
+export interface VisualAnalysisSummary {
+  id: string;
+  payload: Record<string, unknown>;
+  provenanceClass: "INTERPRETATION" | "ARTISTIC_PROPOSITION";
+  confidence: number | null;
+  reviewStatus: VisualAnalysisReviewStatus;
+  modelId: string | null;
+  promptVersion: string | null;
+  createdAt: string;
+}
+
 export interface VisualAssetSummary {
   id: string;
   parentSourceId: string | null;
@@ -35,6 +46,7 @@ export interface VisualAssetSummary {
   perceptualHash: string | null;
   capsuleVersionId: string | null;
   thumbnailUrl: string | null;
+  analysis: VisualAnalysisSummary | null;
   createdAt: string;
   updatedAt: string;
 }

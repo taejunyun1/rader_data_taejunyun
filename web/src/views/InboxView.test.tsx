@@ -28,6 +28,14 @@ describe("InboxView", () => {
     expect(screen.getByText(/PDF 원본은 R2에 보존합니다/)).toBeInTheDocument();
   });
 
+  it("offers a dedicated visual capture mode without mixing it into document upload", async () => {
+    render(<InboxView />);
+    await userEvent.click(screen.getByRole("tab", { name: "이미지" }));
+    expect(screen.getByRole("heading", { name: "이미지 보존" })).toBeInTheDocument();
+    expect(screen.getByText(/원본 그대로 보존하고/)).toBeInTheDocument();
+    expect(screen.getByLabelText("이미지 파일")).toHaveAttribute("accept", "image/jpeg,image/png,image/webp,image/gif");
+  });
+
   it("shows immediate feedback while opening a selected item", async () => {
     let resolveDetail: ((response: Response) => void) | undefined;
     vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {

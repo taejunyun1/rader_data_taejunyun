@@ -1,4 +1,4 @@
-import type { VisualAssetSummary } from "@radar/shared";
+import type { VisualAnalysisSummary, VisualAssetListResponse, VisualAssetSummary } from "@radar/shared";
 import { sha256Hex, uuid } from "../ingestion/ids";
 import type { CreatePersonalVisualInput, VisualAssetRow, VisualAssetVersionRow } from "./contracts";
 import { extensionForVisualType, safeVisualFilename } from "./contracts";
@@ -53,6 +53,77 @@ export async function getVisualAsset(db: D1Database, id: string): Promise<Visual
      FROM visual_assets WHERE id = ? AND deleted_at IS NULL`
   ).bind(id).first<DbRow>();
   return row ? mapVisualAsset(row) : null;
+}
+
+export async function listVisualAssets(
+  db: D1Database,
+  options: { parentSourceId?: string | null; unassignedOnly?: boolean; limit?: number } = {},
+): Promise<VisualAssetListResponse> {
+  const params: (string | number)[] = [];
+  let where = "a.deleted_at IS NULL";
+  if (options.unassignedOnly) {
+    where += " AND a.assignment_status = 'UNASSIGNED'";
+  } else if (options.parentSourceId) {
+    params.push(options.parentSourceId);
+    where += " AND a.parent_source_id = ?";
+  }
+  const limit = Math.min(Math.max(options.limit ?? 100, 1), 200);
+  params.push(limit);
+  const rows = await db.prepare(
+    `SELECT a.id, a.parent_source_id AS parentSourceId, a.parent_version_id AS parentVersionId,
+            a.origin_kind AS originKind, a.source_url AS sourceUrl, a.page_number AS pageNumber,
+            a.figure_label AS figureLabel, a.caption, a.nearby_text AS nearbyText, a.asset_role AS assetRole,
+            a.visual_kind AS visualKind, a.selection_status AS selectionStatus, a.selection_reason AS selectionReason,
+            a.rights_status AS rightsStatus, a.assignment_status AS assignmentStatus, a.storage_state AS storageState,
+            a.pending_storage_state AS pendingStorageState, a.processing_status AS processingStatus,
+            a.last_error AS lastError, a.content_hash AS contentHash, a.perceptual_hash AS perceptualHash,
+            a.perceptual_hash_method AS perceptualHashMethod, a.created_at AS createdAt, a.updated_at AS updatedAt,
+            a.deleted_at AS deletedAt,
+            (SELECT v.id FROM visual_asset_versions v
+             WHERE v.visual_asset_id = a.id AND v.variant = 'CAPSULE' AND v.deleted_at IS NULL
+             ORDER BY v.version DESC LIMIT 1) AS capsuleVersionId,
+            (SELECT an.id FROM visual_analyses an
+             WHERE an.visual_asset_id = a.id AND an.analysis_type = 'AUTO_SUGGESTION'
+             ORDER BY an.created_at DESC LIMIT 1) AS analysisId,
+            (SELECT an.payload_json FROM visual_analyses an
+             WHERE an.visual_asset_id = a.id AND an.analysis_type = 'AUTO_SUGGESTION'
+             ORDER BY an.created_at DESC LIMIT 1) AS analysisPayload,
+            (SELECT an.provenance_class FROM visual_analyses an
+             WHERE an.visual_asset_id = a.id AND an.analysis_type = 'AUTO_SUGGESTION'
+             ORDER BY an.created_at DESC LIMIT 1) AS analysisProvenanceClass,
+            (SELECT an.confidence FROM visual_analyses an
+             WHERE an.visual_asset_id = a.id AND an.analysis_type = 'AUTO_SUGGESTION'
+             ORDER BY an.created_at DESC LIMIT 1) AS analysisConfidence,
+            (SELECT an.review_status FROM visual_analyses an
+             WHERE an.visual_asset_id = a.id AND an.analysis_type = 'AUTO_SUGGESTION'
+             ORDER BY an.created_at DESC LIMIT 1) AS analysisReviewStatus,
+            (SELECT an.model_id FROM visual_analyses an
+             WHERE an.visual_asset_id = a.id AND an.analysis_type = 'AUTO_SUGGESTION'
+             ORDER BY an.created_at DESC LIMIT 1) AS analysisModelId,
+            (SELECT an.prompt_version FROM visual_analyses an
+             WHERE an.visual_asset_id = a.id AND an.analysis_type = 'AUTO_SUGGESTION'
+             ORDER BY an.created_at DESC LIMIT 1) AS analysisPromptVersion,
+            (SELECT an.created_at FROM visual_analyses an
+             WHERE an.visual_asset_id = a.id AND an.analysis_type = 'AUTO_SUGGESTION'
+             ORDER BY an.created_at DESC LIMIT 1) AS analysisCreatedAt
+     FROM visual_assets a
+     WHERE ${where}
+     ORDER BY a.created_at DESC LIMIT ?`
+  ).bind(...params).all<DbRow & { capsuleVersionId?: string | null }>();
+  return { items: (rows.results ?? []).map((row) => toVisualAssetSummary(
+    mapVisualAsset(row),
+    nullableString(row.capsuleVersionId),
+    toVisualAnalysisSummary({
+      id: row.analysisId,
+      payload: row.analysisPayload,
+      provenanceClass: row.analysisProvenanceClass,
+      confidence: row.analysisConfidence,
+      reviewStatus: row.analysisReviewStatus,
+      modelId: row.analysisModelId,
+      promptVersion: row.analysisPromptVersion,
+      createdAt: row.analysisCreatedAt,
+    }),
+  )) };
 }
 
 export async function createPersonalVisual(
@@ -172,7 +243,37 @@ export async function getVisualVersion(db: D1Database, visualAssetId: string, va
   };
 }
 
-export function toVisualAssetSummary(asset: VisualAssetRow, capsuleVersionId: string | null = null): VisualAssetSummary {
+export async function getLatestVisualAnalysis(db: D1Database, visualAssetId: string): Promise<VisualAnalysisSummary | null> {
+  const row = await db.prepare(
+    `SELECT id, provenance_class AS provenanceClass, payload_json AS payload,
+            confidence, review_status AS reviewStatus, model_id AS modelId,
+            prompt_version AS promptVersion, created_at AS createdAt
+     FROM visual_analyses WHERE visual_asset_id = ? AND analysis_type = 'AUTO_SUGGESTION'
+     ORDER BY created_at DESC LIMIT 1`
+  ).bind(visualAssetId).first<DbRow>();
+  return toVisualAnalysisSummary(row);
+}
+
+function toVisualAnalysisSummary(row: DbRow | null | undefined): VisualAnalysisSummary | null {
+  if (!row?.id || typeof row.payload !== "string") return null;
+  try {
+    const payload = JSON.parse(row.payload) as Record<string, unknown>;
+    return {
+      id: String(row.id),
+      payload,
+      provenanceClass: String(row.provenanceClass) === "ARTISTIC_PROPOSITION" ? "ARTISTIC_PROPOSITION" : "INTERPRETATION",
+      confidence: row.confidence == null ? null : Number(row.confidence),
+      reviewStatus: String(row.reviewStatus) as VisualAnalysisSummary["reviewStatus"],
+      modelId: nullableString(row.modelId),
+      promptVersion: nullableString(row.promptVersion),
+      createdAt: String(row.createdAt),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function toVisualAssetSummary(asset: VisualAssetRow, capsuleVersionId: string | null = null, analysis: VisualAnalysisSummary | null = null): VisualAssetSummary {
   return {
     id: asset.id,
     parentSourceId: asset.parentSourceId,
@@ -192,6 +293,7 @@ export function toVisualAssetSummary(asset: VisualAssetRow, capsuleVersionId: st
     perceptualHash: asset.perceptualHash,
     capsuleVersionId,
     thumbnailUrl: capsuleVersionId ? `/api/visual-assets/${asset.id}/content?variant=CAPSULE` : null,
+    analysis,
     createdAt: asset.createdAt,
     updatedAt: asset.updatedAt,
   };

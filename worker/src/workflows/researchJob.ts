@@ -14,6 +14,8 @@ import { releaseDeepAnalysisBudgetReservation, reserveDeepAnalysisBudget } from 
 import { blockResearchJob, completeResearchJob, failResearchJob, getResearchJob, markJobRunning, updateJobProgress } from "../jobs/store";
 import { executeSourceAcquisitionJob } from "./sourceAcquisition";
 import { transformVisualAsset } from "../visual/transform";
+import { analyzeVisualAsset } from "../visual/analyzer";
+import { markVisualProcessingError } from "../visual/store";
 import { enqueueResearchJob } from "../jobs/enqueue";
 
 class JobBlockedError extends Error {
@@ -61,7 +63,7 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
         async () => this.execute(job),
       );
 
-      if (job.kind === "VISUAL_TRANSFORM" && result.result.sourceId) {
+      if (job.kind === "VISUAL_TRANSFORM") {
         await step.do(
           "enqueue-visual-analysis",
           { retries: { limit: 1, delay: "5 seconds", backoff: "exponential" }, timeout: "1 minute" },
@@ -159,10 +161,25 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
       if (job.kind === "VISUAL_TRANSFORM") {
         await updateJobProgress(this.env.DB, job.id, 25, "이미지 Capsule을 만드는 중");
         const input = job.input as { visualAssetId: string };
-        const transformed = await transformVisualAsset(this.env, input.visualAssetId);
+        let transformed: Awaited<ReturnType<typeof transformVisualAsset>>;
+        try {
+          transformed = await transformVisualAsset(this.env, input.visualAssetId);
+        } catch (error) {
+          await markVisualProcessingError(this.env.DB, input.visualAssetId, error instanceof Error ? error.message : "visual_transform_failed");
+          throw error;
+        }
         return {
           result: { visualAssetId: transformed.visualAssetId, sourceId: transformed.sourceId ?? undefined },
           resultRef: { view: "VISUAL", visualAssetId: transformed.visualAssetId, sourceId: transformed.sourceId ?? undefined },
+        };
+      }
+      if (job.kind === "VISUAL_ANALYSIS") {
+        await updateJobProgress(this.env.DB, job.id, 45, "이미지의 형태와 맥락을 읽는 중");
+        const input = job.input as { visualAssetId: string; versionId?: string };
+        const analyzed = await analyzeVisualAsset(this.env, input.visualAssetId, input.versionId);
+        return {
+          result: { visualAssetId: analyzed.visualAssetId, analysisId: analyzed.analysisId, model: analyzed.model },
+          resultRef: { view: "VISUAL", visualAssetId: analyzed.visualAssetId },
         };
       }
       throw new JobBlockedError("visual_pipeline_not_ready", "visual_pipeline_not_ready");
