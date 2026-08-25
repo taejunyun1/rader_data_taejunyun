@@ -13,6 +13,12 @@ import { extensionForVisualType, safeVisualFilename } from "./contracts";
 
 type DbRow = Record<string, unknown>;
 
+interface VisualAnalysisRow extends VisualAnalysisSummary {
+  visualVersionId: string;
+  analysisType: "AUTO_SUGGESTION" | "USER_VERIFIED";
+  parentAnalysisId: string | null;
+}
+
 function nullableString(value: unknown): string | null {
   return value == null ? null : String(value);
 }
@@ -50,6 +56,12 @@ function mapVisualAsset(row: DbRow): VisualAssetRow {
     deletedAt: nullableString(row.deletedAt),
   };
 }
+
+const ANALYSIS_SELECT = `SELECT id, visual_version_id AS visualVersionId, analysis_type AS analysisType,
+  provenance_class AS provenanceClass, payload_json AS payload, confidence,
+  review_status AS reviewStatus, model_id AS modelId, prompt_version AS promptVersion,
+  created_at AS createdAt, parent_analysis_id AS parentAnalysisId
+  FROM visual_analyses`;
 
 export async function getVisualAsset(db: D1Database, id: string): Promise<VisualAssetRow | null> {
   const row = await db.prepare(
@@ -99,28 +111,28 @@ export async function listVisualAssets(
              WHERE v.visual_asset_id = a.id AND v.variant = 'CAPSULE' AND v.deleted_at IS NULL
              ORDER BY v.version DESC LIMIT 1) AS capsuleVersionId,
             (SELECT an.id FROM visual_analyses an
-             WHERE an.visual_asset_id = a.id AND an.analysis_type = 'AUTO_SUGGESTION'
+             WHERE an.visual_asset_id = a.id
              ORDER BY an.created_at DESC LIMIT 1) AS analysisId,
             (SELECT an.payload_json FROM visual_analyses an
-             WHERE an.visual_asset_id = a.id AND an.analysis_type = 'AUTO_SUGGESTION'
+             WHERE an.visual_asset_id = a.id
              ORDER BY an.created_at DESC LIMIT 1) AS analysisPayload,
             (SELECT an.provenance_class FROM visual_analyses an
-             WHERE an.visual_asset_id = a.id AND an.analysis_type = 'AUTO_SUGGESTION'
+             WHERE an.visual_asset_id = a.id
              ORDER BY an.created_at DESC LIMIT 1) AS analysisProvenanceClass,
             (SELECT an.confidence FROM visual_analyses an
-             WHERE an.visual_asset_id = a.id AND an.analysis_type = 'AUTO_SUGGESTION'
+             WHERE an.visual_asset_id = a.id
              ORDER BY an.created_at DESC LIMIT 1) AS analysisConfidence,
             (SELECT an.review_status FROM visual_analyses an
-             WHERE an.visual_asset_id = a.id AND an.analysis_type = 'AUTO_SUGGESTION'
+             WHERE an.visual_asset_id = a.id
              ORDER BY an.created_at DESC LIMIT 1) AS analysisReviewStatus,
             (SELECT an.model_id FROM visual_analyses an
-             WHERE an.visual_asset_id = a.id AND an.analysis_type = 'AUTO_SUGGESTION'
+             WHERE an.visual_asset_id = a.id
              ORDER BY an.created_at DESC LIMIT 1) AS analysisModelId,
             (SELECT an.prompt_version FROM visual_analyses an
-             WHERE an.visual_asset_id = a.id AND an.analysis_type = 'AUTO_SUGGESTION'
+             WHERE an.visual_asset_id = a.id
              ORDER BY an.created_at DESC LIMIT 1) AS analysisPromptVersion,
             (SELECT an.created_at FROM visual_analyses an
-             WHERE an.visual_asset_id = a.id AND an.analysis_type = 'AUTO_SUGGESTION'
+             WHERE an.visual_asset_id = a.id
              ORDER BY an.created_at DESC LIMIT 1) AS analysisCreatedAt
      FROM visual_assets a
      WHERE ${where}
@@ -260,14 +272,112 @@ export async function getVisualVersion(db: D1Database, visualAssetId: string, va
 }
 
 export async function getLatestVisualAnalysis(db: D1Database, visualAssetId: string): Promise<VisualAnalysisSummary | null> {
-  const row = await db.prepare(
-    `SELECT id, provenance_class AS provenanceClass, payload_json AS payload,
-            confidence, review_status AS reviewStatus, model_id AS modelId,
-            prompt_version AS promptVersion, created_at AS createdAt
-     FROM visual_analyses WHERE visual_asset_id = ? AND analysis_type = 'AUTO_SUGGESTION'
-     ORDER BY created_at DESC LIMIT 1`
-  ).bind(visualAssetId).first<DbRow>();
+  const row = await db.prepare(`${ANALYSIS_SELECT} WHERE visual_asset_id = ? ORDER BY created_at DESC LIMIT 1`)
+    .bind(visualAssetId).first<DbRow>();
   return toVisualAnalysisSummary(row);
+}
+
+export async function getVisualAnalysisRow(
+  db: D1Database,
+  visualAssetId: string,
+  analysisType: "AUTO_SUGGESTION" | "USER_VERIFIED",
+): Promise<VisualAnalysisRow | null> {
+  const row = await db.prepare(`${ANALYSIS_SELECT} WHERE visual_asset_id = ? AND analysis_type = ? ORDER BY created_at DESC LIMIT 1`)
+    .bind(visualAssetId, analysisType).first<DbRow>();
+  return toVisualAnalysisRow(row);
+}
+
+export async function getVisualAssetDetail(db: D1Database, id: string): Promise<VisualAssetDetail | null> {
+  const asset = await getVisualAsset(db, id);
+  if (!asset) return null;
+
+  const [capsule, autoSuggestion, userVerified, relations, extractionRun] = await Promise.all([
+    getVisualVersion(db, id, "CAPSULE"),
+    getVisualAnalysisRow(db, id, "AUTO_SUGGESTION"),
+    getVisualAnalysisRow(db, id, "USER_VERIFIED"),
+    listVisualRelations(db, id),
+    getVisualExtractionRunForAsset(db, asset),
+  ]);
+
+  return toVisualAssetDetail(
+    asset,
+    autoSuggestion,
+    userVerified,
+    relations,
+    extractionRun,
+    capsule?.id ?? null,
+  );
+}
+
+export async function createUserVerifiedVisualAnalysis(
+  db: D1Database,
+  input: {
+    visualAssetId: string;
+    payload: unknown;
+    reviewStatus: "ACCEPTED" | "EDITED";
+  },
+): Promise<VisualAnalysisSummary | null> {
+  const parent = await getVisualAnalysisRow(db, input.visualAssetId, "USER_VERIFIED")
+    ?? await getVisualAnalysisRow(db, input.visualAssetId, "AUTO_SUGGESTION");
+  if (!parent) return null;
+  const id = uuid();
+  const now = new Date().toISOString();
+  await db.prepare(
+    `INSERT INTO visual_analyses
+     (id, visual_asset_id, visual_version_id, analysis_type, provenance_class, payload_json,
+      model_id, prompt_version, cost_usd, confidence, review_status, created_at, reviewed_at, parent_analysis_id)
+     VALUES (?, ?, ?, 'USER_VERIFIED', ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`
+  ).bind(
+    id,
+    input.visualAssetId,
+    parent.visualVersionId,
+    parent.provenanceClass,
+    JSON.stringify(input.payload),
+    parent.modelId,
+    parent.promptVersion,
+    parent.confidence,
+    input.reviewStatus,
+    now,
+    now,
+    parent.id,
+  ).run();
+  await db.prepare(
+    `UPDATE visual_assets
+     SET selection_status = 'SELECTED',
+         selection_reason = ?,
+         updated_at = ?
+     WHERE id = ?`
+  ).bind(
+    input.reviewStatus === "ACCEPTED" ? "사용자 검토 완료" : "사용자가 제안을 수정함",
+    now,
+    input.visualAssetId,
+  ).run();
+  return getLatestVisualAnalysis(db, input.visualAssetId);
+}
+
+export async function updateAutoSuggestionReviewStatus(
+  db: D1Database,
+  visualAssetId: string,
+  reviewStatus: VisualAnalysisSummary["reviewStatus"],
+): Promise<boolean> {
+  const autoSuggestion = await getVisualAnalysisRow(db, visualAssetId, "AUTO_SUGGESTION");
+  if (!autoSuggestion) return false;
+  const now = new Date().toISOString();
+  await db.batch([
+    db.prepare(
+      `UPDATE visual_analyses
+       SET review_status = ?, reviewed_at = ?
+       WHERE id = ?`
+    ).bind(reviewStatus, now, autoSuggestion.id),
+    db.prepare(
+      `UPDATE visual_assets
+       SET selection_status = 'REVIEW',
+           selection_reason = ?,
+           updated_at = ?
+       WHERE id = ?`
+    ).bind("사용자가 제안을 보류함", now, visualAssetId),
+  ]);
+  return true;
 }
 
 function toVisualAnalysisSummary(row: DbRow | null | undefined): VisualAnalysisSummary | null {
@@ -287,6 +397,77 @@ function toVisualAnalysisSummary(row: DbRow | null | undefined): VisualAnalysisS
   } catch {
     return null;
   }
+}
+
+function toVisualAnalysisRow(row: DbRow | null | undefined): VisualAnalysisRow | null {
+  const summary = toVisualAnalysisSummary(row);
+  if (!summary || !row?.visualVersionId || !row?.analysisType) return null;
+  return {
+    ...summary,
+    visualVersionId: String(row.visualVersionId),
+    analysisType: String(row.analysisType) as VisualAnalysisRow["analysisType"],
+    parentAnalysisId: nullableString(row.parentAnalysisId),
+  };
+}
+
+async function listVisualRelations(db: D1Database, visualAssetId: string): Promise<VisualRelationSummary[]> {
+  const rows = await db.prepare(
+    `SELECT id, relation_kind AS relationKind, created_by AS createdBy, description,
+            to_visual_asset_id AS toVisualAssetId, related_source_id AS relatedSourceId,
+            related_thread_id AS relatedThreadId, created_at AS createdAt
+     FROM visual_relations
+     WHERE from_visual_asset_id = ?
+     ORDER BY created_at DESC, id DESC`
+  ).bind(visualAssetId).all<DbRow>();
+  return (rows.results ?? []).map((row) => ({
+    id: String(row.id),
+    relationKind: String(row.relationKind),
+    createdBy: String(row.createdBy) === "USER" ? "USER" : "SYSTEM",
+    description: nullableString(row.description),
+    toVisualAssetId: nullableString(row.toVisualAssetId),
+    relatedSourceId: nullableString(row.relatedSourceId),
+    relatedThreadId: nullableString(row.relatedThreadId),
+    createdAt: String(row.createdAt),
+  }));
+}
+
+async function getVisualExtractionRunForAsset(
+  db: D1Database,
+  asset: VisualAssetRow,
+): Promise<VisualExtractionRunSummary | null> {
+  if (!asset.parentSourceId || !asset.parentVersionId || asset.originKind === "PERSONAL_UPLOAD") return null;
+  const row = await db.prepare(
+    `SELECT id, parent_source_id AS parentSourceId, parent_version_id AS parentVersionId,
+            origin_kind AS originKind, status, total_units AS totalUnits,
+            uploaded_units AS uploadedUnits, processed_units AS processedUnits,
+            selected_count AS selectedCount, review_count AS reviewCount,
+            filtered_count AS filteredCount, unavailable_count AS unavailableCount,
+            error_code AS errorCode, error, created_at AS createdAt,
+            updated_at AS updatedAt, finished_at AS finishedAt
+     FROM visual_extraction_runs
+     WHERE parent_source_id = ? AND parent_version_id = ? AND origin_kind = ?
+     ORDER BY created_at DESC LIMIT 1`
+  ).bind(asset.parentSourceId, asset.parentVersionId, asset.originKind).first<DbRow>();
+  if (!row?.id) return null;
+  return {
+    id: String(row.id),
+    parentSourceId: String(row.parentSourceId),
+    parentVersionId: String(row.parentVersionId),
+    originKind: String(row.originKind) as VisualExtractionRunSummary["originKind"],
+    status: String(row.status) as VisualExtractionRunSummary["status"],
+    totalUnits: Number(row.totalUnits ?? 0),
+    uploadedUnits: Number(row.uploadedUnits ?? 0),
+    processedUnits: Number(row.processedUnits ?? 0),
+    selectedCount: Number(row.selectedCount ?? 0),
+    reviewCount: Number(row.reviewCount ?? 0),
+    filteredCount: Number(row.filteredCount ?? 0),
+    unavailableCount: Number(row.unavailableCount ?? 0),
+    errorCode: nullableString(row.errorCode),
+    error: nullableString(row.error),
+    createdAt: String(row.createdAt),
+    updatedAt: String(row.updatedAt),
+    finishedAt: nullableString(row.finishedAt),
+  };
 }
 
 function parseNormalizedVisualBbox(value: string | null): NormalizedVisualBbox | null {
@@ -343,7 +524,7 @@ export function toVisualAssetDetail(
   capsuleVersionId: string | null = null,
 ): VisualAssetDetail {
   return {
-    ...toVisualAssetSummary(asset, capsuleVersionId, autoSuggestion),
+    ...toVisualAssetSummary(asset, capsuleVersionId, userVerified ?? autoSuggestion),
     candidateKey: asset.candidateKey,
     bbox: parseNormalizedVisualBbox(asset.bboxJson),
     nearbyText: asset.nearbyText,

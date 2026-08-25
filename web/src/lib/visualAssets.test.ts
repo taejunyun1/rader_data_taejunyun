@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 afterEach(() => {
@@ -983,6 +984,455 @@ describe("visual extraction runner", () => {
   });
 });
 
+describe("visual asset routes", () => {
+  it("returns bbox, nearby text, rights basis, auto suggestion, latest user verified, relations, and extraction run in the detail payload", async () => {
+    const fixture = createVisualAssetRouteFixture();
+    fixture.insertSource({ id: "source-1", activeVersionId: "version-source-1" });
+    fixture.insertSourceVersion({ id: "version-source-1", sourceId: "source-1", version: 1 });
+    fixture.insertAsset({
+      id: "asset-1",
+      parentSourceId: "source-1",
+      parentVersionId: "version-source-1",
+      originKind: "PDF_PAGE_CROP",
+      sourceUrl: "https://example.com/figure-1",
+      pageNumber: 4,
+      figureLabel: "Figure 1",
+      bboxJson: JSON.stringify({ x: 0.14, y: 0.18, width: 0.4, height: 0.44, page: 4 }),
+      caption: "Figure 1. Camera obscura diagram",
+      nearbyText: "The diagram appears beside the opening claim.",
+      rightsStatus: "PERMITTED",
+      rightsBasis: "Author email permission",
+      rightsReviewedAt: "2026-08-25T04:00:00.000Z",
+    });
+    fixture.insertAsset({ id: "asset-2", parentSourceId: "source-1", parentVersionId: "version-source-1", sourceUrl: "https://example.com/figure-2" });
+    fixture.insertAssetVersion({ id: "asset-1-original", visualAssetId: "asset-1", version: 1, variant: "ORIGINAL", r2Key: "visuals/asset-1/original.webp" });
+    fixture.insertAssetVersion({ id: "asset-1-capsule", visualAssetId: "asset-1", version: 1, variant: "CAPSULE", r2Key: "visuals/asset-1/capsule.webp" });
+    fixture.insertAnalysis({
+      id: "analysis-auto",
+      visualAssetId: "asset-1",
+      visualVersionId: "asset-1-capsule",
+      analysisType: "AUTO_SUGGESTION",
+      payload: validVisualAnalysisPayload("auto"),
+      reviewStatus: "PENDING",
+      createdAt: "2026-08-25T04:02:00.000Z",
+    });
+    fixture.insertAnalysis({
+      id: "analysis-user-1",
+      visualAssetId: "asset-1",
+      visualVersionId: "asset-1-capsule",
+      analysisType: "USER_VERIFIED",
+      parentAnalysisId: "analysis-auto",
+      payload: validVisualAnalysisPayload("verified-1"),
+      reviewStatus: "ACCEPTED",
+      createdAt: "2026-08-25T04:03:00.000Z",
+    });
+    fixture.insertAnalysis({
+      id: "analysis-user-2",
+      visualAssetId: "asset-1",
+      visualVersionId: "asset-1-capsule",
+      analysisType: "USER_VERIFIED",
+      parentAnalysisId: "analysis-user-1",
+      payload: validVisualAnalysisPayload("verified-2"),
+      reviewStatus: "EDITED",
+      createdAt: "2026-08-25T04:04:00.000Z",
+    });
+    fixture.insertRelation({
+      id: "relation-1",
+      fromVisualAssetId: "asset-1",
+      toVisualAssetId: "asset-2",
+      relationKind: "DUPLICATE_OF",
+      createdBy: "SYSTEM",
+      description: "near duplicate",
+      createdAt: "2026-08-25T04:05:00.000Z",
+    });
+    fixture.insertExtractionRun({
+      id: "run-1",
+      parentSourceId: "source-1",
+      parentVersionId: "version-source-1",
+      originKind: "PDF_PAGE_CROP",
+      status: "PARTIAL",
+      totalUnits: 3,
+      uploadedUnits: 3,
+      processedUnits: 2,
+      selectedCount: 1,
+      reviewCount: 1,
+      filteredCount: 0,
+      unavailableCount: 1,
+      createdAt: "2026-08-25T04:06:00.000Z",
+      updatedAt: "2026-08-25T04:06:30.000Z",
+    });
+
+    const { default: visualAssets } = await import("../../../worker/src/routes/visualAssets");
+    const response = await visualAssets.request("/asset-1", undefined, fixture.env);
+
+    expect(response.status).toBe(200);
+    const data = await response.json() as { asset: Record<string, unknown> };
+    expect(data.asset).toMatchObject({
+      id: "asset-1",
+      sourceUrl: "https://example.com/figure-1",
+      rightsBasis: "Author email permission",
+      nearbyText: "The diagram appears beside the opening claim.",
+      autoSuggestion: expect.objectContaining({ id: "analysis-auto" }),
+      userVerified: expect.objectContaining({ id: "analysis-user-2" }),
+      relations: [expect.objectContaining({ id: "relation-1", relationKind: "DUPLICATE_OF" })],
+      extractionRun: expect.objectContaining({ id: "run-1", status: "PARTIAL", unavailableCount: 1 }),
+    });
+    expect(data.asset.bbox).toEqual({
+      x: 0.14,
+      y: 0.18,
+      width: 0.4,
+      height: 0.44,
+      page: 4,
+    });
+  });
+
+  it("accepts an auto suggestion by creating a new USER_VERIFIED row without mutating the auto suggestion row", async () => {
+    const fixture = createVisualAssetRouteFixture();
+    fixture.insertSource({ id: "source-1", activeVersionId: "version-source-1" });
+    fixture.insertSourceVersion({ id: "version-source-1", sourceId: "source-1", version: 1 });
+    fixture.insertAsset({ id: "asset-accept", parentSourceId: "source-1", parentVersionId: "version-source-1" });
+    fixture.insertAssetVersion({ id: "asset-accept-capsule", visualAssetId: "asset-accept", version: 1, variant: "CAPSULE", r2Key: "visuals/asset-accept/capsule.webp" });
+    fixture.insertAnalysis({
+      id: "analysis-auto",
+      visualAssetId: "asset-accept",
+      visualVersionId: "asset-accept-capsule",
+      analysisType: "AUTO_SUGGESTION",
+      payload: validVisualAnalysisPayload("auto-accept"),
+      reviewStatus: "PENDING",
+      createdAt: "2026-08-25T05:00:00.000Z",
+    });
+
+    const { default: visualAssets } = await import("../../../worker/src/routes/visualAssets");
+    const response = await visualAssets.request("/asset-accept/analysis", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "accept" }),
+    }, fixture.env);
+
+    expect(response.status).toBe(200);
+    const analyses = fixture.analysisRowsFor("asset-accept");
+    expect(analyses).toHaveLength(2);
+    expect(analyses.find((row) => row.id === "analysis-auto")).toMatchObject({
+      analysis_type: "AUTO_SUGGESTION",
+      review_status: "PENDING",
+      payload_json: JSON.stringify(validVisualAnalysisPayload("auto-accept")),
+      parent_analysis_id: null,
+    });
+    const verified = analyses.find((row) => row.analysis_type === "USER_VERIFIED");
+    expect(verified).toMatchObject({
+      parent_analysis_id: "analysis-auto",
+      review_status: "ACCEPTED",
+      payload_json: JSON.stringify(validVisualAnalysisPayload("auto-accept")),
+    });
+  });
+
+  it("edits a suggestion by appending a new USER_VERIFIED row that chains to the latest verified analysis", async () => {
+    const fixture = createVisualAssetRouteFixture();
+    fixture.insertSource({ id: "source-1", activeVersionId: "version-source-1" });
+    fixture.insertSourceVersion({ id: "version-source-1", sourceId: "source-1", version: 1 });
+    fixture.insertAsset({ id: "asset-edit", parentSourceId: "source-1", parentVersionId: "version-source-1" });
+    fixture.insertAssetVersion({ id: "asset-edit-capsule", visualAssetId: "asset-edit", version: 1, variant: "CAPSULE", r2Key: "visuals/asset-edit/capsule.webp" });
+    fixture.insertAnalysis({
+      id: "analysis-auto",
+      visualAssetId: "asset-edit",
+      visualVersionId: "asset-edit-capsule",
+      analysisType: "AUTO_SUGGESTION",
+      payload: validVisualAnalysisPayload("auto-edit"),
+      reviewStatus: "PENDING",
+      createdAt: "2026-08-25T05:10:00.000Z",
+    });
+    fixture.insertAnalysis({
+      id: "analysis-user-1",
+      visualAssetId: "asset-edit",
+      visualVersionId: "asset-edit-capsule",
+      analysisType: "USER_VERIFIED",
+      parentAnalysisId: "analysis-auto",
+      payload: validVisualAnalysisPayload("verified-edit-1"),
+      reviewStatus: "EDITED",
+      createdAt: "2026-08-25T05:11:00.000Z",
+    });
+
+    const { default: visualAssets } = await import("../../../worker/src/routes/visualAssets");
+    const editedPayload = validVisualAnalysisPayload("verified-edit-2");
+    const response = await visualAssets.request("/asset-edit/analysis", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "edit", payload: editedPayload }),
+    }, fixture.env);
+
+    expect(response.status).toBe(200);
+    const analyses = fixture.analysisRowsFor("asset-edit").filter((row) => row.analysis_type === "USER_VERIFIED");
+    expect(analyses).toHaveLength(2);
+    expect(analyses.at(-1)).toMatchObject({
+      parent_analysis_id: "analysis-user-1",
+      review_status: "EDITED",
+      payload_json: JSON.stringify(editedPayload),
+    });
+  });
+
+  it("dismisses only the auto suggestion review state and preserves the asset plus prior analysis history", async () => {
+    const fixture = createVisualAssetRouteFixture();
+    fixture.insertSource({ id: "source-1", activeVersionId: "version-source-1" });
+    fixture.insertSourceVersion({ id: "version-source-1", sourceId: "source-1", version: 1 });
+    fixture.insertAsset({ id: "asset-dismiss", parentSourceId: "source-1", parentVersionId: "version-source-1" });
+    fixture.insertAssetVersion({ id: "asset-dismiss-capsule", visualAssetId: "asset-dismiss", version: 1, variant: "CAPSULE", r2Key: "visuals/asset-dismiss/capsule.webp" });
+    fixture.insertAnalysis({
+      id: "analysis-auto",
+      visualAssetId: "asset-dismiss",
+      visualVersionId: "asset-dismiss-capsule",
+      analysisType: "AUTO_SUGGESTION",
+      payload: validVisualAnalysisPayload("auto-dismiss"),
+      reviewStatus: "PENDING",
+      createdAt: "2026-08-25T05:20:00.000Z",
+    });
+    fixture.insertAnalysis({
+      id: "analysis-user-1",
+      visualAssetId: "asset-dismiss",
+      visualVersionId: "asset-dismiss-capsule",
+      analysisType: "USER_VERIFIED",
+      parentAnalysisId: "analysis-auto",
+      payload: validVisualAnalysisPayload("verified-dismiss"),
+      reviewStatus: "ACCEPTED",
+      createdAt: "2026-08-25T05:21:00.000Z",
+    });
+
+    const { default: visualAssets } = await import("../../../worker/src/routes/visualAssets");
+    const response = await visualAssets.request("/asset-dismiss/analysis", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "dismiss" }),
+    }, fixture.env);
+
+    expect(response.status).toBe(200);
+    expect(fixture.assetRow("asset-dismiss")).toMatchObject({
+      id: "asset-dismiss",
+      selection_status: "REVIEW",
+    });
+    const analyses = fixture.analysisRowsFor("asset-dismiss");
+    expect(analyses).toHaveLength(2);
+    expect(analyses.find((row) => row.id === "analysis-auto")?.review_status).toBe("DISMISSED");
+    expect(analyses.find((row) => row.id === "analysis-user-1")?.review_status).toBe("ACCEPTED");
+  });
+
+  it("updates assignment atomically from the target source active version and rejects sources without an active version", async () => {
+    const fixture = createVisualAssetRouteFixture();
+    fixture.insertSource({ id: "source-old", activeVersionId: "version-old" });
+    fixture.insertSourceVersion({ id: "version-old", sourceId: "source-old", version: 1 });
+    fixture.insertSource({ id: "source-new", activeVersionId: "version-new" });
+    fixture.insertSourceVersion({ id: "version-new", sourceId: "source-new", version: 2 });
+    fixture.insertSource({ id: "source-empty", activeVersionId: null });
+    fixture.insertAsset({ id: "asset-assign", parentSourceId: null, parentVersionId: null, assignmentStatus: "UNASSIGNED", originKind: "PERSONAL_UPLOAD" });
+
+    const { default: visualAssets } = await import("../../../worker/src/routes/visualAssets");
+    const missingVersion = await visualAssets.request("/asset-assign/assignment", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sourceId: "source-empty" }),
+    }, fixture.env);
+    expect(missingVersion.status).toBe(409);
+
+    const response = await visualAssets.request("/asset-assign/assignment", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sourceId: "source-new" }),
+    }, fixture.env);
+
+    expect(response.status).toBe(200);
+    expect(fixture.assetRow("asset-assign")).toMatchObject({
+      parent_source_id: "source-new",
+      parent_version_id: "version-new",
+      assignment_status: "ASSIGNED",
+    });
+  });
+
+  it("requires a non-empty basis for PERMITTED rights and records the rights review timestamp", async () => {
+    const fixture = createVisualAssetRouteFixture();
+    fixture.insertSource({ id: "source-1", activeVersionId: "version-source-1" });
+    fixture.insertSourceVersion({ id: "version-source-1", sourceId: "source-1", version: 1 });
+    fixture.insertAsset({
+      id: "asset-rights",
+      parentSourceId: "source-1",
+      parentVersionId: "version-source-1",
+      rightsStatus: "UNKNOWN",
+      rightsBasis: null,
+      rightsReviewedAt: null,
+      isPersonalWork: 0,
+    });
+
+    const { default: visualAssets } = await import("../../../worker/src/routes/visualAssets");
+    const invalid = await visualAssets.request("/asset-rights/rights", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rightsStatus: "PERMITTED", rightsBasis: "   " }),
+    }, fixture.env);
+    expect(invalid.status).toBe(400);
+
+    const response = await visualAssets.request("/asset-rights/rights", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rightsStatus: "PERMITTED", rightsBasis: "Author email permission" }),
+    }, fixture.env);
+
+    expect(response.status).toBe(200);
+    expect(fixture.assetRow("asset-rights")).toMatchObject({
+      rights_status: "PERMITTED",
+      rights_basis: "Author email permission",
+      is_personal_work: 0,
+    });
+    expect(String(fixture.assetRow("asset-rights")?.rights_reviewed_at ?? "")).toContain("2026-08-25T");
+  });
+
+  it("reuses the active transform retry job on repeated clicks so duplicate work is not created", async () => {
+    const fixture = createVisualAssetRouteFixture();
+    fixture.insertAsset({ id: "asset-retry-transform", processingStatus: "FAILED", selectionStatus: "REVIEW" });
+    fixture.insertAssetVersion({ id: "asset-retry-transform-original", visualAssetId: "asset-retry-transform", version: 1, variant: "ORIGINAL", r2Key: "visuals/asset-retry-transform/original.jpg" });
+
+    const { default: visualAssets } = await import("../../../worker/src/routes/visualAssets");
+    const first = await visualAssets.request("/asset-retry-transform/retry", { method: "POST" }, fixture.env);
+    const second = await visualAssets.request("/asset-retry-transform/retry", { method: "POST" }, fixture.env);
+
+    expect(first.status).toBe(202);
+    expect(second.status).toBe(202);
+    const firstData = await first.json() as { reused: boolean; job: { id: string; kind: string } };
+    const secondData = await second.json() as { reused: boolean; job: { id: string; kind: string } };
+    expect(firstData.job.kind).toBe("VISUAL_TRANSFORM");
+    expect(secondData.job.id).toBe(firstData.job.id);
+    expect(secondData.reused).toBe(true);
+    expect(fixture.workflowCreate).toHaveBeenCalledTimes(1);
+    expect(fixture.jobRows()).toHaveLength(1);
+  });
+
+  it("retries analysis when a capsule exists without analysis and reuses the parent extraction run when only extraction recovery is available", async () => {
+    const fixture = createVisualAssetRouteFixture();
+    fixture.insertSource({ id: "source-1", activeVersionId: "version-source-1" });
+    fixture.insertSourceVersion({ id: "version-source-1", sourceId: "source-1", version: 1 });
+
+    fixture.insertAsset({
+      id: "asset-retry-analysis",
+      parentSourceId: "source-1",
+      parentVersionId: "version-source-1",
+      processingStatus: "READY",
+      originKind: "PERSONAL_UPLOAD",
+    });
+    fixture.insertAssetVersion({ id: "asset-retry-analysis-original", visualAssetId: "asset-retry-analysis", version: 1, variant: "ORIGINAL", r2Key: "visuals/asset-retry-analysis/original.jpg" });
+    fixture.insertAssetVersion({ id: "asset-retry-analysis-capsule", visualAssetId: "asset-retry-analysis", version: 1, variant: "CAPSULE", r2Key: "visuals/asset-retry-analysis/capsule.webp" });
+
+    fixture.insertAsset({
+      id: "asset-retry-extraction",
+      parentSourceId: "source-1",
+      parentVersionId: "version-source-1",
+      processingStatus: "READY",
+      originKind: "WEB_EMBED",
+      selectionStatus: "UNAVAILABLE",
+    });
+    fixture.insertAssetVersion({ id: "asset-retry-extraction-original", visualAssetId: "asset-retry-extraction", version: 1, variant: "ORIGINAL", r2Key: null });
+    fixture.insertExtractionRun({
+      id: "run-recover",
+      parentSourceId: "source-1",
+      parentVersionId: "version-source-1",
+      originKind: "WEB_EMBED",
+      status: "FAILED",
+      totalUnits: 4,
+      uploadedUnits: 4,
+      processedUnits: 4,
+      selectedCount: 1,
+      reviewCount: 1,
+      filteredCount: 1,
+      unavailableCount: 1,
+      createdAt: "2026-08-25T06:10:00.000Z",
+      updatedAt: "2026-08-25T06:10:30.000Z",
+      finishedAt: "2026-08-25T06:11:00.000Z",
+    });
+    fixture.insertExtractionUnit({
+      id: "unit-failed",
+      runId: "run-recover",
+      unitNumber: 2,
+      candidateKey: "candidate-2",
+      status: "FAILED",
+      createdAt: "2026-08-25T06:10:10.000Z",
+      processedAt: "2026-08-25T06:10:40.000Z",
+      tempR2Key: "visual-temp/run-recover/page-2.webp",
+    });
+
+    const { default: visualAssets } = await import("../../../worker/src/routes/visualAssets");
+    const analysisRetry = await visualAssets.request("/asset-retry-analysis/retry", { method: "POST" }, fixture.env);
+    const extractionRetry = await visualAssets.request("/asset-retry-extraction/retry", { method: "POST" }, fixture.env);
+
+    expect(analysisRetry.status).toBe(202);
+    expect(extractionRetry.status).toBe(202);
+    const jobs = fixture.jobRows();
+    expect(jobs.map((row) => row.kind)).toEqual(expect.arrayContaining(["VISUAL_ANALYSIS", "VISUAL_EXTRACTION"]));
+    const extractionJob = jobs.find((row) => row.kind === "VISUAL_EXTRACTION");
+    expect(extractionJob?.input_json).toContain("\"extractionRunId\":\"run-recover\"");
+  });
+
+  it("requires a verified analysis and a capsule before transitioning storage and records the operation journal", async () => {
+    const fixture = createVisualAssetRouteFixture();
+    fixture.insertAsset({
+      id: "asset-transition",
+      storageState: "ARCHIVAL",
+      pendingStorageState: null,
+      processingStatus: "READY",
+      rightsStatus: "PERMITTED",
+      rightsBasis: "contract",
+      rightsReviewedAt: "2026-08-25T06:30:00.000Z",
+      isPersonalWork: 0,
+    });
+    fixture.insertAssetVersion({ id: "asset-transition-original", visualAssetId: "asset-transition", version: 1, variant: "ORIGINAL", r2Key: "visuals/asset-transition/original.jpg" });
+    fixture.insertAssetVersion({ id: "asset-transition-capsule", visualAssetId: "asset-transition", version: 1, variant: "CAPSULE", r2Key: "visuals/asset-transition/capsule.webp" });
+    fixture.insertAnalysis({
+      id: "analysis-auto",
+      visualAssetId: "asset-transition",
+      visualVersionId: "asset-transition-capsule",
+      analysisType: "AUTO_SUGGESTION",
+      payload: validVisualAnalysisPayload("transition-auto"),
+      reviewStatus: "PENDING",
+      createdAt: "2026-08-25T06:31:00.000Z",
+    });
+
+    const { default: visualAssets } = await import("../../../worker/src/routes/visualAssets");
+    const blocked = await visualAssets.request("/asset-transition/storage-transition", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target: "CAPSULE", confirmation: "DELETE_ORIGINAL" }),
+    }, fixture.env);
+    expect(blocked.status).toBe(409);
+
+    fixture.insertAnalysis({
+      id: "analysis-user",
+      visualAssetId: "asset-transition",
+      visualVersionId: "asset-transition-capsule",
+      analysisType: "USER_VERIFIED",
+      parentAnalysisId: "analysis-auto",
+      payload: validVisualAnalysisPayload("transition-user"),
+      reviewStatus: "ACCEPTED",
+      createdAt: "2026-08-25T06:32:00.000Z",
+    });
+
+    const response = await visualAssets.request("/asset-transition/storage-transition", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target: "CAPSULE", confirmation: "DELETE_ORIGINAL" }),
+    }, fixture.env);
+
+    expect(response.status).toBe(200);
+    expect(fixture.deleteCalls).toEqual(["visuals/asset-transition/original.jpg"]);
+    expect(fixture.assetRow("asset-transition")).toMatchObject({
+      storage_state: "CAPSULE",
+      pending_storage_state: null,
+    });
+    expect(fixture.assetVersionRow("asset-transition-original")?.deleted_at).toContain("2026-08-25T");
+    expect(fixture.operationRowsFor("asset-transition")).toEqual([
+      expect.objectContaining({
+        operation_kind: "DELETE_ORIGINAL",
+        from_state: "ARCHIVAL",
+        to_state: "CAPSULE",
+        status: "SUCCEEDED",
+      }),
+    ]);
+  });
+});
+
 function verifyVisualExtractionMigration(): {
   foreignKeyCheck: string;
   invalidRunStatusError: string;
@@ -1158,6 +1608,510 @@ type UnitState = {
   processedAt: string | null;
   deletedAt: string | null;
 };
+
+function validVisualAnalysisPayload(label: string) {
+  return {
+    observation: {
+      subject: [`subject ${label}`],
+      composition: [`composition ${label}`],
+      color: [`color ${label}`],
+      texture: [],
+      spatialRelation: [],
+      material: [],
+      lighting: [],
+      visibleText: [],
+    },
+    formal: {
+      shapes: [],
+      lines: [],
+      planes: [],
+      rhythm: [],
+      scale: [],
+      density: [],
+      edges: [],
+      contrast: [],
+      perspective: [],
+    },
+    context: {
+      medium: [`medium ${label}`],
+      process: [],
+      relationToPhotography: [],
+      culturalReferences: [],
+    },
+    propositions: [`proposition ${label}`],
+    uncertainty: [],
+    visualKind: "DIAGRAM",
+    confidence: 0.8,
+  };
+}
+
+function createVisualAssetRouteFixture() {
+  const tempDir = mkdtempSync(join(tmpdir(), "radar-visual-route-"));
+  const dbPath = join(tempDir, "visual-route.sqlite");
+  const sqlite = new DatabaseSync(dbPath);
+  sqlite.exec(`
+    PRAGMA foreign_keys = ON;
+    CREATE TABLE threads (id TEXT PRIMARY KEY);
+    CREATE TABLE sources (
+      id TEXT PRIMARY KEY,
+      active_version_id TEXT,
+      title TEXT,
+      origin TEXT,
+      input_format TEXT
+    );
+    CREATE TABLE source_versions (
+      id TEXT PRIMARY KEY,
+      source_id TEXT NOT NULL REFERENCES sources(id),
+      version INTEGER NOT NULL,
+      r2_key TEXT,
+      created_at TEXT NOT NULL DEFAULT '2026-08-25T00:00:00.000Z'
+    );
+    CREATE TABLE visual_assets (
+      id TEXT PRIMARY KEY,
+      parent_source_id TEXT REFERENCES sources(id),
+      parent_version_id TEXT REFERENCES source_versions(id),
+      origin_kind TEXT NOT NULL,
+      source_url TEXT,
+      page_number INTEGER,
+      figure_label TEXT,
+      bbox_json TEXT,
+      candidate_key TEXT,
+      caption TEXT,
+      nearby_text TEXT,
+      asset_role TEXT NOT NULL DEFAULT 'PERSONAL_WORK',
+      visual_kind TEXT NOT NULL DEFAULT 'OTHER',
+      selection_status TEXT NOT NULL DEFAULT 'SELECTED',
+      selection_reason TEXT,
+      rights_status TEXT NOT NULL DEFAULT 'PERSONAL',
+      rights_basis TEXT,
+      rights_reviewed_at TEXT,
+      is_personal_work INTEGER NOT NULL DEFAULT 1,
+      assignment_status TEXT NOT NULL DEFAULT 'UNASSIGNED',
+      storage_state TEXT NOT NULL DEFAULT 'ARCHIVAL',
+      pending_storage_state TEXT,
+      processing_status TEXT NOT NULL DEFAULT 'UPLOADED',
+      last_error TEXT,
+      content_hash TEXT,
+      perceptual_hash TEXT,
+      perceptual_hash_method TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT
+    );
+    CREATE TABLE visual_asset_versions (
+      id TEXT PRIMARY KEY,
+      visual_asset_id TEXT NOT NULL REFERENCES visual_assets(id),
+      version INTEGER NOT NULL,
+      variant TEXT NOT NULL,
+      r2_key TEXT,
+      mime_type TEXT NOT NULL,
+      width INTEGER,
+      height INTEGER,
+      byte_size INTEGER NOT NULL,
+      content_hash TEXT NOT NULL,
+      parent_asset_version_id TEXT REFERENCES visual_asset_versions(id),
+      created_at TEXT NOT NULL,
+      deleted_at TEXT
+    );
+    CREATE TABLE visual_analyses (
+      id TEXT PRIMARY KEY,
+      visual_asset_id TEXT NOT NULL REFERENCES visual_assets(id),
+      visual_version_id TEXT NOT NULL REFERENCES visual_asset_versions(id),
+      analysis_type TEXT NOT NULL,
+      provenance_class TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      model_id TEXT,
+      prompt_version TEXT,
+      cost_usd REAL NOT NULL DEFAULT 0,
+      confidence REAL,
+      review_status TEXT NOT NULL DEFAULT 'PENDING',
+      created_at TEXT NOT NULL,
+      reviewed_at TEXT,
+      parent_analysis_id TEXT REFERENCES visual_analyses(id)
+    );
+    CREATE TABLE visual_relations (
+      id TEXT PRIMARY KEY,
+      from_visual_asset_id TEXT NOT NULL REFERENCES visual_assets(id),
+      to_visual_asset_id TEXT REFERENCES visual_assets(id),
+      related_source_id TEXT REFERENCES sources(id),
+      related_thread_id TEXT REFERENCES threads(id),
+      relation_kind TEXT NOT NULL,
+      created_by TEXT NOT NULL,
+      description TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE visual_extraction_runs (
+      id TEXT PRIMARY KEY,
+      parent_source_id TEXT NOT NULL REFERENCES sources(id),
+      parent_version_id TEXT NOT NULL REFERENCES source_versions(id),
+      origin_kind TEXT NOT NULL,
+      status TEXT NOT NULL,
+      total_units INTEGER NOT NULL DEFAULT 0,
+      uploaded_units INTEGER NOT NULL DEFAULT 0,
+      processed_units INTEGER NOT NULL DEFAULT 0,
+      selected_count INTEGER NOT NULL DEFAULT 0,
+      review_count INTEGER NOT NULL DEFAULT 0,
+      filtered_count INTEGER NOT NULL DEFAULT 0,
+      unavailable_count INTEGER NOT NULL DEFAULT 0,
+      error_code TEXT,
+      error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      finished_at TEXT
+    );
+    CREATE TABLE visual_extraction_units (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL REFERENCES visual_extraction_runs(id),
+      unit_number INTEGER NOT NULL,
+      candidate_key TEXT NOT NULL,
+      status TEXT NOT NULL,
+      temp_r2_key TEXT,
+      width INTEGER,
+      height INTEGER,
+      content_hash TEXT,
+      error_code TEXT,
+      error TEXT,
+      created_at TEXT NOT NULL,
+      processed_at TEXT,
+      deleted_at TEXT
+    );
+    CREATE TABLE visual_asset_operations (
+      id TEXT PRIMARY KEY,
+      visual_asset_id TEXT NOT NULL REFERENCES visual_assets(id),
+      operation_kind TEXT NOT NULL,
+      from_state TEXT NOT NULL,
+      to_state TEXT NOT NULL,
+      status TEXT NOT NULL,
+      error TEXT,
+      created_at TEXT NOT NULL,
+      finished_at TEXT
+    );
+    CREATE TABLE research_jobs (
+      id TEXT PRIMARY KEY,
+      workflow_instance_id TEXT UNIQUE,
+      kind TEXT NOT NULL,
+      status TEXT NOT NULL,
+      progress INTEGER NOT NULL DEFAULT 0,
+      message TEXT,
+      input_json TEXT NOT NULL,
+      result_json TEXT,
+      result_ref_json TEXT,
+      error_code TEXT,
+      error TEXT,
+      retry_of TEXT REFERENCES research_jobs(id),
+      requested_by TEXT,
+      dedupe_key TEXT NOT NULL,
+      dismissed_at TEXT,
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      finished_at TEXT,
+      updated_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX idx_research_jobs_active_dedupe
+      ON research_jobs(dedupe_key)
+      WHERE status IN ('QUEUED', 'RUNNING');
+  `);
+
+  const d1 = sqliteToD1(sqlite);
+  const deleteCalls: string[] = [];
+  const workflowCreate = vi.fn(async ({ id }: { id: string }) => ({ id: `workflow:${id}` }));
+  const env = {
+    DB: d1,
+    ORIGINALS: {
+      get: vi.fn(),
+      delete: vi.fn(async (key: string) => {
+        deleteCalls.push(key);
+      }),
+    },
+    RESEARCH_JOBS_WORKFLOW: { create: workflowCreate },
+  } as unknown as Env;
+
+  return {
+    env,
+    sqlite,
+    workflowCreate,
+    deleteCalls,
+    insertSource(input: {
+      id: string;
+      activeVersionId: string | null;
+      title?: string | null;
+      origin?: string | null;
+      inputFormat?: string | null;
+    }) {
+      sqlite.prepare(
+        `INSERT INTO sources (id, active_version_id, title, origin, input_format)
+         VALUES (?, ?, ?, ?, ?)`
+      ).run(input.id, input.activeVersionId, input.title ?? null, input.origin ?? null, input.inputFormat ?? null);
+    },
+    insertSourceVersion(input: {
+      id: string;
+      sourceId: string;
+      version: number;
+      r2Key?: string | null;
+      createdAt?: string;
+    }) {
+      sqlite.prepare(
+        `INSERT INTO source_versions (id, source_id, version, r2_key, created_at)
+         VALUES (?, ?, ?, ?, ?)`
+      ).run(input.id, input.sourceId, input.version, input.r2Key ?? null, input.createdAt ?? "2026-08-25T00:00:00.000Z");
+    },
+    insertAsset(input: {
+      id: string;
+      parentSourceId?: string | null;
+      parentVersionId?: string | null;
+      originKind?: string;
+      sourceUrl?: string | null;
+      pageNumber?: number | null;
+      figureLabel?: string | null;
+      bboxJson?: string | null;
+      candidateKey?: string | null;
+      caption?: string | null;
+      nearbyText?: string | null;
+      visualKind?: string;
+      selectionStatus?: string;
+      selectionReason?: string | null;
+      rightsStatus?: string;
+      rightsBasis?: string | null;
+      rightsReviewedAt?: string | null;
+      isPersonalWork?: number;
+      assignmentStatus?: string;
+      storageState?: string;
+      pendingStorageState?: string | null;
+      processingStatus?: string;
+      createdAt?: string;
+      updatedAt?: string;
+    }) {
+      const createdAt = input.createdAt ?? "2026-08-25T00:00:00.000Z";
+      const updatedAt = input.updatedAt ?? createdAt;
+      sqlite.prepare(
+        `INSERT INTO visual_assets
+         (id, parent_source_id, parent_version_id, origin_kind, source_url, page_number, figure_label,
+          bbox_json, candidate_key, caption, nearby_text, asset_role, visual_kind, selection_status,
+          selection_reason, rights_status, rights_basis, rights_reviewed_at, is_personal_work,
+          assignment_status, storage_state, pending_storage_state, processing_status, last_error,
+          content_hash, perceptual_hash, perceptual_hash_method, created_at, updated_at, deleted_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'REFERENCE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'hash', NULL, NULL, ?, ?, NULL)`
+      ).run(
+        input.id,
+        input.parentSourceId ?? null,
+        input.parentVersionId ?? null,
+        input.originKind ?? "WEB_EMBED",
+        input.sourceUrl ?? null,
+        input.pageNumber ?? null,
+        input.figureLabel ?? null,
+        input.bboxJson ?? null,
+        input.candidateKey ?? null,
+        input.caption ?? null,
+        input.nearbyText ?? null,
+        input.visualKind ?? "OTHER",
+        input.selectionStatus ?? "SELECTED",
+        input.selectionReason ?? null,
+        input.rightsStatus ?? "PERSONAL",
+        input.rightsBasis ?? null,
+        input.rightsReviewedAt ?? null,
+        input.isPersonalWork ?? 1,
+        input.assignmentStatus ?? (input.parentSourceId ? "ASSIGNED" : "UNASSIGNED"),
+        input.storageState ?? "ARCHIVAL",
+        input.pendingStorageState ?? null,
+        input.processingStatus ?? "READY",
+        createdAt,
+        updatedAt,
+      );
+    },
+    insertAssetVersion(input: {
+      id: string;
+      visualAssetId: string;
+      version: number;
+      variant: string;
+      r2Key?: string | null;
+      mimeType?: string;
+      byteSize?: number;
+      contentHash?: string;
+      createdAt?: string;
+      deletedAt?: string | null;
+    }) {
+      sqlite.prepare(
+        `INSERT INTO visual_asset_versions
+         (id, visual_asset_id, version, variant, r2_key, mime_type, width, height, byte_size, content_hash, parent_asset_version_id, created_at, deleted_at)
+         VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL, ?, ?)`
+      ).run(
+        input.id,
+        input.visualAssetId,
+        input.version,
+        input.variant,
+        input.r2Key ?? null,
+        input.mimeType ?? (input.variant === "CAPSULE" ? "image/webp" : "image/jpeg"),
+        input.byteSize ?? 1024,
+        input.contentHash ?? `${input.id}-hash`,
+        input.createdAt ?? "2026-08-25T00:00:00.000Z",
+        input.deletedAt ?? null,
+      );
+    },
+    insertAnalysis(input: {
+      id: string;
+      visualAssetId: string;
+      visualVersionId: string;
+      analysisType: string;
+      payload: Record<string, unknown>;
+      reviewStatus?: string;
+      parentAnalysisId?: string | null;
+      createdAt?: string;
+      reviewedAt?: string | null;
+    }) {
+      sqlite.prepare(
+        `INSERT INTO visual_analyses
+         (id, visual_asset_id, visual_version_id, analysis_type, provenance_class, payload_json, model_id, prompt_version, cost_usd, confidence, review_status, created_at, reviewed_at, parent_analysis_id)
+         VALUES (?, ?, ?, ?, 'INTERPRETATION', ?, 'vision-low', 'visual-v1', 0, 0.8, ?, ?, ?, ?)`
+      ).run(
+        input.id,
+        input.visualAssetId,
+        input.visualVersionId,
+        input.analysisType,
+        JSON.stringify(input.payload),
+        input.reviewStatus ?? "PENDING",
+        input.createdAt ?? "2026-08-25T00:00:00.000Z",
+        input.reviewedAt ?? null,
+        input.parentAnalysisId ?? null,
+      );
+    },
+    insertRelation(input: {
+      id: string;
+      fromVisualAssetId: string;
+      toVisualAssetId?: string | null;
+      relatedSourceId?: string | null;
+      relatedThreadId?: string | null;
+      relationKind: string;
+      createdBy: string;
+      description?: string | null;
+      createdAt?: string;
+    }) {
+      sqlite.prepare(
+        `INSERT INTO visual_relations
+         (id, from_visual_asset_id, to_visual_asset_id, related_source_id, related_thread_id, relation_kind, created_by, description, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        input.id,
+        input.fromVisualAssetId,
+        input.toVisualAssetId ?? null,
+        input.relatedSourceId ?? null,
+        input.relatedThreadId ?? null,
+        input.relationKind,
+        input.createdBy,
+        input.description ?? null,
+        input.createdAt ?? "2026-08-25T00:00:00.000Z",
+      );
+    },
+    insertExtractionRun(input: {
+      id: string;
+      parentSourceId: string;
+      parentVersionId: string;
+      originKind: string;
+      status: string;
+      totalUnits: number;
+      uploadedUnits: number;
+      processedUnits: number;
+      selectedCount: number;
+      reviewCount: number;
+      filteredCount: number;
+      unavailableCount: number;
+      createdAt?: string;
+      updatedAt?: string;
+      finishedAt?: string | null;
+    }) {
+      sqlite.prepare(
+        `INSERT INTO visual_extraction_runs
+         (id, parent_source_id, parent_version_id, origin_kind, status, total_units, uploaded_units, processed_units, selected_count, review_count, filtered_count, unavailable_count, error_code, error, created_at, updated_at, finished_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?)`
+      ).run(
+        input.id,
+        input.parentSourceId,
+        input.parentVersionId,
+        input.originKind,
+        input.status,
+        input.totalUnits,
+        input.uploadedUnits,
+        input.processedUnits,
+        input.selectedCount,
+        input.reviewCount,
+        input.filteredCount,
+        input.unavailableCount,
+        input.createdAt ?? "2026-08-25T00:00:00.000Z",
+        input.updatedAt ?? input.createdAt ?? "2026-08-25T00:00:00.000Z",
+        input.finishedAt ?? null,
+      );
+    },
+    insertExtractionUnit(input: {
+      id: string;
+      runId: string;
+      unitNumber: number;
+      candidateKey: string;
+      status: string;
+      createdAt?: string;
+      processedAt?: string | null;
+      tempR2Key?: string | null;
+    }) {
+      sqlite.prepare(
+        `INSERT INTO visual_extraction_units
+         (id, run_id, unit_number, candidate_key, status, temp_r2_key, width, height, content_hash, error_code, error, created_at, processed_at, deleted_at)
+         VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?, NULL)`
+      ).run(
+        input.id,
+        input.runId,
+        input.unitNumber,
+        input.candidateKey,
+        input.status,
+        input.tempR2Key ?? null,
+        input.createdAt ?? "2026-08-25T00:00:00.000Z",
+        input.processedAt ?? null,
+      );
+    },
+    assetRow(id: string) {
+      return sqlite.prepare("SELECT * FROM visual_assets WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+    },
+    assetVersionRow(id: string) {
+      return sqlite.prepare("SELECT * FROM visual_asset_versions WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+    },
+    analysisRowsFor(visualAssetId: string) {
+      return sqlite.prepare("SELECT * FROM visual_analyses WHERE visual_asset_id = ? ORDER BY created_at ASC, id ASC").all(visualAssetId) as Record<string, unknown>[];
+    },
+    operationRowsFor(visualAssetId: string) {
+      return sqlite.prepare("SELECT * FROM visual_asset_operations WHERE visual_asset_id = ? ORDER BY created_at ASC").all(visualAssetId) as Record<string, unknown>[];
+    },
+    jobRows() {
+      return sqlite.prepare("SELECT * FROM research_jobs ORDER BY created_at ASC, id ASC").all() as Record<string, unknown>[];
+    },
+  };
+}
+
+function sqliteToD1(sqlite: DatabaseSync): D1Database {
+  return {
+    prepare(sql: string): D1PreparedStatement {
+      const statement = sqlite.prepare(sql);
+      let params: unknown[] = [];
+      return {
+        bind(...values: unknown[]) {
+          params = values;
+          return this;
+        },
+        async first<T = Record<string, unknown>>() {
+          return (statement.get(...params) as T | undefined) ?? null;
+        },
+        async all<T = Record<string, unknown>>() {
+          return { results: statement.all(...params) as T[] };
+        },
+        async run() {
+          const result = statement.run(...params) as { changes?: number | bigint };
+          return { success: true, meta: { changes: Number(result.changes ?? 0) } };
+        },
+      } as D1PreparedStatement;
+    },
+    async batch(statements: D1PreparedStatement[]) {
+      const results = [];
+      for (const statement of statements) results.push(await statement.run());
+      return results;
+    },
+  } as unknown as D1Database;
+}
 
 function createExtractionDb(seed: {
   runs?: RunState[];

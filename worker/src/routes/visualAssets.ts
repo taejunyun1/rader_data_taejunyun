@@ -5,7 +5,20 @@ import {
   MAX_PERSONAL_VISUAL_BYTES,
 } from "../visual/contracts";
 import { validateVisualAnalysis } from "../visual/analysisSchema";
-import { createPersonalVisual, getLatestVisualAnalysis, getVisualAsset, getVisualVersion, listVisualAssets, toVisualAssetSummary } from "../visual/store";
+import {
+  createPersonalVisual,
+  createUserVerifiedVisualAnalysis,
+  getLatestVisualAnalysis,
+  getOriginalVisualVersion,
+  getVisualAnalysisRow,
+  getVisualAsset,
+  getVisualAssetDetail,
+  getVisualVersion,
+  listVisualAssets,
+  toVisualAssetSummary,
+  updateAutoSuggestionReviewStatus,
+} from "../visual/store";
+import { uuid } from "../ingestion/ids";
 
 const visualAssets = new Hono<{ Bindings: Env }>();
 
@@ -25,6 +38,22 @@ async function parentExists(db: D1Database, sourceId: string | null): Promise<bo
   if (!sourceId) return true;
   const row = await db.prepare("SELECT id FROM sources WHERE id = ? LIMIT 1").bind(sourceId).first<{ id: string }>();
   return Boolean(row);
+}
+
+function parseRightsStatus(value: unknown): "PERSONAL" | "PERMITTED" | "PUBLIC_LINK" | "UNKNOWN" | "RESTRICTED" | null {
+  return value === "PERSONAL" || value === "PERMITTED" || value === "PUBLIC_LINK" || value === "UNKNOWN" || value === "RESTRICTED"
+    ? value
+    : null;
+}
+
+async function loadAssetSummary(db: D1Database, visualAssetId: string) {
+  const asset = await getVisualAsset(db, visualAssetId);
+  if (!asset) return null;
+  const [capsule, analysis] = await Promise.all([
+    getVisualVersion(db, visualAssetId, "CAPSULE"),
+    getLatestVisualAnalysis(db, visualAssetId),
+  ]);
+  return toVisualAssetSummary(asset, capsule?.id ?? null, analysis);
 }
 
 visualAssets.get("/", async (c) => {
@@ -108,41 +137,242 @@ visualAssets.patch("/:id/analysis", async (c) => {
   const body = await c.req.json<{ action?: unknown; payload?: unknown }>().catch(() => ({} as { action?: unknown; payload?: unknown }));
   const action = body.action === "accept" || body.action === "dismiss" || body.action === "edit" ? body.action : null;
   if (!action) return c.json({ error: "analysis_action_invalid" }, 400);
-  const latest = await c.env.DB.prepare(
-    `SELECT id, payload_json AS payloadJson FROM visual_analyses
-     WHERE visual_asset_id = ? AND analysis_type = 'AUTO_SUGGESTION'
-     ORDER BY created_at DESC LIMIT 1`
-  ).bind(visualAssetId).first<{ id: string; payloadJson: string }>();
+  const latest = await getVisualAnalysisRow(c.env.DB, visualAssetId, "AUTO_SUGGESTION");
   if (!latest) return c.json({ error: "analysis_not_found" }, 404);
 
-  let nextPayload: string | null = null;
   if (action === "edit") {
     const payload = validateVisualAnalysis(body.payload);
     if (!payload) return c.json({ error: "analysis_payload_invalid" }, 400);
-    nextPayload = JSON.stringify(payload);
+    await createUserVerifiedVisualAnalysis(c.env.DB, {
+      visualAssetId,
+      payload,
+      reviewStatus: "EDITED",
+    });
+  } else if (action === "accept") {
+    await createUserVerifiedVisualAnalysis(c.env.DB, {
+      visualAssetId,
+      payload: latest.payload,
+      reviewStatus: "ACCEPTED",
+    });
+  } else {
+    await updateAutoSuggestionReviewStatus(c.env.DB, visualAssetId, "DISMISSED");
   }
-  const reviewStatus = action === "accept" ? "ACCEPTED" : action === "dismiss" ? "DISMISSED" : "EDITED";
-  const timestamp = new Date().toISOString();
+  return c.json({ asset: await loadAssetSummary(c.env.DB, visualAssetId) });
+});
+
+visualAssets.patch("/:id/assignment", async (c) => {
+  const visualAssetId = c.req.param("id");
+  const asset = await getVisualAsset(c.env.DB, visualAssetId);
+  if (!asset) return c.json({ error: "not_found" }, 404);
+  const body = await c.req.json<{ sourceId?: unknown }>().catch(() => ({} as { sourceId?: unknown }));
+  const sourceId = typeof body.sourceId === "string" ? body.sourceId.trim() : "";
+  if (!sourceId) return c.json({ error: "assignment_source_required" }, 400);
+
+  const target = await c.env.DB.prepare(
+    `SELECT id, active_version_id AS activeVersionId
+     FROM sources
+     WHERE id = ?`
+  ).bind(sourceId).first<{ id: string; activeVersionId: string | null }>();
+  if (!target) return c.json({ error: "assignment_source_not_found" }, 404);
+  if (!target.activeVersionId) return c.json({ error: "assignment_source_active_version_missing" }, 409);
+
+  await c.env.DB.prepare(
+    `UPDATE visual_assets
+     SET parent_source_id = ?,
+         parent_version_id = ?,
+         assignment_status = 'ASSIGNED',
+         updated_at = ?
+     WHERE id = ?`
+  ).bind(target.id, target.activeVersionId, new Date().toISOString(), visualAssetId).run();
+
+  return c.json({ asset: await loadAssetSummary(c.env.DB, visualAssetId) });
+});
+
+visualAssets.patch("/:id/rights", async (c) => {
+  const visualAssetId = c.req.param("id");
+  const asset = await getVisualAsset(c.env.DB, visualAssetId);
+  if (!asset) return c.json({ error: "not_found" }, 404);
+  const body = await c.req.json<{ rightsStatus?: unknown; rightsBasis?: unknown }>().catch(() => ({} as { rightsStatus?: unknown; rightsBasis?: unknown }));
+  const rightsStatus = parseRightsStatus(body.rightsStatus);
+  if (!rightsStatus) return c.json({ error: "rights_status_invalid" }, 400);
+  const rightsBasis = typeof body.rightsBasis === "string" ? body.rightsBasis.trim() : "";
+  if (rightsStatus === "PERMITTED" && !rightsBasis) return c.json({ error: "rights_basis_required" }, 400);
+  const now = new Date().toISOString();
+  await c.env.DB.prepare(
+    `UPDATE visual_assets
+     SET rights_status = ?,
+         rights_basis = ?,
+         rights_reviewed_at = ?,
+         is_personal_work = ?,
+         updated_at = ?
+     WHERE id = ?`
+  ).bind(
+    rightsStatus,
+    rightsBasis || null,
+    now,
+    rightsStatus === "PERSONAL" ? 1 : 0,
+    now,
+    visualAssetId,
+  ).run();
+  return c.json({ asset: await loadAssetSummary(c.env.DB, visualAssetId) });
+});
+
+visualAssets.post("/:id/retry", async (c) => {
+  const visualAssetId = c.req.param("id");
+  const asset = await getVisualAsset(c.env.DB, visualAssetId);
+  if (!asset) return c.json({ error: "not_found" }, 404);
+  const requester = requestedBy(c);
+  const original = await getOriginalVisualVersion(c.env.DB, visualAssetId);
+  if ((asset.processingStatus === "TRANSFORM_PENDING" || asset.processingStatus === "FAILED") && original?.r2Key) {
+    const result = await enqueueResearchJob(c.env, { kind: "VISUAL_TRANSFORM", input: { visualAssetId } }, requester);
+    return c.json(result, 202);
+  }
+
+  const capsule = await getVisualVersion(c.env.DB, visualAssetId, "CAPSULE");
+  const latestAnalysis = await getLatestVisualAnalysis(c.env.DB, visualAssetId);
+  if (capsule?.id && !latestAnalysis) {
+    const result = await enqueueResearchJob(c.env, { kind: "VISUAL_ANALYSIS", input: { visualAssetId, versionId: capsule.id } }, requester);
+    return c.json(result, 202);
+  }
+
+  if (asset.parentSourceId && asset.parentVersionId && asset.originKind !== "PERSONAL_UPLOAD") {
+    const run = await c.env.DB.prepare(
+      `SELECT id
+       FROM visual_extraction_runs
+       WHERE parent_source_id = ? AND parent_version_id = ? AND origin_kind = ?
+       ORDER BY created_at DESC LIMIT 1`
+    ).bind(asset.parentSourceId, asset.parentVersionId, asset.originKind).first<{ id: string }>();
+    if (run?.id) {
+      const result = await enqueueResearchJob(
+        c.env,
+        { kind: "VISUAL_EXTRACTION", input: { sourceId: asset.parentSourceId, sourceVersionId: asset.parentVersionId, extractionRunId: run.id } },
+        requester,
+      );
+      return c.json(result, 202);
+    }
+  }
+
+  return c.json({ error: "visual_retry_not_available" }, 409);
+});
+
+visualAssets.post("/:id/storage-transition", async (c) => {
+  const visualAssetId = c.req.param("id");
+  const asset = await getVisualAsset(c.env.DB, visualAssetId);
+  if (!asset) return c.json({ error: "not_found" }, 404);
+  const body = await c.req.json<{ target?: unknown; confirmation?: unknown }>().catch(() => ({} as { target?: unknown; confirmation?: unknown }));
+  const target = body.target === "CAPSULE" || body.target === "TEXT_ONLY" ? body.target : null;
+  const confirmation = body.confirmation === "DELETE_ORIGINAL" || body.confirmation === "DELETE_CAPSULE" ? body.confirmation : null;
+  if (!target || !confirmation) return c.json({ error: "storage_transition_invalid" }, 400);
+  if (asset.pendingStorageState) return c.json({ error: "storage_transition_pending" }, 409);
+
+  const verified = await getVisualAnalysisRow(c.env.DB, visualAssetId, "USER_VERIFIED");
+  if (!verified) return c.json({ error: "visual_user_verification_required" }, 409);
+  const now = new Date().toISOString();
+  const operationId = uuid();
+
+  if (target === "CAPSULE") {
+    if (asset.storageState !== "ARCHIVAL") return c.json({ error: "storage_transition_invalid_state" }, 409);
+    if (confirmation !== "DELETE_ORIGINAL") return c.json({ error: "storage_transition_confirmation_invalid" }, 400);
+    const [original, capsule] = await Promise.all([
+      getOriginalVisualVersion(c.env.DB, visualAssetId),
+      getVisualVersion(c.env.DB, visualAssetId, "CAPSULE"),
+    ]);
+    if (!original?.r2Key) return c.json({ error: "visual_original_not_found" }, 409);
+    if (!capsule?.r2Key) return c.json({ error: "visual_capsule_not_ready" }, 409);
+
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        `INSERT INTO visual_asset_operations
+         (id, visual_asset_id, operation_kind, from_state, to_state, status, error, created_at, finished_at)
+         VALUES (?, ?, 'DELETE_ORIGINAL', ?, 'CAPSULE', 'PENDING', NULL, ?, NULL)`
+      ).bind(operationId, visualAssetId, asset.storageState, now),
+      c.env.DB.prepare(
+        `UPDATE visual_assets
+         SET pending_storage_state = 'CAPSULE',
+             updated_at = ?
+         WHERE id = ?`
+      ).bind(now, visualAssetId),
+    ]);
+    try {
+      await c.env.ORIGINALS.delete(original.r2Key);
+      await c.env.DB.batch([
+        c.env.DB.prepare("UPDATE visual_asset_versions SET deleted_at = ? WHERE id = ?").bind(now, original.id),
+        c.env.DB.prepare(
+          `UPDATE visual_assets
+           SET storage_state = 'CAPSULE',
+               pending_storage_state = NULL,
+               updated_at = ?
+           WHERE id = ?`
+        ).bind(now, visualAssetId),
+        c.env.DB.prepare(
+          `UPDATE visual_asset_operations
+           SET status = 'SUCCEEDED',
+               finished_at = ?
+           WHERE id = ?`
+        ).bind(now, operationId),
+      ]);
+    } catch (error) {
+      await c.env.DB.batch([
+        c.env.DB.prepare("UPDATE visual_assets SET pending_storage_state = NULL, updated_at = ? WHERE id = ?").bind(now, visualAssetId),
+        c.env.DB.prepare("UPDATE visual_asset_operations SET status = 'FAILED', error = ?, finished_at = ? WHERE id = ?")
+          .bind(error instanceof Error ? error.message.slice(0, 300) : "visual_storage_delete_failed", now, operationId),
+      ]);
+      return c.json({ error: "visual_storage_delete_failed" }, 500);
+    }
+    return c.json({ asset: await loadAssetSummary(c.env.DB, visualAssetId) });
+  }
+
+  if (asset.storageState !== "CAPSULE") return c.json({ error: "storage_transition_invalid_state" }, 409);
+  if (confirmation !== "DELETE_CAPSULE") return c.json({ error: "storage_transition_confirmation_invalid" }, 400);
+  const capsule = await getVisualVersion(c.env.DB, visualAssetId, "CAPSULE");
+  if (!capsule?.r2Key) return c.json({ error: "visual_capsule_not_ready" }, 409);
+
   await c.env.DB.batch([
     c.env.DB.prepare(
-      `UPDATE visual_analyses SET payload_json = COALESCE(?, payload_json), review_status = ?, reviewed_at = ? WHERE id = ? AND visual_asset_id = ?`
-    ).bind(nextPayload, reviewStatus, timestamp, latest.id, visualAssetId),
+      `INSERT INTO visual_asset_operations
+       (id, visual_asset_id, operation_kind, from_state, to_state, status, error, created_at, finished_at)
+       VALUES (?, ?, 'DELETE_CAPSULE', ?, 'TEXT_ONLY', 'PENDING', NULL, ?, NULL)`
+    ).bind(operationId, visualAssetId, asset.storageState, now),
     c.env.DB.prepare(
-      `UPDATE visual_assets SET selection_status = ?, selection_reason = ?, updated_at = ? WHERE id = ?`
-    ).bind(action === "dismiss" ? "REVIEW" : "SELECTED", action === "accept" ? "사용자 검토 완료" : action === "dismiss" ? "사용자가 제안을 보류함" : "사용자가 제안을 수정함", timestamp, visualAssetId),
+      `UPDATE visual_assets
+       SET pending_storage_state = 'TEXT_ONLY',
+           updated_at = ?
+       WHERE id = ?`
+    ).bind(now, visualAssetId),
   ]);
-  const updated = await getVisualAsset(c.env.DB, visualAssetId);
-  const capsule = await getVisualVersion(c.env.DB, visualAssetId, "CAPSULE");
-  const analysis = await getLatestVisualAnalysis(c.env.DB, visualAssetId);
-  return c.json({ asset: updated ? toVisualAssetSummary(updated, capsule?.id ?? null, analysis) : null });
+  try {
+    await c.env.ORIGINALS.delete(capsule.r2Key);
+    await c.env.DB.batch([
+      c.env.DB.prepare("UPDATE visual_asset_versions SET deleted_at = ? WHERE id = ?").bind(now, capsule.id),
+      c.env.DB.prepare(
+        `UPDATE visual_assets
+         SET storage_state = 'TEXT_ONLY',
+             pending_storage_state = NULL,
+             updated_at = ?
+         WHERE id = ?`
+      ).bind(now, visualAssetId),
+      c.env.DB.prepare(
+        `UPDATE visual_asset_operations
+         SET status = 'SUCCEEDED',
+             finished_at = ?
+         WHERE id = ?`
+      ).bind(now, operationId),
+    ]);
+  } catch (error) {
+    await c.env.DB.batch([
+      c.env.DB.prepare("UPDATE visual_assets SET pending_storage_state = NULL, updated_at = ? WHERE id = ?").bind(now, visualAssetId),
+      c.env.DB.prepare("UPDATE visual_asset_operations SET status = 'FAILED', error = ?, finished_at = ? WHERE id = ?")
+        .bind(error instanceof Error ? error.message.slice(0, 300) : "visual_storage_delete_failed", now, operationId),
+    ]);
+    return c.json({ error: "visual_storage_delete_failed" }, 500);
+  }
+  return c.json({ asset: await loadAssetSummary(c.env.DB, visualAssetId) });
 });
 
 visualAssets.get("/:id", async (c) => {
-  const asset = await getVisualAsset(c.env.DB, c.req.param("id"));
+  const asset = await getVisualAssetDetail(c.env.DB, c.req.param("id"));
   if (!asset) return c.json({ error: "not_found" }, 404);
-  const capsule = await getVisualVersion(c.env.DB, asset.id, "CAPSULE");
-  const analysis = await getLatestVisualAnalysis(c.env.DB, asset.id);
-  return c.json({ asset: toVisualAssetSummary(asset, capsule?.id ?? null, analysis) });
+  return c.json({ asset });
 });
 
 export default visualAssets;
