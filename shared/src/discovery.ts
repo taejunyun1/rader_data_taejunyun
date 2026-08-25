@@ -59,7 +59,7 @@ export type ResearchJobResultRef =
   | { view: "RADAR"; period: "WEEKLY" | "MONTHLY" | "YEARLY"; snapshotId?: string }
   | { view: "RESERVOIR"; sourceId: string; analysisId: string }
   | { view: "RESERVOIR"; sourceId: string; acquisition: true }
-  | { view: "RESERVOIR"; sourceId: string; visualAssetId?: string; extractionRunId?: string };
+  | { view: "VISUAL"; visualAssetId: string; sourceId?: string; extractionRunId?: string };
 
 export interface ResearchJob {
   id: string;

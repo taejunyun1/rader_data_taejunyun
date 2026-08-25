@@ -13,6 +13,8 @@ import { analyzeDeepSource } from "../analysis/deepAnalyze";
 import { releaseDeepAnalysisBudgetReservation, reserveDeepAnalysisBudget } from "../analysis/budgetReservation";
 import { blockResearchJob, completeResearchJob, failResearchJob, getResearchJob, markJobRunning, updateJobProgress } from "../jobs/store";
 import { executeSourceAcquisitionJob } from "./sourceAcquisition";
+import { transformVisualAsset } from "../visual/transform";
+import { enqueueResearchJob } from "../jobs/enqueue";
 
 class JobBlockedError extends Error {
   constructor(public readonly code: string, message: string) {
@@ -34,6 +36,7 @@ type WorkflowStepResult = {
     analysisId?: string;
     model?: string;
     sourceId?: string;
+    visualAssetId?: string;
     textScope?: TextScope;
     versionId?: string;
     charCount?: number;
@@ -57,6 +60,19 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
         { retries: { limit: 1, delay: "5 seconds", backoff: "exponential" }, timeout: "15 minutes" },
         async () => this.execute(job),
       );
+
+      if (job.kind === "VISUAL_TRANSFORM" && result.result.sourceId) {
+        await step.do(
+          "enqueue-visual-analysis",
+          { retries: { limit: 1, delay: "5 seconds", backoff: "exponential" }, timeout: "1 minute" },
+          async () => {
+            const visualAssetId = result.result.visualAssetId;
+            if (!visualAssetId) return false;
+            await enqueueResearchJob(this.env, { kind: "VISUAL_ANALYSIS", input: { visualAssetId } }, job.requestedBy ?? "local");
+            return true;
+          },
+        );
+      }
 
       if (job.kind === "DEEP_ANALYSIS") {
         await step.do(
@@ -140,6 +156,15 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
     }
 
     if (job.kind === "VISUAL_TRANSFORM" || job.kind === "VISUAL_ANALYSIS" || job.kind === "VISUAL_EXTRACTION") {
+      if (job.kind === "VISUAL_TRANSFORM") {
+        await updateJobProgress(this.env.DB, job.id, 25, "이미지 Capsule을 만드는 중");
+        const input = job.input as { visualAssetId: string };
+        const transformed = await transformVisualAsset(this.env, input.visualAssetId);
+        return {
+          result: { visualAssetId: transformed.visualAssetId, sourceId: transformed.sourceId ?? undefined },
+          resultRef: { view: "VISUAL", visualAssetId: transformed.visualAssetId, sourceId: transformed.sourceId ?? undefined },
+        };
+      }
       throw new JobBlockedError("visual_pipeline_not_ready", "visual_pipeline_not_ready");
     }
 
