@@ -4,9 +4,10 @@ import { extractPdfText, fileToBase64, renderPdfPreview } from "../lib/pdf";
 import PageHeader from "../components/layout/PageHeader";
 import StatusMessage from "../components/ui/StatusMessage";
 import IngestionReviewPane from "../components/inbox/IngestionReviewPane";
+import VisualUploadQueue from "../components/visual/VisualUploadQueue";
 import { INGEST_CHANNEL_LABELS, INPUT_FORMAT_LABELS, QUALITY_STATUS_LABELS, labelOf } from "../lib/labels";
 
-type CaptureMode = "memo" | "url" | "file";
+type CaptureMode = "memo" | "url" | "file" | "image";
 
 const STATUS_LABEL: Record<string, string> = {
   received: "접수됨",
@@ -189,6 +190,7 @@ export default function InboxView() {
           <button className={mode === "memo" ? "inbox-tabs__active" : ""} role="tab" aria-selected={mode === "memo"} onClick={() => setMode("memo")}>메모·텍스트</button>
           <button className={mode === "url" ? "inbox-tabs__active" : ""} role="tab" aria-selected={mode === "url"} onClick={() => setMode("url")}>웹 주소</button>
           <button className={mode === "file" ? "inbox-tabs__active" : ""} role="tab" aria-selected={mode === "file"} onClick={() => setMode("file")}>파일</button>
+          <button className={mode === "image" ? "inbox-tabs__active" : ""} role="tab" aria-selected={mode === "image"} onClick={() => setMode("image")}>이미지</button>
         </div>
         {mode === "memo" && <>
           <label>제목<span className="table-note">선택</span><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="자료를 구분할 제목" /></label>
@@ -205,6 +207,7 @@ export default function InboxView() {
           <label>파일 선택<input ref={fileRef} type="file" accept=".md,.markdown,.txt,.pdf" multiple onChange={(event) => void onFile(event)} /></label>
           <div className="inbox-format-guide"><strong>지원 형식</strong><span>마크다운·플레인 텍스트</span><span>텍스트 PDF·스캔 PDF</span><small>PDF 원본은 R2에 보존합니다. 스캔 PDF는 OCR 없이 검토 상태로 남깁니다.</small></div>
         </>}
+        {mode === "image" && <VisualUploadQueue onComplete={async () => { notify("이미지를 보존했습니다. 형태 분석이 끝나면 저장소에서 제안을 확인할 수 있습니다."); await refresh(); }} />}
       </section>
       <div className="inbox-workspace">
       <section className="inbox-list" aria-label="최근 들어온 자료">

@@ -12,6 +12,7 @@ import signals from "./routes/signals";
 import syncRoute from "./routes/sync";
 import usageRoute from "./routes/usage";
 import jobsRoute from "./routes/jobs";
+import visualAssetsRoute from "./routes/visualAssets";
 import { syncHomepageReading } from "./homepage/reading";
 import { verifyAccessAssertion, extractAssertion, type AccessIdentity } from "./lib/access";
 
@@ -36,7 +37,7 @@ app.use("/api/*", async (c, next) => {
   }
 
   const teamDomain = c.env.ACCESS_TEAM_DOMAIN;
-  if (!teamDomain || c.env.ENVIRONMENT === "development") return next();
+  if (!teamDomain || String(c.env.ENVIRONMENT) === "development") return next();
 
   const assertion = extractAssertion(c.req.raw);
   if (!assertion) return c.json({ error: "unauthorized" }, 401);
@@ -77,6 +78,7 @@ app.route("/api/signals", signals);
 app.route("/api/sync", syncRoute);
 app.route("/api/usage", usageRoute);
 app.route("/api/jobs", jobsRoute);
+app.route("/api/visual-assets", visualAssetsRoute);
 
 app.get("/api/debug/ai-check", async (c) => {
   const { callOpenAi } = await import("./lib/openai");

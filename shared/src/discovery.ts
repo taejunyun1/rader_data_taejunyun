@@ -36,7 +36,10 @@ export type ResearchJobKind =
   | "DISTILL_RUN"
   | "RADAR_SYNTHESIS"
   | "DEEP_ANALYSIS"
-  | "SOURCE_ACQUISITION";
+  | "SOURCE_ACQUISITION"
+  | "VISUAL_TRANSFORM"
+  | "VISUAL_ANALYSIS"
+  | "VISUAL_EXTRACTION";
 
 export type ResearchJobStatus = "QUEUED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "BLOCKED";
 
@@ -55,7 +58,8 @@ export type ResearchJobResultRef =
   | { view: "DISTILL"; sessionId: string }
   | { view: "RADAR"; period: "WEEKLY" | "MONTHLY" | "YEARLY"; snapshotId?: string }
   | { view: "RESERVOIR"; sourceId: string; analysisId: string }
-  | { view: "RESERVOIR"; sourceId: string; acquisition: true };
+  | { view: "RESERVOIR"; sourceId: string; acquisition: true }
+  | { view: "VISUAL"; visualAssetId: string; sourceId?: string; extractionRunId?: string };
 
 export interface ResearchJob {
   id: string;

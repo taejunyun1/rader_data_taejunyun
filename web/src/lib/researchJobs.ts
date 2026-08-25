@@ -12,6 +12,9 @@ export function jobLabel(kind: ResearchJobKind): string {
     RADAR_SYNTHESIS: "레이더 생성",
     DEEP_ANALYSIS: "심층 정리",
     SOURCE_ACQUISITION: "원문 수집",
+    VISUAL_TRANSFORM: "이미지 변환",
+    VISUAL_ANALYSIS: "이미지 분석",
+    VISUAL_EXTRACTION: "시각 자료 추출",
   })[kind];
 }
 

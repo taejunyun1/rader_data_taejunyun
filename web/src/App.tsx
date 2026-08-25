@@ -18,7 +18,7 @@ export default function App() {
   const [focus, setFocus] = useState<{ distillSessionId?: string; radarPeriod?: RadarPeriod; reservoirSourceId?: string }>({});
 
   function openJobResult(result: ResearchJobResultRef) {
-    setView(result.view);
+    setView(result.view === "VISUAL" ? "RESERVOIR" : result.view);
     if (result.view === "DISTILL") setFocus({ distillSessionId: result.sessionId });
     if (result.view === "RADAR") setFocus({ radarPeriod: result.period });
     if (result.view === "RESERVOIR") setFocus({ reservoirSourceId: result.sourceId });

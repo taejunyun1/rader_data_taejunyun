@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { QualityStatus, TextScope } from "@radar/shared/ingestion";
+import type { VisualAssetSummary } from "@radar/shared";
 import type { SourceAccess } from "../lib/sourceAccess";
 import { deriveSourceAccess } from "../lib/sourceAccess";
 import { formatDateKo } from "../lib/ui";
@@ -13,6 +14,7 @@ import ReadingPane from "../components/reading/ReadingPane";
 import type { DeepAnalysisViewModel } from "../components/reading/DeepAnalysisPanel";
 import SourceIndex from "../components/reading/SourceIndex";
 import SplitWorkspace from "../components/reading/SplitWorkspace";
+import VisualAssetPanel from "../components/visual/VisualAssetPanel";
 import type { DecisionAction, ReadingDocument, SourceAcquisitionView, SourceIndexItem } from "../components/reading/types";
 
 interface ReservoirItem {
@@ -45,6 +47,7 @@ interface SourceDetail {
   signals: { action: string; created_at: string }[];
   deepAnalysis?: DeepAnalysisViewModel | null;
   deepAnalysisHistory?: { id: string; model?: string; createdAt: string; costUsd?: number }[];
+  visuals?: VisualAssetSummary[];
 }
 
 interface DeepAnalysisResponse {
@@ -175,6 +178,7 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
   const [decisionFilter, setDecisionFilter] = useState<(typeof DECISION_FILTERS)[number]["value"]>("active");
   const [topics, setTopics] = useState<{ topic: string; count: number }[]>([]);
   const [nextResearch, setNextResearch] = useState<{ markedCount: number; lastResearchAt: string | null } | null>(null);
+  const [unassignedVisuals, setUnassignedVisuals] = useState<VisualAssetSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [decisionOpen, setDecisionOpen] = useState(false);
   const [decisionError, setDecisionError] = useState("");
@@ -250,6 +254,12 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
   }, [isCurrentFilterIntent]);
 
   useEffect(() => { void load(); }, [decisionFilter, kindFilter, load, topicFilter]);
+  useEffect(() => {
+    fetch("/api/visual-assets?unassigned=1")
+      .then((response) => response.ok ? response.json() as Promise<{ items?: VisualAssetSummary[] }> : Promise.reject(new Error("visual_list_failed")))
+      .then((data) => setUnassignedVisuals(data.items ?? []))
+      .catch(() => setUnassignedVisuals([]));
+  }, []);
   useEffect(() => {
     if (!focusSourceId) return;
     void openDetail(focusSourceId);
@@ -480,6 +490,25 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
     }
   }
 
+  async function reviewVisualAnalysis(assetId: string, action: "accept" | "dismiss") {
+    try {
+      const response = await fetch(`/api/visual-assets/${assetId}/analysis`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      if (!response.ok) throw new Error("visual_review_failed");
+      const data = await response.json() as { asset?: VisualAssetSummary | null };
+      if (data.asset) {
+        setUnassignedVisuals((current) => current.map((asset) => asset.id === data.asset?.id ? data.asset : asset));
+        setDetail((current) => current ? { ...current, visuals: current.visuals?.map((asset) => asset.id === data.asset?.id ? data.asset! : asset) } : current);
+      }
+      setMsg(action === "accept" ? "시각 제안을 채택했습니다." : "시각 제안을 보류했습니다.");
+    } catch {
+      setMsg("시각 제안의 검토 상태를 저장하지 못했습니다.");
+    }
+  }
+
   const indexItems = useMemo(() => searchHits
     ? searchHits.map((hit) => ({ id: hit.sourceId, title: hit.title, meta: hit.matched, tags: hit.snippet ? [hit.snippet] : [], access: deriveSourceAccess({ href: null }) }))
     : items.map(toIndexItem), [items, searchHits]);
@@ -509,12 +538,13 @@ export default function ReservoirView({ onJobCreated, focusSourceId, onFocusCons
         <div className="filter-strip" aria-label="판단 상태 필터">{DECISION_FILTERS.map((filter) => <button key={filter.value} className={`filter-button${decisionFilter === filter.value ? " is-active" : ""}`} onClick={() => updateFilters({ kind: kindFilter, topic: topicFilter, decision: filter.value })}>{filter.label}</button>)}</div>
       </div>
       {topics.length > 0 && <div className="topic-strip" aria-label="주제 필터">{topics.slice(0, 14).map((topic) => <button key={topic.topic} className={`topic-chip${topicFilter === topic.topic ? " is-active" : ""}`} onClick={() => updateFilters({ kind: kindFilter, topic: topicFilter === topic.topic ? "" : topic.topic, decision: decisionFilter })}>{topic.topic} · {topic.count}</button>)}</div>}
+      <VisualAssetPanel assets={unassignedVisuals} title="연결되지 않은 시각 자료" onAnalysisAction={reviewVisualAnalysis} />
       {msg && <p className="reservoir-message" role="status">{msg}</p>}
       {listError ? <StatusMessage kind="error" title={listError} action={<button className="ui-button-secondary" onClick={() => void load()}>다시 시도</button>} /> : <SplitWorkspace
         readingKey={selectedId}
         mobilePane={selectedId ? "reading" : "index"}
         index={<SourceIndex title="저장소 자료" items={indexItems} selectedId={selectedId} onSelect={(id) => void openDetail(id)} />}
-      reading={detailError ? <><ReadingActionBar message="상세 내용을 불러오지 못했습니다." onBack={clearSelection} /><StatusMessage kind="error" title={detailError} action={<button className="ui-button-secondary" onClick={() => selectedId && void openDetail(selectedId)}>다시 시도</button>} /></> : detailLoading ? <><ReadingActionBar message="자료 상세 내용을 불러오는 중…" onBack={clearSelection} /><StatusMessage kind="loading" title="자료 상세 내용을 불러오는 중…" description="원문과 분석 내용을 준비하고 있습니다." /></> : document ? <><ReadingActionBar statusLabel={detail?.source.decisionStatus ? DECISION_STATUS_LABELS[detail.source.decisionStatus as DecisionAction["id"]] : null} pending={actionPending} onBack={clearSelection} onOpenDecision={() => setDecisionOpen(true)} /><div className="deep-analysis-controls" aria-label="심층 정리 실행"><label htmlFor="deep-analysis-profile">심층 정리 품질</label><select id="deep-analysis-profile" value={deepProfile} onChange={(event) => setDeepProfile(event.target.value as "precision" | "maximum")} disabled={deepPending || deepDisabled}><option value="precision">정밀 · 긴 본문 구조화</option><option value="maximum">최고 정밀 · 논거와 연결 검토</option></select><button type="button" className="ui-button" onClick={() => void runDeepAnalysis()} disabled={deepPending || deepDisabled}>{deepDisabled ? "원문 수집 필요" : deepPending ? "심층 정리 중…" : "심층 정리하기"}</button></div>{deepBlockReason && <p className="deep-analysis-blocked" role="status">{deepBlockReason}</p>}<ReadingPane document={document} deepAnalysis={detail?.deepAnalysis} deepAnalysisHistory={detail?.deepAnalysisHistory} onOpenDeepHistory={(id) => void openDeepHistory(id)} /></> : <StatusMessage kind="empty" title="읽을 자료를 선택하세요" description="왼쪽 목록에서 자료를 고르면 원문과 분석 내용을 함께 읽을 수 있습니다." />}
+      reading={detailError ? <><ReadingActionBar message="상세 내용을 불러오지 못했습니다." onBack={clearSelection} /><StatusMessage kind="error" title={detailError} action={<button className="ui-button-secondary" onClick={() => selectedId && void openDetail(selectedId)}>다시 시도</button>} /></> : detailLoading ? <><ReadingActionBar message="자료 상세 내용을 불러오는 중…" onBack={clearSelection} /><StatusMessage kind="loading" title="자료 상세 내용을 불러오는 중…" description="원문과 분석 내용을 준비하고 있습니다." /></> : document ? <><ReadingActionBar statusLabel={detail?.source.decisionStatus ? DECISION_STATUS_LABELS[detail.source.decisionStatus as DecisionAction["id"]] : null} pending={actionPending} onBack={clearSelection} onOpenDecision={() => setDecisionOpen(true)} /><div className="deep-analysis-controls" aria-label="심층 정리 실행"><label htmlFor="deep-analysis-profile">심층 정리 품질</label><select id="deep-analysis-profile" value={deepProfile} onChange={(event) => setDeepProfile(event.target.value as "precision" | "maximum")} disabled={deepPending || deepDisabled}><option value="precision">정밀 · 긴 본문 구조화</option><option value="maximum">최고 정밀 · 논거와 연결 검토</option></select><button type="button" className="ui-button" onClick={() => void runDeepAnalysis()} disabled={deepPending || deepDisabled}>{deepDisabled ? "원문 수집 필요" : deepPending ? "심층 정리 중…" : "심층 정리하기"}</button></div>{deepBlockReason && <p className="deep-analysis-blocked" role="status">{deepBlockReason}</p>}<ReadingPane document={document} deepAnalysis={detail?.deepAnalysis} deepAnalysisHistory={detail?.deepAnalysisHistory} onOpenDeepHistory={(id) => void openDeepHistory(id)} />{detail?.visuals && <VisualAssetPanel assets={detail.visuals} onAnalysisAction={reviewVisualAnalysis} />}</> : <StatusMessage kind="empty" title="읽을 자료를 선택하세요" description="왼쪽 목록에서 자료를 고르면 원문과 분석 내용을 함께 읽을 수 있습니다." />}
       />}
       {document && <DecisionBottomSheet document={document} decisionStatus={detail?.source.decisionStatus as DecisionAction["id"] | null} open={decisionOpen} pending={actionPending} pendingAction={pendingAction} error={decisionError} onClose={() => setDecisionOpen(false)} onAction={(action) => void signal(action)} secondaryAction={{ label: "다시 분석하기", onClick: reanalyze }}><div className="source-detail-extra"><div className="source-detail-extra__heading"><h3>자료 기록</h3><button className="ui-button-secondary" type="button" disabled={actionPending || !canonicalUrl} onClick={() => void refetch()}>다시 가져오기</button></div><p>{detail?.versions.length ?? 0}개 버전 · {detail?.signals.length ?? 0}개 판단 기록</p>{!canonicalUrl && <p>원문 주소가 없어 다시 가져올 수 없습니다.</p>}</div></DecisionBottomSheet>}
       {searchHits && <p className="table-note">검색 결과 {searchHits.length}개 · 검색 결과를 선택하면 같은 읽기 화면에서 확인합니다.</p>}
