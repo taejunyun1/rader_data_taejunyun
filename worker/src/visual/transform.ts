@@ -1,6 +1,7 @@
 import { sha256Hex, uuid } from "../ingestion/ids";
 import { getOriginalVisualVersion, getVisualAsset, getVisualVersion } from "./store";
 import { imageDHash, VISUAL_HASH_METHOD } from "./perceptualHash";
+import type { NormalizedVisualBbox } from "@radar/shared";
 
 export type VisualTransformProfile = "PHOTO_V1" | "GRAPHIC_V1";
 
@@ -14,6 +15,41 @@ export interface TransformResult {
   sourceId: string | null;
   capsuleVersionId: string;
   perceptualHash: string;
+}
+
+export interface CroppedVisualBytes {
+  bytes: ArrayBuffer;
+  mimeType: "image/webp";
+  width: number;
+  height: number;
+}
+
+export async function cropVisualBytes(
+  env: Env,
+  bytes: ArrayBuffer,
+  bbox: Pick<NormalizedVisualBbox, "x" | "y" | "width" | "height">,
+): Promise<CroppedVisualBytes> {
+  const sourceInfo = await env.IMAGES.info(new Response(bytes).body!);
+  if (!("width" in sourceInfo) || !sourceInfo.width || !sourceInfo.height) {
+    throw new Error("VISUAL_DIMENSIONS_UNAVAILABLE");
+  }
+
+  const left = Math.floor(bbox.x * sourceInfo.width);
+  const top = Math.floor(bbox.y * sourceInfo.height);
+  const right = Math.floor((1 - bbox.x - bbox.width) * sourceInfo.width);
+  const bottom = Math.floor((1 - bbox.y - bbox.height) * sourceInfo.height);
+  const width = sourceInfo.width - left - right;
+  const height = sourceInfo.height - top - bottom;
+  if (width <= 0 || height <= 0) throw new Error("VISUAL_CROP_EMPTY");
+
+  const transformed = await env.IMAGES
+    .input(new Response(bytes).body!)
+    .transform({ trim: { top, right, bottom, left } })
+    .output({ format: "image/webp", quality: 100, anim: false });
+  const croppedBytes = await transformed.response().arrayBuffer();
+  if (!croppedBytes.byteLength) throw new Error("VISUAL_CROP_EMPTY");
+
+  return { bytes: croppedBytes, mimeType: "image/webp", width, height };
 }
 
 export async function transformVisualAsset(env: Env, visualAssetId: string, profile: VisualTransformProfile = "PHOTO_V1"): Promise<TransformResult> {

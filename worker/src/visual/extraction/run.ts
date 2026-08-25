@@ -1,6 +1,8 @@
 import type { InputFormat } from "@radar/shared/ingestion";
 import { extensionForVisualType } from "../contracts";
 import { analyzeVisualVersionBytes } from "../analyzer";
+import { cropVisualBytes } from "../transform";
+import { imageDHash } from "../perceptualHash";
 import { enqueueResearchJob } from "../../jobs/enqueue";
 import { sha256Hex, uuid } from "../../ingestion/ids";
 import { inspectHtmlVisualCandidates } from "./html";
@@ -60,6 +62,23 @@ export interface LoadedSourceForExtraction {
   finalUrl: string | null;
   r2Key: string | null;
   extractedText: string | null;
+}
+
+export function decidePdfVisualCandidate(input: {
+  pageNumber: number;
+  candidate: PdfPageCandidate;
+  contentHash: string;
+  perceptualHash: string;
+  existingAssets: ExistingVisualFingerprint[];
+}): ReturnType<typeof filterVisualCandidate> {
+  return filterVisualCandidate({
+    contentHash: input.contentHash,
+    perceptualHash: input.perceptualHash,
+    caption: input.candidate.caption,
+    nearbyText: buildPdfNearbyText(input.pageNumber, input.candidate),
+    signals: [],
+    existingAssets: input.existingAssets,
+  });
 }
 
 interface ExtractionUnitRow {
@@ -237,7 +256,10 @@ async function runPdfVisualExtraction(env: Env, input: RunVisualExtractionInput,
   const queuedUnits = units.slice(0, PDF_PAGE_LIMIT);
   diagnostics.blocked.pdfPages = Math.max(units.length - queuedUnits.length, 0);
   const rightsStatus = pdfRightsStatus(source.origin);
-  const rightsBasis = rightsStatus === "UNKNOWN" ? "pdf_rights_unknown_requires_link_only" : "source_pdf_permitted_for_capsule";
+  const rightsBasis = isLinkOnlyPdfRights(rightsStatus)
+    ? `pdf_rights_${rightsStatus.toLowerCase()}_requires_link_only`
+    : "source_pdf_permitted_for_capsule";
+  const existingAssets = await loadExistingFingerprints(env.DB, source.sourceVersionId);
   let failedUnits = 0;
 
   for (const unit of queuedUnits) {
@@ -263,15 +285,24 @@ async function runPdfVisualExtraction(env: Env, input: RunVisualExtractionInput,
 
       for (const [index, candidate] of parsed.accepted.entries()) {
         try {
-          if (rightsStatus === "UNKNOWN") {
-            counts.review += 1;
-            await persistPdfLinkOnlyVisual(env, source, unit, candidate, pageBytes, rightsStatus, rightsBasis);
+          const crop = await cropVisualBytes(env, pageBytes, candidate.bbox);
+          const contentHash = await sha256Hex(crop.bytes);
+          const perceptualHash = await imageDHash(env, crop.bytes);
+          const decision = decidePdfVisualCandidate({
+            pageNumber: unit.unitNumber,
+            candidate,
+            contentHash,
+            perceptualHash,
+            existingAssets,
+          });
+          applyDecisionCount(counts, decision.selectionStatus);
+          let persisted: { assetId: string };
+          if (isLinkOnlyPdfRights(rightsStatus)) {
+            persisted = await persistPdfLinkOnlyVisual(env, source, unit, candidate, crop, rightsStatus, rightsBasis, decision, index, contentHash, perceptualHash);
           } else {
-            const selectionStatus = candidate.caption?.trim() ? "SELECTED" : "REVIEW";
-            if (selectionStatus === "SELECTED") counts.selected += 1;
-            else counts.review += 1;
-            await persistPdfTransformCandidate(env, source, unit, candidate, pageBytes, rightsStatus, rightsBasis, index);
+            persisted = await persistPdfTransformCandidate(env, source, unit, candidate, crop, rightsStatus, rightsBasis, index, decision, contentHash, perceptualHash);
           }
+          existingAssets.push({ assetId: persisted.assetId, contentHash, perceptualHash });
         } catch {
           pageFailed = true;
           counts.unavailable += 1;
@@ -409,13 +440,16 @@ async function persistPdfLinkOnlyVisual(
   source: LoadedSourceForExtraction,
   unit: ExtractionUnitRow,
   candidate: PdfPageCandidate,
-  pageBytes: ArrayBuffer,
+  crop: Awaited<ReturnType<typeof cropVisualBytes>>,
   rightsStatus: "UNKNOWN" | "RESTRICTED" | "PUBLIC_LINK",
   rightsBasis: string,
-): Promise<void> {
-  const candidateKey = buildPdfCandidateKey(unit.unitNumber, candidate, 0);
+  decision: ReturnType<typeof filterVisualCandidate>,
+  index: number,
+  contentHash: string,
+  perceptualHash: string,
+): Promise<{ assetId: string }> {
+  const candidateKey = buildPdfCandidateKey(unit.unitNumber, candidate, index);
   const existing = await findExistingCandidate(env.DB, source.sourceVersionId, "PDF_PAGE_CROP", candidateKey);
-  const contentHash = await sha256Hex(pageBytes);
   const draft = buildLinkOnlyVisualDraft({
     parentSourceId: source.sourceId,
     parentVersionId: source.sourceVersionId,
@@ -429,29 +463,26 @@ async function persistPdfLinkOnlyVisual(
     pageNumber: unit.unitNumber,
     bboxJson: JSON.stringify({ ...candidate.bbox, page: unit.unitNumber }),
     contentType: "image/webp",
-    byteSize: pageBytes.byteLength,
+    byteSize: crop.bytes.byteLength,
     contentHash,
+    perceptualHash,
     rightsStatus,
     rightsBasis,
-    decision: {
-      selectionStatus: "REVIEW",
-      selectionReason: "visual-filter-v1:pdf_link_only_rights_review",
-      ruleVersion: "visual-filter-v1",
-      duplicateOf: null,
-    },
+    decision,
   });
   const persisted = existing ?? await persistLinkOnlyDraft(env.DB, draft);
   await analyzeVisualVersionBytes(env, {
     visualAssetId: persisted.assetId,
     visualVersionId: persisted.versionId,
-    bytes: pageBytes,
+    bytes: crop.bytes,
     filename: `page-${unit.unitNumber}.webp`,
     mimeType: "image/webp",
-    width: unit.width,
-    height: unit.height,
+    width: crop.width,
+    height: crop.height,
     caption: candidate.caption,
     storageState: "LINK_ONLY",
   });
+  return { assetId: persisted.assetId };
 }
 
 async function persistPdfTransformCandidate(
@@ -459,22 +490,24 @@ async function persistPdfTransformCandidate(
   source: LoadedSourceForExtraction,
   unit: ExtractionUnitRow,
   candidate: PdfPageCandidate,
-  pageBytes: ArrayBuffer,
+  crop: Awaited<ReturnType<typeof cropVisualBytes>>,
   rightsStatus: "PERMITTED" | "PERSONAL",
   rightsBasis: string,
   index: number,
-): Promise<void> {
+  decision: ReturnType<typeof filterVisualCandidate>,
+  contentHash: string,
+  perceptualHash: string,
+): Promise<{ assetId: string }> {
   const candidateKey = buildPdfCandidateKey(unit.unitNumber, candidate, index);
   const existing = await findExistingCandidate(env.DB, source.sourceVersionId, "PDF_PAGE_CROP", candidateKey);
-  if (existing) return;
+  if (existing) return { assetId: existing.assetId };
 
   const assetId = uuid();
   const versionId = uuid();
   const now = new Date().toISOString();
-  const contentHash = await sha256Hex(pageBytes);
   const extension = extensionForVisualType("image/webp", `page-${unit.unitNumber}.webp`);
   const r2Key = `visuals/${assetId}/original/1.${extension}`;
-  await env.ORIGINALS.put(r2Key, pageBytes, {
+  await env.ORIGINALS.put(r2Key, crop.bytes, {
     httpMetadata: { contentType: "image/webp" },
     customMetadata: { visualAssetId: assetId, variant: "ORIGINAL", source: "PDF_PAGE_CROP" },
   });
@@ -487,7 +520,7 @@ async function persistPdfTransformCandidate(
           rights_status, rights_basis, rights_reviewed_at, is_personal_work, assignment_status, storage_state,
           pending_storage_state, processing_status, last_error, content_hash, perceptual_hash, perceptual_hash_method,
           created_at, updated_at, deleted_at)
-         VALUES (?, ?, ?, 'PDF_PAGE_CROP', ?, ?, ?, ?, ?, ?, ?, 'REFERENCE', 'OTHER', ?, ?, ?, ?, ?, 0, 'ASSIGNED', 'ARCHIVAL', 'CAPSULE', 'TRANSFORM_PENDING', NULL, ?, NULL, NULL, ?, ?, NULL)`
+         VALUES (?, ?, ?, 'PDF_PAGE_CROP', ?, ?, ?, ?, ?, ?, ?, 'REFERENCE', 'OTHER', ?, ?, ?, ?, ?, 0, 'ASSIGNED', 'ARCHIVAL', 'CAPSULE', 'TRANSFORM_PENDING', NULL, ?, ?, 'IMAGES_RGBA_DHASH_V1', ?, ?, NULL)`
       ).bind(
         assetId,
         source.sourceId,
@@ -499,12 +532,13 @@ async function persistPdfTransformCandidate(
         candidateKey,
         candidate.caption,
         buildPdfNearbyText(unit.unitNumber, candidate),
-        candidate.caption?.trim() ? "SELECTED" : "REVIEW",
-        candidate.caption?.trim() ? "visual-filter-v1:selected_contextual_match" : "visual-filter-v1:needs_context_review",
+        decision.selectionStatus,
+        decision.selectionReason,
         rightsStatus,
         rightsBasis,
         now,
         contentHash,
+        perceptualHash,
         now,
         now,
       ),
@@ -512,7 +546,14 @@ async function persistPdfTransformCandidate(
         `INSERT INTO visual_asset_versions
          (id, visual_asset_id, version, variant, r2_key, mime_type, width, height, byte_size, content_hash, parent_asset_version_id, created_at)
          VALUES (?, ?, 1, 'ORIGINAL', ?, 'image/webp', ?, ?, ?, ?, NULL, ?)`
-      ).bind(versionId, assetId, r2Key, unit.width, unit.height, pageBytes.byteLength, contentHash, now),
+      ).bind(versionId, assetId, r2Key, crop.width, crop.height, crop.bytes.byteLength, contentHash, now),
+      ...(decision.duplicateOf ? [
+        env.DB.prepare(
+          `INSERT INTO visual_relations
+           (id, from_visual_asset_id, to_visual_asset_id, related_source_id, related_thread_id, relation_kind, created_by, description, created_at)
+           VALUES (?, ?, ?, NULL, NULL, ?, 'SYSTEM', ?, ?)`
+        ).bind(uuid(), assetId, decision.duplicateOf.toVisualAssetId, decision.duplicateOf.relationKind, decision.duplicateOf.description, now),
+      ] : []),
     ]);
   } catch (error) {
     await env.ORIGINALS.delete(r2Key).catch(() => undefined);
@@ -520,6 +561,7 @@ async function persistPdfTransformCandidate(
   }
 
   await enqueueResearchJob(env, { kind: "VISUAL_TRANSFORM", input: { visualAssetId: assetId } }, "system:visual-extraction");
+  return { assetId };
 }
 
 async function persistLinkOnlyDraft(
@@ -627,10 +669,16 @@ async function findExistingCandidate(
   return { assetId: row.assetId, versionId: row.versionId };
 }
 
-function pdfRightsStatus(origin: string | null): "PERMITTED" | "PERSONAL" | "UNKNOWN" {
+function pdfRightsStatus(origin: string | null): "PERMITTED" | "PERSONAL" | "UNKNOWN" | "RESTRICTED" | "PUBLIC_LINK" {
   if (origin?.startsWith("homepage")) return "PERSONAL";
   if (origin?.startsWith("discovery:")) return "UNKNOWN";
+  if (origin?.startsWith("restricted:")) return "RESTRICTED";
+  if (origin?.startsWith("public_link:")) return "PUBLIC_LINK";
   return "PERMITTED";
+}
+
+function isLinkOnlyPdfRights(value: ReturnType<typeof pdfRightsStatus>): value is "UNKNOWN" | "RESTRICTED" | "PUBLIC_LINK" {
+  return value === "UNKNOWN" || value === "RESTRICTED" || value === "PUBLIC_LINK";
 }
 
 async function detectPdfPageCandidates(

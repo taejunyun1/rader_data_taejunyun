@@ -778,6 +778,92 @@ describe("pdf visual candidate parsing", () => {
   });
 });
 
+describe("pdf visual crop and common filtering", () => {
+  it("crops normalized PDF bboxes into temporary WebP bytes before downstream use", async () => {
+    const { cropVisualBytes } = await import("../../../worker/src/visual/transform");
+    const transform = vi.fn().mockReturnValue({
+      output: vi.fn().mockResolvedValue({
+        response: () => new Response(new Uint8Array([9, 8, 7]), { headers: { "content-type": "image/webp" } }),
+      }),
+    });
+    const input = vi.fn().mockReturnValue({ transform });
+    const env = {
+      IMAGES: {
+        info: vi.fn().mockResolvedValue({ format: "image/webp", width: 1000, height: 800 }),
+        input,
+      },
+    } as unknown as Env;
+
+    const result = await cropVisualBytes(env, new Uint8Array([1, 2, 3]).buffer, {
+      x: 0.1,
+      y: 0.2,
+      width: 0.3,
+      height: 0.4,
+    });
+
+    expect(transform).toHaveBeenCalledWith({
+      trim: { top: 160, right: 600, bottom: 320, left: 100 },
+    });
+    expect(result.bytes).toEqual(new Uint8Array([9, 8, 7]).buffer);
+    expect(result.mimeType).toBe("image/webp");
+    expect(result.width).toBe(300);
+    expect(result.height).toBe(320);
+  });
+
+  it("routes PDF crop hashes through the common filter and preserves duplicate relation decisions", async () => {
+    const { decidePdfVisualCandidate } = await import("../../../worker/src/visual/extraction/run");
+    const { buildLinkOnlyVisualDraft } = await import("../../../worker/src/visual/extraction/filter");
+    const decision = decidePdfVisualCandidate({
+      pageNumber: 3,
+      candidate: {
+        bbox: { x: 0.1, y: 0.2, width: 0.3, height: 0.4 },
+        visualKind: "PHOTO",
+        figureLabel: "Figure 3",
+        caption: "Figure 3. Repeated installation view",
+        reason: "main figure",
+        confidence: 0.94,
+      },
+      contentHash: "crop-sha256",
+      perceptualHash: "0123456789abcdee",
+      existingAssets: [{ assetId: "asset-existing", contentHash: "other-hash", perceptualHash: "0123456789abcdef" }],
+    });
+    const draft = buildLinkOnlyVisualDraft({
+      now: "2026-08-26T01:00:00.000Z",
+      idFactory: (() => {
+        const ids = ["asset-pdf", "version-pdf", "relation-pdf"];
+        return () => ids.shift() ?? "missing-id";
+      })(),
+      parentSourceId: "source-1",
+      parentVersionId: "version-1",
+      originKind: "PDF_PAGE_CROP",
+      candidateKey: "page-3-figure-3-0",
+      sourceUrl: "source:source-1",
+      finalUrl: "source:source-1",
+      figureLabel: "Figure 3",
+      caption: "Figure 3. Repeated installation view",
+      nearbyText: "page 3 | Figure 3 | Repeated installation view | main figure",
+      pageNumber: 3,
+      bboxJson: JSON.stringify({ x: 0.1, y: 0.2, width: 0.3, height: 0.4, page: 3 }),
+      contentType: "image/webp",
+      byteSize: 3,
+      contentHash: "crop-sha256",
+      rightsStatus: "UNKNOWN",
+      rightsBasis: "pdf_rights_unknown_requires_link_only",
+      decision,
+    });
+
+    expect(decision).toMatchObject({
+      selectionStatus: "DUPLICATE",
+      selectionReason: "visual-filter-v1:duplicate_near",
+      duplicateOf: { relationKind: "DUPLICATE_OF", toVisualAssetId: "asset-existing" },
+    });
+    expect(draft.asset.selectionStatus).toBe("DUPLICATE");
+    expect(draft.relations).toEqual([
+      expect.objectContaining({ relationKind: "DUPLICATE_OF", toVisualAssetId: "asset-existing" }),
+    ]);
+  });
+});
+
 describe("visual extraction runner", () => {
   it("routes HTML versions through the HTML pipeline and preserves run-level diagnostics", async () => {
     const { runVisualExtraction } = await import("../../../worker/src/visual/extraction/run");

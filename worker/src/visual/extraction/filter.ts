@@ -51,6 +51,7 @@ export interface LinkOnlyVisualDraftInput {
   contentType: string;
   byteSize: number;
   contentHash: string;
+  perceptualHash?: string | null;
   rightsStatus: VisualRightsStatus;
   rightsBasis: string | null;
   decision: VisualFilterDecision;
@@ -83,8 +84,8 @@ export interface LinkOnlyVisualDraft {
     processingStatus: "READY";
     lastError: null;
     contentHash: string;
-    perceptualHash: null;
-    perceptualHashMethod: null;
+    perceptualHash: string | null;
+    perceptualHashMethod: "IMAGES_RGBA_DHASH_V1" | null;
     createdAt: string;
     updatedAt: string;
     deletedAt: null;
@@ -202,8 +203,8 @@ export function buildLinkOnlyVisualDraft(input: LinkOnlyVisualDraftInput): LinkO
       processingStatus: "READY",
       lastError: null,
       contentHash: input.contentHash,
-      perceptualHash: null,
-      perceptualHashMethod: null,
+      perceptualHash: input.perceptualHash ?? null,
+      perceptualHashMethod: input.perceptualHash ? "IMAGES_RGBA_DHASH_V1" : null,
       createdAt: now,
       updatedAt: now,
       deletedAt: null,
