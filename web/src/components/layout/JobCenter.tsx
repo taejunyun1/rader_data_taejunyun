@@ -1,5 +1,5 @@
 import type { ResearchJob, ResearchJobResultRef } from "@radar/shared/discovery";
-import { isActiveResearchJob, jobLabel, jobResultTarget, jobTitle } from "../../lib/researchJobs";
+import { isActiveResearchJob, jobLabel, jobResultTarget, jobTitle, visualExtractionCountSummary } from "../../lib/researchJobs";
 
 interface Props {
   jobs: ResearchJob[];
@@ -20,10 +20,18 @@ export default function JobCenter({ jobs, onDismiss, onRetry, onResult }: Props)
   if (jobs.length === 0) return null;
   return (
     <div className="job-center" aria-label="백그라운드 작업">
-      {jobs.slice(0, 5).map((job) => (
+      {jobs.slice(0, 5).map((job) => {
+        const countSummary = visualExtractionCountSummary(job);
+        return (
         <div className={`job-center__item job-center__item--${job.status.toLowerCase()}`} key={job.id}>
           <span className="job-center__status" aria-hidden="true">{isActiveResearchJob(job) ? "●" : job.status === "SUCCEEDED" ? "✓" : "!"}</span>
-          <div className="job-center__body"><strong>{jobTitle(job)} · {statusLabel(job)}</strong>{job.message && <span>{job.message}</span>}{job.error && <span>{job.error}</span>}</div>
+          <div className="job-center__body">
+            <strong>{jobTitle(job)} · {statusLabel(job)}</strong>
+            {job.message && <span>{job.message}</span>}
+            {countSummary.primary && <span>{countSummary.primary}</span>}
+            {countSummary.secondary && <span>{countSummary.secondary}</span>}
+            {job.error && <span>{job.error}</span>}
+          </div>
           {job.status === "SUCCEEDED" && job.resultRef && <button className="job-center__action" type="button" onClick={() => {
             const target = jobResultTarget(job);
             if (target) onResult(target);
@@ -31,7 +39,7 @@ export default function JobCenter({ jobs, onDismiss, onRetry, onResult }: Props)
           {(job.status === "FAILED" || job.status === "BLOCKED") && <button className="job-center__action" type="button" onClick={() => onRetry(job.id)}>다시 실행</button>}
           {!isActiveResearchJob(job) && <button className="job-center__dismiss" aria-label={`${jobTitle(job)} 닫기`} type="button" onClick={() => onDismiss(job.id)}>×</button>}
         </div>
-      ))}
+      );})}
     </div>
   );
 }

@@ -416,6 +416,21 @@ describe("deep analysis budget reservation", () => {
     expect(db.statements.filter((statement) => statement.sql.trim().startsWith("SELECT COALESCE((SELECT SUM(cost_usd)"))).toHaveLength(0);
   });
 
+  it("reuses the same reservation boundary for visual analysis with a fixed estimate", async () => {
+    const { reserveVisualAnalysisBudget, visualAnalysisReservationUsd } = await import("../../../worker/src/analysis/budgetReservation");
+    const env = budgetReservationEnv();
+    const amountUsd = await visualAnalysisReservationUsd(env);
+    const db = budgetReservationDb({ monthlyBudgetUsd: amountUsd });
+    env.DB = db;
+
+    const first = await reserveVisualAnalysisBudget(env, { researchJobId: "job-visual-1" });
+    const second = await reserveVisualAnalysisBudget(env, { researchJobId: "job-visual-2" });
+
+    expect(first).toMatchObject({ ok: true, amountUsd });
+    expect(second).toEqual({ ok: false });
+    expect(db.reservations.filter((row) => row.status === "RESERVED")).toHaveLength(1);
+  });
+
   it("keeps the reservoir spend check as a fast guard while workflow reservation failure is the final BLOCKED state", async () => {
     vi.doUnmock("../../../worker/src/analysis/budgetReservation");
     vi.doUnmock("../../../worker/src/analysis/deepAnalyze");
@@ -495,6 +510,43 @@ describe("visual extraction workflow", () => {
     );
     expect(db.blockResearchJob).not.toHaveBeenCalled();
     expect(db.failResearchJob).not.toHaveBeenCalled();
+  });
+
+  it("downgrades a visual candidate to REVIEW instead of blocking the job when the visual budget is exhausted", async () => {
+    const { ResearchJobWorkflow } = await loadDeepAnalysisWorkflow({
+      visualReservationResults: [{ ok: false }],
+    });
+    const job = {
+      id: "job-visual-budget-blocked",
+      kind: "VISUAL_ANALYSIS",
+      input: { visualAssetId: "asset-budget-blocked" },
+    };
+    const db = workflowStatusDb(job as ReturnType<typeof deepJob>);
+    const workflow = Object.create(ResearchJobWorkflow.prototype) as { env: Env; run: typeof ResearchJobWorkflow.prototype.run };
+    workflow.env = { DB: db, MONTHLY_BUDGET_USD: "10" } as Env;
+
+    await workflow.run({ payload: { jobId: "job-visual-budget-blocked" } } as never, workflowStep());
+
+    expect(db.reserveVisualAnalysisBudget).toHaveBeenCalledWith(
+      { DB: db, MONTHLY_BUDGET_USD: "10" },
+      { researchJobId: "job-visual-budget-blocked" },
+    );
+    expect(db.visualAssetReviewFallbacks).toEqual([
+      {
+        id: "asset-budget-blocked",
+        selectionStatus: "REVIEW",
+        selectionReason: "visual_analysis_skipped_monthly_budget_exhausted",
+        processingStatus: "READY",
+        lastError: "monthly_budget_exhausted",
+      },
+    ]);
+    expect(db.blockResearchJob).not.toHaveBeenCalled();
+    expect(db.completeResearchJob).toHaveBeenCalledWith(
+      db,
+      "job-visual-budget-blocked",
+      expect.objectContaining({ visualAssetId: "asset-budget-blocked", budgetBlocked: true }),
+      { view: "VISUAL", visualAssetId: "asset-budget-blocked" },
+    );
   });
 });
 
@@ -815,7 +867,7 @@ function retryingWorkflowStep(retryStepName: string) {
 }
 
 function workflowStatusDb(job: ReturnType<typeof deepJob>) {
-  return {
+  const db = {
     job,
     getResearchJob: vi.fn().mockResolvedValue(job),
     markJobRunning: vi.fn().mockResolvedValue(undefined),
@@ -824,16 +876,43 @@ function workflowStatusDb(job: ReturnType<typeof deepJob>) {
     failResearchJob: vi.fn().mockResolvedValue(undefined),
     blockResearchJob: vi.fn().mockResolvedValue(undefined),
     reserveDeepAnalysisBudget: vi.fn(),
+    reserveVisualAnalysisBudget: vi.fn(),
     releaseDeepAnalysisBudgetReservation: vi.fn().mockResolvedValue(undefined),
+    releaseAnalysisBudgetReservation: vi.fn().mockResolvedValue(undefined),
     analyzeDeepSource: vi.fn(),
-    prepare() {
+    visualAssetReviewFallbacks: [] as Array<{
+      id: string;
+      selectionStatus: string;
+      selectionReason: string;
+      processingStatus: string;
+      lastError: string;
+    }>,
+    prepare(sql: string) {
+      let values: unknown[] = [];
       return {
-        bind() { return this; },
+        bind(...next: unknown[]) {
+          values = next;
+          return this;
+        },
         async first() { return null; },
-        async run() { return { success: true, meta: { changes: 0 } }; },
+        async run() {
+          if (sql.includes("UPDATE visual_assets") && sql.includes("selection_status = 'REVIEW'")) {
+            const [selectionReason, _updatedAt, id] = values as [string, string, string];
+            db.visualAssetReviewFallbacks.push({
+              id,
+              selectionStatus: "REVIEW",
+              selectionReason,
+              processingStatus: "READY",
+              lastError: "monthly_budget_exhausted",
+            });
+            return { success: true, meta: { changes: 1 } };
+          }
+          return { success: true, meta: { changes: 0 } };
+        },
       };
     },
-  } as unknown as D1Database & {
+  };
+  return db as unknown as D1Database & {
     getResearchJob: ReturnType<typeof vi.fn>;
     markJobRunning: ReturnType<typeof vi.fn>;
     updateJobProgress: ReturnType<typeof vi.fn>;
@@ -841,8 +920,17 @@ function workflowStatusDb(job: ReturnType<typeof deepJob>) {
     failResearchJob: ReturnType<typeof vi.fn>;
     blockResearchJob: ReturnType<typeof vi.fn>;
     reserveDeepAnalysisBudget: ReturnType<typeof vi.fn>;
+    reserveVisualAnalysisBudget: ReturnType<typeof vi.fn>;
     releaseDeepAnalysisBudgetReservation: ReturnType<typeof vi.fn>;
+    releaseAnalysisBudgetReservation: ReturnType<typeof vi.fn>;
     analyzeDeepSource: ReturnType<typeof vi.fn>;
+    visualAssetReviewFallbacks: Array<{
+      id: string;
+      selectionStatus: string;
+      selectionReason: string;
+      processingStatus: string;
+      lastError: string;
+    }>;
   };
 }
 
@@ -880,6 +968,7 @@ function workflowBudgetReservationDb(job: ReturnType<typeof deepJob>, input: { m
 
 async function loadDeepAnalysisWorkflow(input: {
   reservationResults?: ({ ok: true; reservationId: string; amountUsd: number } | { ok: false })[];
+  visualReservationResults?: ({ ok: true; reservationId: string; amountUsd: number } | { ok: false })[];
   analysisResults?: { analysisId: string; model: string; costUsd: number }[];
   analysisError?: Error;
   releaseError?: Error;
@@ -916,9 +1005,19 @@ async function loadDeepAnalysisWorkflow(input: {
         db.reserveDeepAnalysisBudget(env, reservationInput);
         return result;
       },
+      reserveVisualAnalysisBudget: (env: Env, reservationInput: { researchJobId: string }) => {
+        const db = env.DB as ReturnType<typeof workflowStatusDb>;
+        const result = input.visualReservationResults?.shift() ?? { ok: false };
+        db.reserveVisualAnalysisBudget(env, reservationInput);
+        return result;
+      },
       releaseDeepAnalysisBudgetReservation: async (db: ReturnType<typeof workflowStatusDb>, researchJobId: string) => {
         if (input.releaseError) throw input.releaseError;
         return db.releaseDeepAnalysisBudgetReservation(db, researchJobId);
+      },
+      releaseAnalysisBudgetReservation: async (db: ReturnType<typeof workflowStatusDb>, researchJobId: string) => {
+        if (input.releaseError) throw input.releaseError;
+        return db.releaseAnalysisBudgetReservation(db, researchJobId);
       },
     }));
   }

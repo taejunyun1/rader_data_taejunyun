@@ -114,6 +114,8 @@ app.onError((err, c) => {
 export default {
   fetch: app.fetch,
   async scheduled(event: ScheduledEvent, env: Env) {
+    await runVisualCleanupSafely(env, event.cron);
+
     if (event.cron === "0 1 * * *") {
       try {
         const result = await syncHomepageReading(env);
@@ -157,3 +159,18 @@ export default {
 };
 
 export { ResearchJobWorkflow } from "./workflows/researchJob";
+
+async function runVisualCleanupSafely(env: Env, cron: string): Promise<void> {
+  try {
+    const { cleanupExpiredVisualExtractionTemps } = await import("./visual/cleanup");
+    const result = await cleanupExpiredVisualExtractionTemps(env);
+    console.log(JSON.stringify({ level: "info", cron, visualTempCleanup: result }));
+  } catch (err) {
+    console.error(JSON.stringify({
+      level: "error",
+      scope: "cron:visual-cleanup",
+      cron,
+      message: (err as Error).message,
+    }));
+  }
+}

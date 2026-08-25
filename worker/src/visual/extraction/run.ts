@@ -42,6 +42,12 @@ export interface VisualExtractionRunResult {
     filtered: number;
     unavailable: number;
   };
+  outcomeCounts: {
+    duplicateExact: number;
+    duplicateNear: number;
+    rightsGated: number;
+    cleanupFailures: number;
+  };
   diagnostics: VisualExtractionDiagnostics;
 }
 
@@ -146,6 +152,49 @@ export async function runVisualExtraction(
   return deps.runHtmlExtraction(env, input, source);
 }
 
+function emptyOutcomeCounts(): VisualExtractionRunResult["outcomeCounts"] {
+  return {
+    duplicateExact: 0,
+    duplicateNear: 0,
+    rightsGated: 0,
+    cleanupFailures: 0,
+  };
+}
+
+function applyOutcomeCount(
+  outcomeCounts: VisualExtractionRunResult["outcomeCounts"],
+  decision: { selectionReason: string },
+): void {
+  if (decision.selectionReason.includes("duplicate_exact")) outcomeCounts.duplicateExact += 1;
+  if (decision.selectionReason.includes("duplicate_near")) outcomeCounts.duplicateNear += 1;
+}
+
+function logVisualExtractionDiagnostic(input: {
+  level: "warn" | "error" | "info";
+  runId: string;
+  sourceId: string;
+  versionId: string;
+  stage: string;
+  unit?: number;
+  errorCode?: string;
+  counts: VisualExtractionRunResult["counts"];
+  outcomeCounts: VisualExtractionRunResult["outcomeCounts"];
+}): void {
+  const logger = input.level === "error" ? console.error : input.level === "warn" ? console.warn : console.log;
+  logger(JSON.stringify({
+    level: input.level,
+    scope: "visual-extraction",
+    runId: input.runId,
+    sourceId: input.sourceId,
+    versionId: input.versionId,
+    unit: input.unit,
+    stage: input.stage,
+    errorCode: input.errorCode ?? null,
+    counts: input.counts,
+    outcomeCounts: input.outcomeCounts,
+  }));
+}
+
 async function loadSourceForExtraction(env: Env, input: RunVisualExtractionInput): Promise<LoadedSourceForExtraction> {
   const row = await env.DB.prepare(
     `SELECT s.id AS sourceId,
@@ -189,6 +238,7 @@ async function runHtmlVisualExtraction(env: Env, input: RunVisualExtractionInput
     blocked: { htmlCandidates: 0, htmlFetch: 0, pdfPages: 0 },
   };
   const counts = { selected: 0, review: 0, filtered: 0, unavailable: 0 };
+  const outcomeCounts = emptyOutcomeCounts();
 
   const existingUnits = input.extractionRunId
     ? (await listExtractionUnits(env.DB, run.id)).filter((unit) => shouldProcessHtmlExtractionUnit(unit.status))
@@ -196,7 +246,15 @@ async function runHtmlVisualExtraction(env: Env, input: RunVisualExtractionInput
 
   if (!source.r2Key || (input.extractionRunId && existingUnits.length === 0)) {
     await ExtractionStore.finishRun(env.DB, { runId: run.id, counts, status: "SUCCEEDED" });
-    return { sourceId: source.sourceId, sourceVersionId: source.sourceVersionId, extractionRunId: run.id, status: "SUCCEEDED", counts, diagnostics };
+    return {
+      sourceId: source.sourceId,
+      sourceVersionId: source.sourceVersionId,
+      extractionRunId: run.id,
+      status: "SUCCEEDED",
+      counts,
+      outcomeCounts,
+      diagnostics,
+    };
   }
 
   const object = await env.ORIGINALS.get(source.r2Key);
@@ -262,6 +320,8 @@ async function runHtmlVisualExtraction(env: Env, input: RunVisualExtractionInput
         existingAssets,
       });
       applyDecisionCount(counts, decision.selectionStatus);
+      applyOutcomeCount(outcomeCounts, decision);
+      outcomeCounts.rightsGated += 1;
       await persistHtmlLinkOnlyVisual(env, source, {
         candidate,
         fetched,
@@ -281,6 +341,17 @@ async function runHtmlVisualExtraction(env: Env, input: RunVisualExtractionInput
       failedUnits += 1;
       counts.unavailable += 1;
       const errorCode = error instanceof RemoteImageFetchError ? error.code : "visual_candidate_failed";
+      logVisualExtractionDiagnostic({
+        level: "warn",
+        runId: run.id,
+        sourceId: source.sourceId,
+        versionId: source.sourceVersionId,
+        unit: unitNumber,
+        stage: "candidate-fetch",
+        errorCode,
+        counts,
+        outcomeCounts,
+      });
       await ExtractionStore.markUnitProcessed(env.DB, {
         runId: run.id,
         unitNumber,
@@ -294,7 +365,16 @@ async function runHtmlVisualExtraction(env: Env, input: RunVisualExtractionInput
 
   const status = failedUnits > 0 ? "PARTIAL" : "SUCCEEDED";
   await ExtractionStore.finishRun(env.DB, { runId: run.id, counts, status });
-  return { sourceId: source.sourceId, sourceVersionId: source.sourceVersionId, extractionRunId: run.id, status, counts, diagnostics };
+  logVisualExtractionDiagnostic({
+    level: "info",
+    runId: run.id,
+    sourceId: source.sourceId,
+    versionId: source.sourceVersionId,
+    stage: "complete",
+    counts,
+    outcomeCounts,
+  });
+  return { sourceId: source.sourceId, sourceVersionId: source.sourceVersionId, extractionRunId: run.id, status, counts, outcomeCounts, diagnostics };
 }
 
 async function runPdfVisualExtraction(env: Env, input: RunVisualExtractionInput, source: LoadedSourceForExtraction): Promise<VisualExtractionRunResult> {
@@ -317,6 +397,7 @@ async function runPdfVisualExtraction(env: Env, input: RunVisualExtractionInput,
     blocked: { htmlCandidates: 0, htmlFetch: 0, pdfPages: 0 },
   };
   const counts = { selected: 0, review: 0, filtered: 0, unavailable: 0 };
+  const outcomeCounts = emptyOutcomeCounts();
   const units = (await listExtractionUnits(env.DB, run.id)).filter((unit) => shouldProcessPdfExtractionUnit(unit.status));
   const queuedUnits = units.slice(0, PDF_PAGE_LIMIT);
   diagnostics.blocked.pdfPages = Math.max(units.length - queuedUnits.length, 0);
@@ -361,8 +442,10 @@ async function runPdfVisualExtraction(env: Env, input: RunVisualExtractionInput,
             existingAssets,
           });
           applyDecisionCount(counts, decision.selectionStatus);
+          applyOutcomeCount(outcomeCounts, decision);
           let persisted: { assetId: string };
           if (isLinkOnlyPdfRights(rightsStatus)) {
+            outcomeCounts.rightsGated += 1;
             persisted = await persistPdfLinkOnlyVisual(env, source, unit, candidate, crop, rightsStatus, rightsBasis, decision, index, contentHash, perceptualHash);
           } else if (shouldPersistPdfTransform(decision.selectionStatus)) {
             persisted = await persistPdfTransformCandidate(env, source, unit, candidate, crop, rightsStatus, rightsBasis, index, decision, contentHash, perceptualHash);
@@ -373,6 +456,17 @@ async function runPdfVisualExtraction(env: Env, input: RunVisualExtractionInput,
         } catch {
           pageFailed = true;
           counts.unavailable += 1;
+          logVisualExtractionDiagnostic({
+            level: "warn",
+            runId: run.id,
+            sourceId: source.sourceId,
+            versionId: source.sourceVersionId,
+            unit: unit.unitNumber,
+            stage: "candidate-transform",
+            errorCode: "visual_candidate_failed",
+            counts,
+            outcomeCounts,
+          });
         }
       }
 
@@ -387,6 +481,17 @@ async function runPdfVisualExtraction(env: Env, input: RunVisualExtractionInput,
         status: "FAILED",
         errorCode: error instanceof Error ? error.message.slice(0, 100) : "visual_page_failed",
         error: error instanceof Error ? error.message : String(error),
+      });
+      logVisualExtractionDiagnostic({
+        level: "warn",
+        runId: run.id,
+        sourceId: source.sourceId,
+        versionId: source.sourceVersionId,
+        unit: unit.unitNumber,
+        stage: "page-load",
+        errorCode: error instanceof Error ? error.message.slice(0, 100) : "visual_page_failed",
+        counts,
+        outcomeCounts,
       });
       continue;
     }
@@ -417,13 +522,36 @@ async function runPdfVisualExtraction(env: Env, input: RunVisualExtractionInput,
       contentHash: unit.contentHash,
     });
     if (unit.tempR2Key && shouldDeletePdfPageTemp("SUCCEEDED")) {
-      await env.ORIGINALS.delete(unit.tempR2Key).catch(() => undefined);
+      await env.ORIGINALS.delete(unit.tempR2Key).catch((error) => {
+        outcomeCounts.cleanupFailures += 1;
+        logVisualExtractionDiagnostic({
+          level: "warn",
+          runId: run.id,
+          sourceId: source.sourceId,
+          versionId: source.sourceVersionId,
+          unit: unit.unitNumber,
+          stage: "temp-cleanup",
+          errorCode: "visual_temp_cleanup_failed",
+          counts,
+          outcomeCounts,
+        });
+        return error;
+      });
     }
   }
 
   const status = failedUnits > 0 ? "PARTIAL" : "SUCCEEDED";
   await ExtractionStore.finishRun(env.DB, { runId: run.id, counts, status });
-  return { sourceId: source.sourceId, sourceVersionId: source.sourceVersionId, extractionRunId: run.id, status, counts, diagnostics };
+  logVisualExtractionDiagnostic({
+    level: "info",
+    runId: run.id,
+    sourceId: source.sourceId,
+    versionId: source.sourceVersionId,
+    stage: "complete",
+    counts,
+    outcomeCounts,
+  });
+  return { sourceId: source.sourceId, sourceVersionId: source.sourceVersionId, extractionRunId: run.id, status, counts, outcomeCounts, diagnostics };
 }
 
 function isPdfFormat(value: InputFormat): value is "PDF_TEXT" | "PDF_SCAN" {

@@ -10,7 +10,12 @@ import { loadParams } from "../lib/params";
 import { runDistill, verifyQueueItems } from "../distill/run";
 import { runRadarSynthesis } from "../radar/run";
 import { analyzeDeepSource } from "../analysis/deepAnalyze";
-import { releaseDeepAnalysisBudgetReservation, reserveDeepAnalysisBudget } from "../analysis/budgetReservation";
+import {
+  releaseAnalysisBudgetReservation,
+  releaseDeepAnalysisBudgetReservation,
+  reserveDeepAnalysisBudget,
+  reserveVisualAnalysisBudget,
+} from "../analysis/budgetReservation";
 import { blockResearchJob, completeResearchJob, failResearchJob, getResearchJob, markJobRunning, updateJobProgress } from "../jobs/store";
 import { executeSourceAcquisitionJob } from "./sourceAcquisition";
 import { transformVisualAsset } from "../visual/transform";
@@ -50,6 +55,13 @@ type WorkflowStepResult = {
       filtered: number;
       unavailable: number;
     };
+    outcomeCounts?: {
+      duplicateExact: number;
+      duplicateNear: number;
+      rightsGated: number;
+      cleanupFailures: number;
+    };
+    budgetBlocked?: boolean;
   };
   resultRef: ResearchJobResultRef;
 };
@@ -84,12 +96,16 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
         );
       }
 
-      if (job.kind === "DEEP_ANALYSIS") {
+      if (job.kind === "DEEP_ANALYSIS" || job.kind === "VISUAL_ANALYSIS") {
         await step.do(
-          "release-deep-analysis-budget",
+          job.kind === "DEEP_ANALYSIS" ? "release-deep-analysis-budget" : "release-visual-analysis-budget",
           { retries: { limit: 1, delay: "5 seconds", backoff: "exponential" }, timeout: "1 minute" },
           async () => {
-            await releaseDeepAnalysisBudgetReservation(this.env.DB, job.id);
+            if (job.kind === "DEEP_ANALYSIS") {
+              await releaseDeepAnalysisBudgetReservation(this.env.DB, job.id);
+            } else {
+              await releaseAnalysisBudgetReservation(this.env.DB, job.id);
+            }
             return true;
           },
         );
@@ -100,7 +116,7 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
         return true;
       });
     } catch (error) {
-      if (job.kind === "DEEP_ANALYSIS") await this.releaseDeepAnalysisBudgetAfterFailure(job.id, error);
+      if (job.kind === "DEEP_ANALYSIS" || job.kind === "VISUAL_ANALYSIS") await this.releaseBudgetAfterFailure(job.id, job.kind, error);
       if (error instanceof JobBlockedError) {
         await blockResearchJob(this.env.DB, job.id, error.code, error.message);
       } else {
@@ -184,6 +200,14 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
       if (job.kind === "VISUAL_ANALYSIS") {
         await updateJobProgress(this.env.DB, job.id, 45, "이미지의 형태와 맥락을 읽는 중");
         const input = job.input as { visualAssetId: string; versionId?: string };
+        const reservation = await reserveVisualAnalysisBudget(this.env, { researchJobId: job.id });
+        if (!reservation.ok) {
+          await markVisualAnalysisBudgetFallback(this.env.DB, input.visualAssetId);
+          return {
+            result: { visualAssetId: input.visualAssetId, budgetBlocked: true },
+            resultRef: { view: "VISUAL", visualAssetId: input.visualAssetId },
+          };
+        }
         const analyzed = await analyzeVisualAsset(this.env, input.visualAssetId, input.versionId);
         return {
           result: { visualAssetId: analyzed.visualAssetId, analysisId: analyzed.analysisId, model: analyzed.model },
@@ -198,6 +222,7 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
           sourceId: extracted.sourceId,
           extractionRunId: extracted.extractionRunId,
           counts: extracted.counts,
+          outcomeCounts: extracted.outcomeCounts,
           diagnostics: extracted.diagnostics,
         },
         resultRef: { view: "VISUAL", sourceId: extracted.sourceId, extractionRunId: extracted.extractionRunId },
@@ -216,17 +241,38 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
     return { result: { analysisId: result.analysisId, model: result.model, costUsd: result.costUsd }, resultRef: { view: "RESERVOIR", sourceId: input.sourceId, analysisId: result.analysisId } };
   }
 
-  private async releaseDeepAnalysisBudgetAfterFailure(researchJobId: string, originalError: unknown): Promise<void> {
+  private async releaseBudgetAfterFailure(
+    researchJobId: string,
+    jobKind: "DEEP_ANALYSIS" | "VISUAL_ANALYSIS",
+    originalError: unknown,
+  ): Promise<void> {
     try {
-      await releaseDeepAnalysisBudgetReservation(this.env.DB, researchJobId);
+      if (jobKind === "DEEP_ANALYSIS") {
+        await releaseDeepAnalysisBudgetReservation(this.env.DB, researchJobId);
+      } else {
+        await releaseAnalysisBudgetReservation(this.env.DB, researchJobId);
+      }
     } catch (releaseError) {
       console.error(JSON.stringify({
         level: "error",
-        scope: "workflow:deep-analysis-budget-release",
+        scope: jobKind === "DEEP_ANALYSIS" ? "workflow:deep-analysis-budget-release" : "workflow:visual-analysis-budget-release",
         researchJobId,
         message: releaseError instanceof Error ? releaseError.message : "deep_analysis_budget_release_failed",
         originalError: originalError instanceof Error ? originalError.message : String(originalError),
       }));
     }
   }
+}
+
+async function markVisualAnalysisBudgetFallback(db: D1Database, visualAssetId: string): Promise<void> {
+  const now = new Date().toISOString();
+  await db.prepare(
+    `UPDATE visual_assets
+     SET selection_status = 'REVIEW',
+         selection_reason = ?,
+         processing_status = 'READY',
+         last_error = 'monthly_budget_exhausted',
+         updated_at = ?
+     WHERE id = ?`
+  ).bind("visual_analysis_skipped_monthly_budget_exhausted", now, visualAssetId).run();
 }

@@ -43,6 +43,34 @@ export function jobTitle(job: ResearchJob): string {
   return jobLabel(job.kind);
 }
 
+export function visualExtractionCountSummary(job: ResearchJob): { primary: string | null; secondary: string | null } {
+  if (job.kind !== "VISUAL_EXTRACTION" || !job.result || typeof job.result !== "object") {
+    return { primary: null, secondary: null };
+  }
+  const result = job.result as {
+    counts?: { selected?: unknown; review?: unknown; filtered?: unknown; unavailable?: unknown };
+    outcomeCounts?: { duplicateExact?: unknown; duplicateNear?: unknown; rightsGated?: unknown; cleanupFailures?: unknown };
+  };
+  const counts = result.counts;
+  if (!counts || typeof counts !== "object") return { primary: null, secondary: null };
+  const primary = `선정 ${Number(counts.selected ?? 0)} · 검토 ${Number(counts.review ?? 0)} · 제외 ${Number(counts.filtered ?? 0)} · 사용 불가 ${Number(counts.unavailable ?? 0)}`;
+  const outcomeCounts = result.outcomeCounts;
+  if (!outcomeCounts || typeof outcomeCounts !== "object") return { primary, secondary: null };
+  const outcomeEntries: Array<[string, number]> = [
+    ["정확 중복", Number(outcomeCounts.duplicateExact ?? 0)],
+    ["유사 중복", Number(outcomeCounts.duplicateNear ?? 0)],
+    ["링크만 보존", Number(outcomeCounts.rightsGated ?? 0)],
+    ["임시 정리 실패", Number(outcomeCounts.cleanupFailures ?? 0)],
+  ];
+  const secondaryEntries = outcomeEntries.filter((entry): entry is [string, number] => entry[1] > 0);
+  return {
+    primary,
+    secondary: secondaryEntries.length > 0
+      ? secondaryEntries.map(([label, value]) => `${label} ${value}`).join(" · ")
+      : null,
+  };
+}
+
 export function jobResultTarget(job: ResearchJob): ResearchJobResultRef | null {
   if (job.resultRef?.view === "VISUAL" && "sourceId" in job.resultRef && typeof job.resultRef.sourceId === "string") {
     return {

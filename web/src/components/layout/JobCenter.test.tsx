@@ -113,4 +113,32 @@ describe("JobCenter", () => {
     await userEvent.click(screen.getAllByRole("button", { name: "결과 보기" })[0]);
     expect(onResult).toHaveBeenCalledWith({ view: "RESERVOIR", sourceId: "source-1", acquisition: true, extractionRunId: "run-web" });
   });
+
+  it("renders detailed extraction outcome counts when the job result includes them", () => {
+    render(<JobCenter
+      jobs={[job({
+        id: "job-counts",
+        kind: "VISUAL_EXTRACTION",
+        result: {
+          sourceId: "source-4",
+          extractionRunId: "run-counts",
+          counts: { selected: 1, review: 2, filtered: 3, unavailable: 1 },
+          outcomeCounts: {
+            duplicateExact: 1,
+            duplicateNear: 2,
+            rightsGated: 4,
+            cleanupFailures: 1,
+          },
+          diagnostics: { sourceKind: "PDF" },
+        },
+        resultRef: { view: "VISUAL", sourceId: "source-4", extractionRunId: "run-counts" },
+      })]}
+      onDismiss={vi.fn()}
+      onRetry={vi.fn()}
+      onResult={vi.fn()}
+    />);
+
+    expect(screen.getByText("선정 1 · 검토 2 · 제외 3 · 사용 불가 1")).toBeInTheDocument();
+    expect(screen.getByText("정확 중복 1 · 유사 중복 2 · 링크만 보존 4 · 임시 정리 실패 1")).toBeInTheDocument();
+  });
 });

@@ -7,10 +7,15 @@ const DEEP_MAX_CHUNKS = 4;
 const DEEP_CHUNK_OUTPUT_TOKENS = 2_600;
 const DEEP_SYNTHESIS_OUTPUT_TOKENS = 4_200;
 const PROMPT_OVERHEAD_TOKENS = 2_000;
+const VISUAL_ANALYSIS_RESERVATION_USD = 0.01;
 
 type ReservationResult =
   | { ok: true; reservationId: string; amountUsd: number }
   | { ok: false };
+
+type AnalysisReservationInput =
+  | { researchJobId: string; operation: "DEEP_ANALYSIS"; profile: DeepProfile }
+  | { researchJobId: string; operation: "VISUAL_ANALYSIS" };
 
 export async function deepAnalysisReservationUsd(env: Env, profile: DeepProfile): Promise<number> {
   const definition = profileFor(profile);
@@ -30,11 +35,20 @@ export async function deepAnalysisReservationUsd(env: Env, profile: DeepProfile)
   return Math.ceil(costUsd * 100) / 100;
 }
 
-export async function reserveDeepAnalysisBudget(
+export async function visualAnalysisReservationUsd(_env: Env): Promise<number> {
+  return VISUAL_ANALYSIS_RESERVATION_USD;
+}
+
+async function amountForReservation(env: Env, input: AnalysisReservationInput): Promise<number> {
+  if (input.operation === "VISUAL_ANALYSIS") return visualAnalysisReservationUsd(env);
+  return deepAnalysisReservationUsd(env, input.profile);
+}
+
+async function reserveAnalysisBudget(
   env: Env,
-  input: { researchJobId: string; profile: DeepProfile },
+  input: AnalysisReservationInput,
 ): Promise<ReservationResult> {
-  const amountUsd = await deepAnalysisReservationUsd(env, input.profile);
+  const amountUsd = await amountForReservation(env, input);
   const budgetUsd = parseFloat(env.MONTHLY_BUDGET_USD) || 10;
   const month = new Date().toISOString().slice(0, 7);
   const createdAt = new Date().toISOString();
@@ -67,7 +81,21 @@ export async function reserveDeepAnalysisBudget(
   return existing ? { ok: true, reservationId: existing.id, amountUsd: Number(existing.amount_usd) } : { ok: false };
 }
 
-export async function releaseDeepAnalysisBudgetReservation(
+export async function reserveDeepAnalysisBudget(
+  env: Env,
+  input: { researchJobId: string; profile: DeepProfile },
+): Promise<ReservationResult> {
+  return reserveAnalysisBudget(env, { researchJobId: input.researchJobId, operation: "DEEP_ANALYSIS", profile: input.profile });
+}
+
+export async function reserveVisualAnalysisBudget(
+  env: Env,
+  input: { researchJobId: string },
+): Promise<ReservationResult> {
+  return reserveAnalysisBudget(env, { researchJobId: input.researchJobId, operation: "VISUAL_ANALYSIS" });
+}
+
+export async function releaseAnalysisBudgetReservation(
   db: D1Database,
   researchJobId: string,
 ): Promise<void> {
@@ -78,4 +106,11 @@ export async function releaseDeepAnalysisBudgetReservation(
   )
     .bind(new Date().toISOString(), researchJobId)
     .run();
+}
+
+export async function releaseDeepAnalysisBudgetReservation(
+  db: D1Database,
+  researchJobId: string,
+): Promise<void> {
+  await releaseAnalysisBudgetReservation(db, researchJobId);
 }

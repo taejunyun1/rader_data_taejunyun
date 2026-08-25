@@ -1003,6 +1003,153 @@ describe("visual extraction runner", () => {
   });
 });
 
+describe("visual extraction cleanup", () => {
+  it("deletes only 24-hour-old PDF temp objects from terminal runs and leaves active or recent runs untouched", async () => {
+    const fixture = createVisualAssetRouteFixture();
+    fixture.insertSource({ id: "source-cleanup", activeVersionId: "version-cleanup" });
+    fixture.insertSourceVersion({ id: "version-cleanup", sourceId: "source-cleanup", version: 1 });
+    fixture.insertExtractionRun({
+      id: "run-stale",
+      parentSourceId: "source-cleanup",
+      parentVersionId: "version-cleanup",
+      originKind: "PDF_PAGE_CROP",
+      status: "FAILED",
+      totalUnits: 1,
+      uploadedUnits: 1,
+      processedUnits: 1,
+      selectedCount: 0,
+      reviewCount: 0,
+      filteredCount: 0,
+      unavailableCount: 1,
+      createdAt: "2026-08-24T08:00:00.000Z",
+      updatedAt: "2026-08-24T08:10:00.000Z",
+      finishedAt: "2026-08-24T08:10:00.000Z",
+    });
+    fixture.insertExtractionUnit({
+      id: "unit-stale",
+      runId: "run-stale",
+      unitNumber: 1,
+      candidateKey: "page-1",
+      status: "FAILED",
+      tempR2Key: "visual-temp/run-stale/page-1.webp",
+      createdAt: "2026-08-24T08:00:00.000Z",
+      processedAt: "2026-08-24T08:09:00.000Z",
+    });
+    fixture.insertExtractionRun({
+      id: "run-recent",
+      parentSourceId: "source-cleanup",
+      parentVersionId: "version-cleanup",
+      originKind: "PDF_PAGE_CROP",
+      status: "SUCCEEDED",
+      totalUnits: 1,
+      uploadedUnits: 1,
+      processedUnits: 1,
+      selectedCount: 1,
+      reviewCount: 0,
+      filteredCount: 0,
+      unavailableCount: 0,
+      createdAt: "2026-08-25T09:00:00.000Z",
+      updatedAt: "2026-08-25T09:10:00.000Z",
+      finishedAt: "2026-08-25T09:10:00.000Z",
+    });
+    fixture.insertExtractionUnit({
+      id: "unit-recent",
+      runId: "run-recent",
+      unitNumber: 1,
+      candidateKey: "page-1",
+      status: "SUCCEEDED",
+      tempR2Key: "visual-temp/run-recent/page-1.webp",
+      createdAt: "2026-08-25T09:00:00.000Z",
+      processedAt: "2026-08-25T09:05:00.000Z",
+    });
+    fixture.insertExtractionRun({
+      id: "run-active",
+      parentSourceId: "source-cleanup",
+      parentVersionId: "version-cleanup",
+      originKind: "PDF_PAGE_CROP",
+      status: "RUNNING",
+      totalUnits: 1,
+      uploadedUnits: 1,
+      processedUnits: 0,
+      selectedCount: 0,
+      reviewCount: 0,
+      filteredCount: 0,
+      unavailableCount: 0,
+      createdAt: "2026-08-24T06:00:00.000Z",
+      updatedAt: "2026-08-25T11:30:00.000Z",
+      finishedAt: null,
+    });
+    fixture.insertExtractionUnit({
+      id: "unit-active",
+      runId: "run-active",
+      unitNumber: 1,
+      candidateKey: "page-1",
+      status: "UPLOADED",
+      tempR2Key: "visual-temp/run-active/page-1.webp",
+      createdAt: "2026-08-24T06:00:00.000Z",
+    });
+
+    const { cleanupExpiredVisualExtractionTemps } = await import("../../../worker/src/visual/cleanup");
+    const result = await cleanupExpiredVisualExtractionTemps(fixture.env, { now: "2026-08-25T12:00:00.000Z" });
+
+    expect(result).toEqual({
+      scanned: 3,
+      deleted: 1,
+      cleanupFailures: 0,
+      skippedActiveOrRecent: 2,
+    });
+    expect(fixture.deleteCalls).toEqual(["visual-temp/run-stale/page-1.webp"]);
+    expect(fixture.extractionUnitRow("unit-stale")?.deleted_at).toBe("2026-08-25T12:00:00.000Z");
+    expect(fixture.extractionUnitRow("unit-recent")?.deleted_at).toBeNull();
+    expect(fixture.extractionUnitRow("unit-active")?.deleted_at).toBeNull();
+  });
+
+  it("reports cleanup failures without marking the temp unit deleted", async () => {
+    const fixture = createVisualAssetRouteFixture();
+    fixture.insertSource({ id: "source-cleanup-failure", activeVersionId: "version-cleanup-failure" });
+    fixture.insertSourceVersion({ id: "version-cleanup-failure", sourceId: "source-cleanup-failure", version: 1 });
+    fixture.insertExtractionRun({
+      id: "run-cleanup-failure",
+      parentSourceId: "source-cleanup-failure",
+      parentVersionId: "version-cleanup-failure",
+      originKind: "PDF_PAGE_CROP",
+      status: "PARTIAL",
+      totalUnits: 1,
+      uploadedUnits: 1,
+      processedUnits: 1,
+      selectedCount: 0,
+      reviewCount: 0,
+      filteredCount: 0,
+      unavailableCount: 1,
+      createdAt: "2026-08-24T05:00:00.000Z",
+      updatedAt: "2026-08-24T05:10:00.000Z",
+      finishedAt: "2026-08-24T05:10:00.000Z",
+    });
+    fixture.insertExtractionUnit({
+      id: "unit-cleanup-failure",
+      runId: "run-cleanup-failure",
+      unitNumber: 1,
+      candidateKey: "page-1",
+      status: "FAILED",
+      tempR2Key: "visual-temp/run-cleanup-failure/page-1.webp",
+      createdAt: "2026-08-24T05:00:00.000Z",
+      processedAt: "2026-08-24T05:09:00.000Z",
+    });
+    fixture.failNextR2Delete();
+
+    const { cleanupExpiredVisualExtractionTemps } = await import("../../../worker/src/visual/cleanup");
+    const result = await cleanupExpiredVisualExtractionTemps(fixture.env, { now: "2026-08-25T12:00:00.000Z" });
+
+    expect(result).toEqual({
+      scanned: 1,
+      deleted: 0,
+      cleanupFailures: 1,
+      skippedActiveOrRecent: 0,
+    });
+    expect(fixture.extractionUnitRow("unit-cleanup-failure")?.deleted_at).toBeNull();
+  });
+});
+
 describe("visual asset routes", () => {
   it("returns bbox, nearby text, rights basis, auto suggestion, latest user verified, relations, and extraction run in the detail payload", async () => {
     const fixture = createVisualAssetRouteFixture();
@@ -1791,6 +1938,171 @@ describe("visual asset routes", () => {
       }),
     ]);
   });
+
+  it("requires a second confirmation before deleting the capsule for a TEXT_ONLY transition", async () => {
+    const fixture = createVisualAssetRouteFixture();
+    fixture.insertAsset({
+      id: "asset-text-only",
+      storageState: "CAPSULE",
+      processingStatus: "READY",
+      rightsStatus: "PERMITTED",
+      rightsBasis: "contract",
+      rightsReviewedAt: "2026-08-25T07:00:00.000Z",
+      isPersonalWork: 0,
+    });
+    fixture.insertAssetVersion({ id: "asset-text-only-original", visualAssetId: "asset-text-only", version: 1, variant: "ORIGINAL", r2Key: "visuals/asset-text-only/original.jpg" });
+    fixture.insertAssetVersion({ id: "asset-text-only-capsule", visualAssetId: "asset-text-only", version: 1, variant: "CAPSULE", r2Key: "visuals/asset-text-only/capsule.webp" });
+    fixture.insertAnalysis({
+      id: "analysis-text-only-user",
+      visualAssetId: "asset-text-only",
+      visualVersionId: "asset-text-only-capsule",
+      analysisType: "USER_VERIFIED",
+      payload: validVisualAnalysisPayload("text-only-user"),
+      reviewStatus: "ACCEPTED",
+      createdAt: "2026-08-25T07:01:00.000Z",
+    });
+
+    const { default: visualAssets } = await import("../../../worker/src/routes/visualAssets");
+    const blocked = await visualAssets.request("/asset-text-only/storage-transition", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target: "TEXT_ONLY", confirmation: "DELETE_CAPSULE" }),
+    }, fixture.env);
+    expect(blocked.status).toBe(400);
+    await expect(blocked.json()).resolves.toEqual({ error: "storage_transition_second_confirmation_required" });
+    expect(fixture.deleteCalls).toEqual([]);
+
+    const response = await visualAssets.request("/asset-text-only/storage-transition", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target: "TEXT_ONLY", confirmation: "DELETE_CAPSULE", secondConfirmation: "TEXT_ONLY" }),
+    }, fixture.env);
+
+    expect(response.status).toBe(200);
+    expect(fixture.deleteCalls).toEqual(["visuals/asset-text-only/capsule.webp"]);
+    expect(fixture.assetRow("asset-text-only")).toMatchObject({
+      storage_state: "TEXT_ONLY",
+      pending_storage_state: null,
+    });
+    expect(fixture.assetVersionRow("asset-text-only-capsule")?.deleted_at).toContain("2026-08-25T");
+  });
+
+  it("rejects storage transitions for externally rights-gated assets even if legacy bytes still exist", async () => {
+    const fixture = createVisualAssetRouteFixture();
+    fixture.insertAsset({
+      id: "asset-rights-gated",
+      storageState: "CAPSULE",
+      processingStatus: "READY",
+      rightsStatus: "PUBLIC_LINK",
+      rightsBasis: "external_image_requires_link_only",
+      rightsReviewedAt: "2026-08-25T07:10:00.000Z",
+      isPersonalWork: 0,
+    });
+    fixture.insertAssetVersion({ id: "asset-rights-gated-original", visualAssetId: "asset-rights-gated", version: 1, variant: "ORIGINAL", r2Key: "visuals/asset-rights-gated/original.jpg" });
+    fixture.insertAssetVersion({ id: "asset-rights-gated-capsule", visualAssetId: "asset-rights-gated", version: 1, variant: "CAPSULE", r2Key: "visuals/asset-rights-gated/capsule.webp" });
+    fixture.insertAnalysis({
+      id: "analysis-rights-gated-user",
+      visualAssetId: "asset-rights-gated",
+      visualVersionId: "asset-rights-gated-capsule",
+      analysisType: "USER_VERIFIED",
+      payload: validVisualAnalysisPayload("rights-gated-user"),
+      reviewStatus: "ACCEPTED",
+      createdAt: "2026-08-25T07:11:00.000Z",
+    });
+
+    const { default: visualAssets } = await import("../../../worker/src/routes/visualAssets");
+    const response = await visualAssets.request("/asset-rights-gated/storage-transition", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target: "TEXT_ONLY", confirmation: "DELETE_CAPSULE", secondConfirmation: "TEXT_ONLY" }),
+    }, fixture.env);
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "storage_transition_rights_invalid" });
+    expect(fixture.deleteCalls).toEqual([]);
+  });
+
+  it("keeps the asset state unchanged and records a FAILED operation when the R2 delete itself fails", async () => {
+    const fixture = createVisualAssetRouteFixture();
+    fixture.insertAsset({
+      id: "asset-transition-delete-failure",
+      storageState: "ARCHIVAL",
+      pendingStorageState: null,
+      processingStatus: "READY",
+      rightsStatus: "PERMITTED",
+      rightsBasis: "contract",
+      rightsReviewedAt: "2026-08-25T07:20:00.000Z",
+      isPersonalWork: 0,
+    });
+    fixture.insertAssetVersion({ id: "asset-transition-delete-failure-original", visualAssetId: "asset-transition-delete-failure", version: 1, variant: "ORIGINAL", r2Key: "visuals/asset-transition-delete-failure/original.jpg" });
+    fixture.insertAssetVersion({ id: "asset-transition-delete-failure-capsule", visualAssetId: "asset-transition-delete-failure", version: 1, variant: "CAPSULE", r2Key: "visuals/asset-transition-delete-failure/capsule.webp" });
+    fixture.insertAnalysis({
+      id: "analysis-transition-delete-failure-user",
+      visualAssetId: "asset-transition-delete-failure",
+      visualVersionId: "asset-transition-delete-failure-capsule",
+      analysisType: "USER_VERIFIED",
+      payload: validVisualAnalysisPayload("transition-delete-failure-user"),
+      reviewStatus: "ACCEPTED",
+      createdAt: "2026-08-25T07:21:00.000Z",
+    });
+    fixture.failNextR2Delete();
+
+    const { default: visualAssets } = await import("../../../worker/src/routes/visualAssets");
+    const response = await visualAssets.request("/asset-transition-delete-failure/storage-transition", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target: "CAPSULE", confirmation: "DELETE_ORIGINAL" }),
+    }, fixture.env);
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({ error: "visual_storage_delete_failed" });
+    expect(fixture.assetRow("asset-transition-delete-failure")).toMatchObject({
+      storage_state: "ARCHIVAL",
+      pending_storage_state: "CAPSULE",
+    });
+    expect(fixture.assetVersionRow("asset-transition-delete-failure-original")?.deleted_at).toBeNull();
+    expect(fixture.operationRowsFor("asset-transition-delete-failure")).toEqual([
+      expect.objectContaining({
+        operation_kind: "DELETE_ORIGINAL",
+        status: "FAILED",
+        error: expect.stringContaining("uncertain"),
+      }),
+    ]);
+  });
+});
+
+describe("scheduled visual cleanup isolation", () => {
+  it("runs cleanup in isolation so cron success paths still complete when cleanup throws", async () => {
+    const cleanupExpiredVisualExtractionTemps = vi.fn().mockRejectedValue(new Error("cleanup_failed"));
+    const syncHomepageReading = vi.fn().mockResolvedValue({ imported: 2 });
+    const createWeeklySnapshotWithSynthesis = vi.fn().mockResolvedValue("snapshot-1");
+    const runDiscovery = vi.fn().mockResolvedValue({ collected: 3, fieldSignalsCollected: 1, queries: ["visual culture"] });
+    const loadParams = vi.fn().mockResolvedValue({ divergence: 0.61 });
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const infoLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    vi.doMock("../../../worker/src/visual/cleanup", () => ({ cleanupExpiredVisualExtractionTemps }));
+    vi.doMock("../../../worker/src/homepage/reading", () => ({ syncHomepageReading }));
+    vi.doMock("../../../worker/src/radar/snapshot", () => ({ createWeeklySnapshotWithSynthesis }));
+    vi.doMock("../../../worker/src/discovery/run", () => ({ runDiscovery }));
+    vi.doMock("../../../worker/src/lib/params", () => ({ loadParams }));
+
+    const worker = await import("../../../worker/src/index");
+    const env = { DB: {} as D1Database } as Env;
+
+    await worker.default.scheduled({ cron: "0 1 * * *" } as ScheduledEvent, env);
+    await worker.default.scheduled({ cron: "0 9 * * 1" } as ScheduledEvent, env);
+
+    expect(cleanupExpiredVisualExtractionTemps).toHaveBeenCalledTimes(2);
+    expect(syncHomepageReading).toHaveBeenCalledTimes(1);
+    expect(createWeeklySnapshotWithSynthesis).toHaveBeenCalledTimes(1);
+    expect(runDiscovery).toHaveBeenCalledTimes(1);
+    expect(loadParams).toHaveBeenCalledTimes(1);
+    expect(errorLog).toHaveBeenCalledWith(expect.stringContaining("\"scope\":\"cron:visual-cleanup\""));
+    expect(infoLog).toHaveBeenCalledWith(expect.stringContaining("\"homepageReading\""));
+    expect(infoLog).toHaveBeenCalledWith(expect.stringContaining("\"snapshot\":\"snapshot-1\""));
+    expect(infoLog).toHaveBeenCalledWith(expect.stringContaining("\"discovery\":3"));
+  });
 });
 
 function verifyVisualExtractionMigration(): {
@@ -2174,6 +2486,7 @@ function createVisualAssetRouteFixture() {
 
   let failAfterR2Delete = false;
   let failNextBatch = false;
+  let failNextDelete = false;
   const d1 = sqliteToD1(sqlite, () => {
     if (!failNextBatch) return false;
     failNextBatch = false;
@@ -2187,6 +2500,10 @@ function createVisualAssetRouteFixture() {
       get: vi.fn(),
       delete: vi.fn(async (key: string) => {
         deleteCalls.push(key);
+        if (failNextDelete) {
+          failNextDelete = false;
+          throw new Error("simulated_r2_delete_failure");
+        }
         if (failAfterR2Delete) {
           failAfterR2Delete = false;
           failNextBatch = true;
@@ -2203,6 +2520,9 @@ function createVisualAssetRouteFixture() {
     deleteCalls,
     failNextBatchAfterR2Delete() {
       failAfterR2Delete = true;
+    },
+    failNextR2Delete() {
+      failNextDelete = true;
     },
     insertSource(input: {
       id: string;
@@ -2443,6 +2763,9 @@ function createVisualAssetRouteFixture() {
     },
     assetVersionRow(id: string) {
       return sqlite.prepare("SELECT * FROM visual_asset_versions WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+    },
+    extractionUnitRow(id: string) {
+      return sqlite.prepare("SELECT * FROM visual_extraction_units WHERE id = ?").get(id) as Record<string, unknown> | undefined;
     },
     analysisRowsFor(visualAssetId: string) {
       return sqlite.prepare("SELECT * FROM visual_analyses WHERE visual_asset_id = ? ORDER BY created_at ASC, id ASC").all(visualAssetId) as Record<string, unknown>[];

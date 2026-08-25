@@ -333,13 +333,20 @@ visualAssets.post("/:id/storage-transition", async (c) => {
   const visualAssetId = c.req.param("id");
   const asset = await getVisualAsset(c.env.DB, visualAssetId);
   if (!asset) return c.json({ error: "not_found" }, 404);
-  const body = await c.req.json<{ target?: unknown; confirmation?: unknown }>().catch(() => ({} as { target?: unknown; confirmation?: unknown }));
+  const body = await c.req.json<{ target?: unknown; confirmation?: unknown; secondConfirmation?: unknown }>().catch(() => ({} as { target?: unknown; confirmation?: unknown; secondConfirmation?: unknown }));
   const target = body.target === "CAPSULE" || body.target === "TEXT_ONLY" ? body.target : null;
   const confirmation = body.confirmation === "DELETE_ORIGINAL" || body.confirmation === "DELETE_CAPSULE" ? body.confirmation : null;
+  const secondConfirmation = typeof body.secondConfirmation === "string" ? body.secondConfirmation.trim() : "";
   if (!target || !confirmation) return c.json({ error: "storage_transition_invalid" }, 400);
   const operationKind = target === "CAPSULE" ? "DELETE_ORIGINAL" : "DELETE_CAPSULE";
   if (confirmation !== operationKind) return c.json({ error: "storage_transition_confirmation_invalid" }, 400);
+  if (target === "TEXT_ONLY" && secondConfirmation !== "TEXT_ONLY") {
+    return c.json({ error: "storage_transition_second_confirmation_required" }, 400);
+  }
   if (asset.pendingStorageState && asset.pendingStorageState !== target) return c.json({ error: "storage_transition_pending" }, 409);
+  if (asset.rightsStatus !== "PERSONAL" && asset.rightsStatus !== "PERMITTED") {
+    return c.json({ error: "storage_transition_rights_invalid" }, 409);
+  }
 
   const capsule = await getVisualVersion(c.env.DB, visualAssetId, "CAPSULE");
   if (!capsule?.r2Key) return c.json({ error: "visual_capsule_not_ready" }, 409);
@@ -415,6 +422,14 @@ visualAssets.post("/:id/storage-transition", async (c) => {
       now,
       operationId,
     ).run().catch(() => undefined);
+    console.error(JSON.stringify({
+      level: "error",
+      scope: "visual-storage-transition",
+      visualAssetId,
+      stage: "delete",
+      errorCode: r2DeleteCompleted ? "visual_storage_transition_recovery_required" : "visual_storage_delete_failed",
+      message: detail,
+    }));
     return c.json({ error: r2DeleteCompleted ? "visual_storage_transition_recovery_required" : "visual_storage_delete_failed" }, 500);
   }
   return c.json({ asset: await loadAssetSummary(c.env.DB, visualAssetId) });
