@@ -378,6 +378,28 @@ describe("remote acquisition", () => {
       expect(result.contentHash).toMatch(/^[0-9a-f]{64}$/);
       expect(result.byteSize).toBe(new TextEncoder().encode(body).byteLength);
     });
+
+    it("advertises only the implemented image allowlist in the Accept header", async () => {
+      const { fetchRemoteImage } = await import("../../../worker/src/visual/extraction/fetchImage");
+      const body = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" /></svg>`;
+      const fetchSpy = vi.fn().mockResolvedValue(withResponseUrl(new Response(body, {
+        status: 200,
+        headers: { "content-type": "image/svg+xml" },
+      }), "https://public.example/final.svg"));
+
+      await fetchRemoteImage("https://public.example/start.svg", {
+        resolveDns: allowPublicDnsResolution,
+        fetchImpl: fetchSpy,
+      });
+
+      const requestHeaders = fetchSpy.mock.calls[0]?.[1]?.headers as Record<string, string> | Headers | undefined;
+      const acceptHeader = requestHeaders instanceof Headers
+        ? requestHeaders.get("Accept")
+        : requestHeaders?.Accept;
+
+      expect(acceptHeader).toBe("image/webp,image/png,image/jpeg,image/gif,image/svg+xml,*/*;q=0.1");
+      expect(acceptHeader).not.toContain("image/avif");
+    });
   });
 
   it("converts DNS resolution timeout into FETCH_TIMEOUT within the 20-second acquisition boundary", async () => {

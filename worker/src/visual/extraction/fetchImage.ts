@@ -6,7 +6,7 @@ import {
 } from "../../ingestion/fetchRemoteDocument";
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
-const IMAGE_ACCEPT_HEADER = "image/avif,image/webp,image/png,image/jpeg,image/gif,image/svg+xml,*/*;q=0.1";
+const IMAGE_ACCEPT_HEADER = "image/webp,image/png,image/jpeg,image/gif,image/svg+xml,*/*;q=0.1";
 const PNG_SIGNATURE = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const WEBP_RIFF = "RIFF";
 const WEBP_MAGIC = "WEBP";
