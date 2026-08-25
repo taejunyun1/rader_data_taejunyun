@@ -523,6 +523,7 @@ export default function DiscoverView({
     const isCurrent = () => isCurrentCandidateIntent(intent)
       && isCurrentCandidateFilterIntent(filterIntent)
       && candidateActionRequestRef.current === actionGeneration;
+    setDecisionOpen(false);
     setBusy(true);
     setPendingAction(action);
     setDecisionError("");

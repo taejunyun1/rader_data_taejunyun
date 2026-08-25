@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { VisualAssetDetail, VisualAssetSummary } from "@radar/shared";
 import VisualAssetPanel from "./VisualAssetPanel";
+import VisualInspector from "./VisualInspector";
 
 vi.mock("pdfjs-dist", () => ({
   GlobalWorkerOptions: { workerSrc: "" },
@@ -439,6 +440,38 @@ describe("Visual workspace", () => {
     expect(container).not.toHaveAttribute("aria-hidden");
     expect(container).not.toHaveAttribute("inert");
     expect(card).toHaveFocus();
+  });
+
+  it("does not steal focus again when the open mobile inspector rerenders", () => {
+    const detail = buildDetail();
+    const { rerender } = render(
+      <VisualInspector
+        asset={detail}
+        loading={false}
+        error=""
+        compact
+        onClose={() => undefined}
+        onRetry={() => Promise.resolve()}
+        onSaveAnalysis={() => Promise.resolve()}
+      />,
+    );
+    const dialog = screen.getByRole("dialog", { name: "시각 자료 상세" });
+    const editButton = within(dialog).getByRole("button", { name: "분석 수정" });
+    editButton.focus();
+
+    rerender(
+      <VisualInspector
+        asset={detail}
+        loading={false}
+        error=""
+        compact
+        onClose={() => undefined}
+        onRetry={() => Promise.resolve()}
+        onSaveAnalysis={() => Promise.resolve()}
+      />,
+    );
+
+    expect(editButton).toHaveFocus();
   });
 
   it("shows extraction state guidance for web and pdf sources before visible assets are ready", () => {

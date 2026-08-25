@@ -88,6 +88,20 @@ describe("DecisionBottomSheet", () => {
     expect(screen.getByRole("button", { name: "발전시키기" })).toHaveFocus();
   });
 
+  it("does not steal focus again when the open sheet rerenders", () => {
+    const { rerender } = render(
+      <DecisionBottomSheet document={document} onClose={() => undefined} onAction={() => undefined} />,
+    );
+    const close = screen.getByRole("button", { name: "닫기" });
+    close.focus();
+
+    rerender(
+      <DecisionBottomSheet document={document} onClose={() => undefined} onAction={() => undefined} />,
+    );
+
+    expect(close).toHaveFocus();
+  });
+
   it("traps focus inside the dialog and hides the background while open", async () => {
     const user = userEvent.setup();
 

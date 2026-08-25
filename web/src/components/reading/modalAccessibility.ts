@@ -48,6 +48,8 @@ export function useModalAccessibility({
   initialFocusDeps = [],
 }: ModalAccessibilityOptions) {
   const returnFocusRef = useRef<HTMLElement | null>(null);
+  const initialFocusTargetRef = useRef(getInitialFocusTarget);
+  initialFocusTargetRef.current = getInitialFocusTarget;
 
   useEffect(() => {
     if (!open) return;
@@ -71,9 +73,9 @@ export function useModalAccessibility({
     const dialog = dialogRef.current;
     if (!dialog) return;
 
-    const initialTarget = getInitialFocusTarget?.() ?? focusableElements(dialog)[0] ?? dialog;
+    const initialTarget = initialFocusTargetRef.current?.() ?? focusableElements(dialog)[0] ?? dialog;
     initialTarget.focus();
-  }, [dialogRef, getInitialFocusTarget, open, ...initialFocusDeps]);
+  }, [dialogRef, open, ...initialFocusDeps]);
 
   function handleKeyDown(event: KeyboardEvent<HTMLElement>) {
     if (event.key === "Escape") {

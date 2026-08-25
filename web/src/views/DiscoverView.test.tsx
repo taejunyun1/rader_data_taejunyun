@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResearchJob, ResearchJobStatus } from "@radar/shared";
@@ -101,6 +101,24 @@ beforeEach(() => {
 });
 
 describe("DiscoverView", () => {
+  it.each(["발전시키기", "보관하기", "관찰하기", "제외하기"])(
+    "closes the decision sheet before %s completes so the reading background remains interactive",
+    async (actionLabel) => {
+      const user = userEvent.setup();
+      candidateItems = [candidate, secondCandidate];
+      pendingCandidateAction = new Promise<Response>(() => undefined);
+      render(<DiscoverView onNavigate={vi.fn()} />);
+
+      await user.click(await screen.findByRole("button", { name: /자료 후보/ }));
+      await user.click(screen.getByRole("button", { name: "판단하기" }));
+      await user.click(screen.getByRole("button", { name: actionLabel }));
+
+      expect(screen.queryByRole("dialog", { name: "읽은 뒤 판단" })).not.toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: /다음 후보/ }));
+      expect(await screen.findByRole("heading", { name: "다음 후보" })).toBeInTheDocument();
+    },
+  );
+
   it("keeps actual access links visible while reading a candidate", async () => {
     render(<DiscoverView onNavigate={vi.fn()} />);
     await userEvent.click(await screen.findByRole("button", { name: /자료 후보/ }));
@@ -126,6 +144,7 @@ describe("DiscoverView", () => {
     await userEvent.click(await screen.findByRole("button", { name: /자료 후보/ }));
     await userEvent.click(screen.getByRole("button", { name: "판단하기" }));
     expect(screen.getByRole("dialog", { name: "읽은 뒤 판단" })).toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
 
     candidateItems = [secondCandidate];
     await userEvent.click(screen.getByRole("button", { name: "보관됨" }));
@@ -189,7 +208,7 @@ describe("DiscoverView", () => {
 
     expect(screen.getByText("현재 판단 · 관찰 중")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "판단 변경" }));
-    await userEvent.click(screen.getAllByRole("button", { name: "판단 변경" })[1]!);
+    await userEvent.click(within(screen.getByRole("dialog", { name: "읽은 뒤 판단" })).getByRole("button", { name: "판단 변경" }));
     await userEvent.click(screen.getByRole("button", { name: "관찰하기" }));
 
     await waitFor(() => expect(fetch).toHaveBeenCalledWith(
