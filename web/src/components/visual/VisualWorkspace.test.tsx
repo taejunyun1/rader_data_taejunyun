@@ -246,6 +246,26 @@ describe("Visual workspace", () => {
     expect((saved.payload.context as Record<string, unknown>).medium).toEqual(["매체 1", "매체 2", "매체 3", "매체 4", "매체 5", "매체 6"]);
   });
 
+  it("disables context add controls at the shared six-item cap", async () => {
+    render(<VisualAssetPanel assets={[buildSummary()]} />);
+    await userEvent.click(screen.getByRole("button", { name: /도판 1/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "분석 수정" }));
+
+    const contextFields = [
+      { label: "매체", initialCount: 1 },
+      { label: "과정", initialCount: 0 },
+      { label: "사진과의 관계", initialCount: 1 },
+      { label: "문화 참조", initialCount: 0 },
+    ] as const;
+    for (const field of contextFields) {
+      const group = within(screen.getByRole("heading", { name: field.label }).closest("section") as HTMLElement);
+      for (let count = field.initialCount; count < 6; count += 1) {
+        await userEvent.click(group.getByRole("button", { name: "항목 추가" }));
+      }
+      expect(group.getByRole("button", { name: "항목 추가" })).toBeDisabled();
+    }
+  });
+
   it("keeps edited analysis input on save failure and offers inline retry controls", async () => {
     render(<VisualAssetPanel assets={[buildSummary()]} />);
     await userEvent.click(screen.getByRole("button", { name: /도판 1/ }));

@@ -34,7 +34,7 @@ export interface VisualAnalysisPayload {
   confidence: number | null;
 }
 
-const VISUAL_ANALYSIS_ARRAY_LIMITS: Record<string, number> = {
+export const VISUAL_ANALYSIS_ARRAY_LIMITS = {
   subject: 8,
   composition: 8,
   color: 8,
@@ -58,7 +58,7 @@ const VISUAL_ANALYSIS_ARRAY_LIMITS: Record<string, number> = {
   culturalReferences: 6,
   propositions: 8,
   uncertainty: 8,
-};
+} as const;
 
 const VISUAL_KINDS = new Set<VisualKind>([
   "PHOTO",
@@ -74,12 +74,18 @@ const OBSERVATION_KEYS = ["subject", "composition", "color", "texture", "spatial
 const FORMAL_KEYS = ["shapes", "lines", "planes", "rhythm", "scale", "density", "edges", "contrast", "perspective"] as const;
 const CONTEXT_KEYS = ["medium", "process", "relationToPhotography", "culturalReferences"] as const;
 
+function arrayLimit(key: string): number {
+  return key in VISUAL_ANALYSIS_ARRAY_LIMITS
+    ? VISUAL_ANALYSIS_ARRAY_LIMITS[key as keyof typeof VISUAL_ANALYSIS_ARRAY_LIMITS]
+    : 8;
+}
+
 function strings(value: unknown, key: string, maxLength = 320): string[] {
   if (!Array.isArray(value)) return [];
   return value
     .filter((item): item is string => typeof item === "string" && Boolean(item.trim()))
     .map((item) => item.trim().slice(0, maxLength))
-    .slice(0, VISUAL_ANALYSIS_ARRAY_LIMITS[key] ?? 8);
+    .slice(0, arrayLimit(key));
 }
 
 function group(value: unknown, keys: readonly string[]): Record<string, string[]> {

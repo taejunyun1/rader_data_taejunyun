@@ -1,5 +1,10 @@
 import { useMemo, useState } from "react";
-import { validateVisualAnalysis, type VisualAnalysisPayload, type VisualAnalysisSummary } from "@radar/shared";
+import {
+  validateVisualAnalysis,
+  VISUAL_ANALYSIS_ARRAY_LIMITS,
+  type VisualAnalysisPayload,
+  type VisualAnalysisSummary,
+} from "@radar/shared";
 
 type ObservationKey = keyof DraftPayload["observation"];
 type FormalKey = keyof DraftPayload["formal"];
@@ -73,8 +78,8 @@ function removeValue(values: string[], index: number): string[] {
   return values.filter((_, current) => current !== index);
 }
 
-function appendValue(values: string[]): string[] {
-  return values.length >= 8 ? values : values.concat("");
+function appendValue(values: string[], maxItems: number): string[] {
+  return values.length >= maxItems ? values : values.concat("");
 }
 
 export default function VisualAnalysisEditor({ analysis, onCancel, onSave }: VisualAnalysisEditorProps) {
@@ -128,6 +133,7 @@ export default function VisualAnalysisEditor({ analysis, onCancel, onSave }: Vis
         title="관찰"
         fields={OBSERVATION_FIELDS.map((field) => ({
           ...field,
+          maxItems: VISUAL_ANALYSIS_ARRAY_LIMITS[field.key],
           values: draft.observation[field.key],
           onChange: (index, value) => setDraft((current) => ({
             ...current,
@@ -140,7 +146,7 @@ export default function VisualAnalysisEditor({ analysis, onCancel, onSave }: Vis
             ...current,
             observation: {
               ...current.observation,
-              [field.key]: appendValue(current.observation[field.key]),
+              [field.key]: appendValue(current.observation[field.key], VISUAL_ANALYSIS_ARRAY_LIMITS[field.key]),
             },
           })),
           onRemove: (index) => setDraft((current) => ({
@@ -157,6 +163,7 @@ export default function VisualAnalysisEditor({ analysis, onCancel, onSave }: Vis
         title="형식"
         fields={FORMAL_FIELDS.map((field) => ({
           ...field,
+          maxItems: VISUAL_ANALYSIS_ARRAY_LIMITS[field.key],
           values: draft.formal[field.key],
           onChange: (index, value) => setDraft((current) => ({
             ...current,
@@ -169,7 +176,7 @@ export default function VisualAnalysisEditor({ analysis, onCancel, onSave }: Vis
             ...current,
             formal: {
               ...current.formal,
-              [field.key]: appendValue(current.formal[field.key]),
+              [field.key]: appendValue(current.formal[field.key], VISUAL_ANALYSIS_ARRAY_LIMITS[field.key]),
             },
           })),
           onRemove: (index) => setDraft((current) => ({
@@ -186,6 +193,7 @@ export default function VisualAnalysisEditor({ analysis, onCancel, onSave }: Vis
         title="맥락"
         fields={CONTEXT_FIELDS.map((field) => ({
           ...field,
+          maxItems: VISUAL_ANALYSIS_ARRAY_LIMITS[field.key],
           values: draft.context[field.key],
           onChange: (index, value) => setDraft((current) => ({
             ...current,
@@ -198,7 +206,7 @@ export default function VisualAnalysisEditor({ analysis, onCancel, onSave }: Vis
             ...current,
             context: {
               ...current.context,
-              [field.key]: appendValue(current.context[field.key]),
+              [field.key]: appendValue(current.context[field.key], VISUAL_ANALYSIS_ARRAY_LIMITS[field.key]),
             },
           })),
           onRemove: (index) => setDraft((current) => ({
@@ -213,17 +221,19 @@ export default function VisualAnalysisEditor({ analysis, onCancel, onSave }: Vis
 
       <SingleFieldGroup
         label="제안"
+        maxItems={VISUAL_ANALYSIS_ARRAY_LIMITS.propositions}
         values={draft.propositions}
         onChange={(index, value) => setDraft((current) => ({ ...current, propositions: replaceValue(current.propositions, index, value) }))}
-        onAdd={() => setDraft((current) => ({ ...current, propositions: appendValue(current.propositions) }))}
+        onAdd={() => setDraft((current) => ({ ...current, propositions: appendValue(current.propositions, VISUAL_ANALYSIS_ARRAY_LIMITS.propositions) }))}
         onRemove={(index) => setDraft((current) => ({ ...current, propositions: removeValue(current.propositions, index) }))}
       />
 
       <SingleFieldGroup
         label="불확실성"
+        maxItems={VISUAL_ANALYSIS_ARRAY_LIMITS.uncertainty}
         values={draft.uncertainty}
         onChange={(index, value) => setDraft((current) => ({ ...current, uncertainty: replaceValue(current.uncertainty, index, value) }))}
-        onAdd={() => setDraft((current) => ({ ...current, uncertainty: appendValue(current.uncertainty) }))}
+        onAdd={() => setDraft((current) => ({ ...current, uncertainty: appendValue(current.uncertainty, VISUAL_ANALYSIS_ARRAY_LIMITS.uncertainty) }))}
         onRemove={(index) => setDraft((current) => ({ ...current, uncertainty: removeValue(current.uncertainty, index) }))}
       />
 
@@ -239,18 +249,19 @@ export default function VisualAnalysisEditor({ analysis, onCancel, onSave }: Vis
 
 interface EditorFieldProps {
   label: string;
+  maxItems: number;
   values: string[];
   onChange: (index: number, value: string) => void;
   onAdd: () => void;
   onRemove: (index: number) => void;
 }
 
-function SingleFieldGroup({ label, values, onChange, onAdd, onRemove }: EditorFieldProps) {
+function SingleFieldGroup({ label, maxItems, values, onChange, onAdd, onRemove }: EditorFieldProps) {
   return (
     <section className="visual-analysis-editor__group">
       <div className="visual-analysis-editor__group-heading">
         <h5>{label}</h5>
-        <button type="button" className="ui-button-secondary" onClick={onAdd}>항목 추가</button>
+        <button type="button" className="ui-button-secondary" onClick={onAdd} disabled={values.length >= maxItems}>항목 추가</button>
       </div>
       {(values.length > 0 ? values : [""]).map((value, index) => (
         <div className="visual-analysis-editor__item" key={`${label}-${index}`}>
@@ -274,6 +285,7 @@ function EditorGroup({ title, fields }: { title: string; fields: Array<EditorFie
           <SingleFieldGroup
             key={field.key}
             label={field.label}
+            maxItems={field.maxItems}
             values={field.values}
             onChange={field.onChange}
             onAdd={field.onAdd}
