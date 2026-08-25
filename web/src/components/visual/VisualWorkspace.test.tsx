@@ -213,12 +213,10 @@ describe("Visual workspace", () => {
     expect(within(inspector).getByText(/후보 키/)).toHaveTextContent("figure-1");
   });
 
-  it("normalizes editor payloads with the worker contract before saving", async () => {
+  it("rejects over-limit editor item counts without truncating loaded content", async () => {
     const payload = analysisPayload("검증") as Record<string, unknown>;
     const context = payload.context as Record<string, unknown>;
     context.medium = ["매체 1", "매체 2", "매체 3", "매체 4", "매체 5", "매체 6", "매체 7"];
-    payload.visualKind = "NOT_A_VISUAL_KIND";
-    payload.confidence = 2.5;
     const detail = buildDetail({
       userVerified: { ...buildDetail().userVerified!, payload },
     });
@@ -236,14 +234,45 @@ describe("Visual workspace", () => {
     await userEvent.click(await screen.findByRole("button", { name: "분석 수정" }));
     await userEvent.click(screen.getByRole("button", { name: "저장" }));
 
-    await waitFor(() => expect(fetch).toHaveBeenCalledWith(
-      "/api/visual-assets/asset-1/analysis",
-      expect.objectContaining({ method: "PATCH" }),
-    ));
-    const patchCall = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input) === "/api/visual-assets/asset-1/analysis" && init?.method === "PATCH");
-    const saved = JSON.parse(String(patchCall?.[1]?.body)) as { payload: Record<string, unknown> };
-    expect(saved.payload).toMatchObject({ visualKind: "OTHER", confidence: 1 });
-    expect((saved.payload.context as Record<string, unknown>).medium).toEqual(["매체 1", "매체 2", "매체 3", "매체 4", "매체 5", "매체 6"]);
+    expect(await screen.findByText("매체 항목은 최대 6개까지 입력할 수 있습니다.")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("매체 7")).toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input) === "/api/visual-assets/asset-1/analysis" && init?.method === "PATCH")).toBe(false);
+  });
+
+  it("rejects over-limit item lengths while keeping existing values visible and applying field maxLength", async () => {
+    const payload = analysisPayload("검증") as Record<string, unknown>;
+    const observation = payload.observation as Record<string, unknown>;
+    const longObservation = "관".repeat(321);
+    const longProposition = "제".repeat(501);
+    observation.subject = [longObservation];
+    payload.propositions = [longProposition];
+    const detail = buildDetail({
+      userVerified: { ...buildDetail().userVerified!, payload },
+    });
+    vi.mocked(fetch).mockImplementation((input: RequestInfo | URL) => {
+      if (String(input) === "/api/visual-assets/asset-1") return Promise.resolve(new Response(JSON.stringify({ asset: detail })));
+      return Promise.resolve(new Response(JSON.stringify({})));
+    });
+
+    render(<VisualAssetPanel assets={[buildSummary()]} />);
+    await userEvent.click(screen.getByRole("button", { name: /도판 1/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "분석 수정" }));
+
+    const observationInput = screen.getByDisplayValue(longObservation);
+    const propositionInput = screen.getByDisplayValue(longProposition);
+    expect(observationInput).toHaveAttribute("maxLength", "320");
+    expect(screen.getByDisplayValue("검증 형태")).toHaveAttribute("maxLength", "320");
+    expect(screen.getByDisplayValue("검증 매체")).toHaveAttribute("maxLength", "320");
+    expect(screen.getByDisplayValue("검증 불확실성")).toHaveAttribute("maxLength", "320");
+    expect(propositionInput).toHaveAttribute("maxLength", "500");
+
+    await userEvent.click(screen.getByRole("button", { name: "저장" }));
+
+    expect(await screen.findByText("관찰 1은 320자 이내로 입력해 주세요.")).toBeInTheDocument();
+    expect(await screen.findByText("제안 1은 500자 이내로 입력해 주세요.")).toBeInTheDocument();
+    expect(screen.getByDisplayValue(longObservation)).toBeInTheDocument();
+    expect(screen.getByDisplayValue(longProposition)).toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input) === "/api/visual-assets/asset-1/analysis" && init?.method === "PATCH")).toBe(false);
   });
 
   it("disables context add controls at the shared six-item cap", async () => {

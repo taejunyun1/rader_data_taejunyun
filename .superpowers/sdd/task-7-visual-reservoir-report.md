@@ -2,7 +2,7 @@
 
 ## Status
 
-Completed Task 7 review fixes only: the visual inspector, analysis editor, PDF crop preview, responsive desktop/mobile presentation, retry/error UX, Reservoir integration, LINK_ONLY analysis resolution, shared validation contract, and per-field editor cap alignment. No Task 8+ extraction-status or assignment workflow was implemented.
+Completed Task 7 review fixes only: the visual inspector, analysis editor, PDF crop preview, responsive desktop/mobile presentation, retry/error UX, Reservoir integration, LINK_ONLY analysis resolution, shared validation contract, per-field editor cap alignment, and editor overflow validation. No Task 8+ extraction-status or assignment workflow was implemented.
 
 ## TDD Evidence
 
@@ -14,6 +14,7 @@ Completed Task 7 review fixes only: the visual inspector, analysis editor, PDF c
 - Added a worker-backed LINK_ONLY route regression covering detail → ORIGINAL analysis → edit and the no-byte ORIGINAL content boundary; it failed before the route/store fix because the route required a CAPSULE.
 - Added editor normalization coverage for the shared contract, including six-item context caps, invalid `visualKind` fallback, and confidence clamping.
 - Added a component regression for the shared six-item context caps; it failed while the editor still used the blanket eight-item limit.
+- Replaced the lossy editor normalization regression with overflow rejection coverage for seven-item context input and 321/501-character values; the tests failed while editor load/save still normalized through `validateVisualAnalysis`.
 
 ### GREEN
 
@@ -21,15 +22,16 @@ Completed Task 7 review fixes only: the visual inspector, analysis editor, PDF c
 - Added `VisualInspector`, `VisualAnalysisEditor`, and `PdfCropPreview`.
 - Wired Reservoir to keep its detail/unassigned visual lists coherent after inspector updates.
 - Re-ran `pnpm --dir web exec vitest run src/components/visual/VisualWorkspace.test.tsx`.
-- Result: 1 file, 8 tests passed.
+- Result: 1 file, 9 tests passed.
 - Resolved detail, summary, edit, and analyzer version lookup to use CAPSULE when present and metadata-only ORIGINAL when LINK_ONLY analysis is attached there.
 - Moved `validateVisualAnalysis` into the client-safe `shared` package; Worker and web now use the same caps, defaults, kind normalization, confidence normalization, and meaningful-content gate.
 - Exported the shared per-field array cap map and wired every editor add control to its exact field limit, preventing save-time truncation in context fields.
+- Kept `validateVisualAnalysis` as the server/API normalizer, while the editor preserves over-limit loaded values, reports per-field count/length errors inline, blocks invalid saves, and applies `maxLength=320` or `500` without hiding existing overflow.
 - Inspector now renders candidate context, rights review timestamp, relations, and extraction-run status/counts from the existing detail DTO.
 
 ## Verification
 
-- Focused visual suites: `pnpm --dir web exec vitest run src/components/visual/VisualWorkspace.test.tsx src/lib/visualAssets.test.ts src/views/ReservoirView.test.tsx` — 3 files, 77 tests passed.
+- Focused visual suites: `pnpm --dir web exec vitest run src/components/visual/VisualWorkspace.test.tsx src/lib/visualAssets.test.ts src/views/ReservoirView.test.tsx` — 3 files, 78 tests passed.
 - Workspace typecheck: `pnpm typecheck` — shared, worker, and web all passed.
 
 ## Files Changed
@@ -55,7 +57,7 @@ Completed Task 7 review fixes only: the visual inspector, analysis editor, PDF c
 
 - Card click opens a dedicated inspector and shows the full stored analysis instead of the previous first-line preview only.
 - `사용자 검증` and `AI 제안` are separated as tabs, and verified analysis is selected first when present.
-- The editor keeps visual analysis in short list items, validates client-side before save, and preserves input with inline retry messaging on save failure.
+- The editor keeps visual analysis in short list items, preserves existing overflow for correction, validates per-field count/length before save, applies field-specific input limits, and preserves input with inline retry messaging on save failure.
 - PDF `LINK_ONLY` assets render an in-memory crop preview from the parent PDF page and revoke generated object URLs on cleanup.
 - Web `LINK_ONLY` assets avoid hotlinking and show caption, nearby text, and `원문에서 보기` instead.
 - Failed processing states now show stage-oriented guidance and one retry action rather than surfacing raw technical details.
@@ -69,4 +71,4 @@ Completed Task 7 review fixes only: the visual inspector, analysis editor, PDF c
 
 ## Commit
 
-- `260826: Task 7 field cap alignment`
+- `260826: Task 7 editor overflow validation`

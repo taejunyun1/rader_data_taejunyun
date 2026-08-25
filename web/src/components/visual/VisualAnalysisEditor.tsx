@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
 import {
-  validateVisualAnalysis,
   VISUAL_ANALYSIS_ARRAY_LIMITS,
   type VisualAnalysisPayload,
   type VisualAnalysisSummary,
@@ -48,8 +47,61 @@ const CONTEXT_FIELDS: Array<{ key: ContextKey; label: string }> = [
   { key: "culturalReferences", label: "문화 참조" },
 ];
 
+const EDITOR_ITEM_LENGTHS = {
+  observation: 320,
+  formal: 320,
+  context: 320,
+  propositions: 500,
+  uncertainty: 320,
+} as const;
+
 function fromAnalysis(analysis: VisualAnalysisSummary): DraftPayload {
-  return validateVisualAnalysis(analysis.payload) ?? emptyDraft();
+  const fallback = emptyDraft();
+  const payload = analysis.payload as Record<string, unknown>;
+  const observation = recordValue(payload.observation);
+  const formal = recordValue(payload.formal);
+  const context = recordValue(payload.context);
+  return {
+    ...fallback,
+    ...payload,
+    observation: {
+      subject: preserveItems(observation.subject),
+      composition: preserveItems(observation.composition),
+      color: preserveItems(observation.color),
+      texture: preserveItems(observation.texture),
+      spatialRelation: preserveItems(observation.spatialRelation),
+      material: preserveItems(observation.material),
+      lighting: preserveItems(observation.lighting),
+      visibleText: preserveItems(observation.visibleText),
+    },
+    formal: {
+      shapes: preserveItems(formal.shapes),
+      lines: preserveItems(formal.lines),
+      planes: preserveItems(formal.planes),
+      rhythm: preserveItems(formal.rhythm),
+      scale: preserveItems(formal.scale),
+      density: preserveItems(formal.density),
+      edges: preserveItems(formal.edges),
+      contrast: preserveItems(formal.contrast),
+      perspective: preserveItems(formal.perspective),
+    },
+    context: {
+      medium: preserveItems(context.medium),
+      process: preserveItems(context.process),
+      relationToPhotography: preserveItems(context.relationToPhotography),
+      culturalReferences: preserveItems(context.culturalReferences),
+    },
+    propositions: preserveItems(payload.propositions),
+    uncertainty: preserveItems(payload.uncertainty),
+  } as DraftPayload;
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function preserveItems(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
 function emptyDraft(): DraftPayload {
@@ -82,6 +134,77 @@ function appendValue(values: string[], maxItems: number): string[] {
   return values.length >= maxItems ? values : values.concat("");
 }
 
+interface FieldErrors {
+  count: string | null;
+  items: Record<number, string>;
+}
+
+interface DraftErrors {
+  fields: Record<string, FieldErrors>;
+  form: string | null;
+  hasErrors: boolean;
+}
+
+function fieldErrors(fields: Record<string, FieldErrors>, key: string): FieldErrors {
+  return fields[key] ?? { count: null, items: {} };
+}
+
+function validateField(label: string, values: string[], maxItems: number, maxLength: number): FieldErrors {
+  const items: Record<number, string> = {};
+  values.forEach((value, index) => {
+    if (value.length > maxLength) items[index] = `${label} ${index + 1}은 ${maxLength}자 이내로 입력해 주세요.`;
+  });
+  return {
+    count: values.length > maxItems ? `${label} 항목은 최대 ${maxItems}개까지 입력할 수 있습니다.` : null,
+    items,
+  };
+}
+
+function validateEditorDraft(draft: DraftPayload): DraftErrors {
+  const fields: Record<string, FieldErrors> = {};
+  const addField = (key: string, label: string, values: string[], maxItems: number, maxLength: number) => {
+    fields[key] = validateField(label, values, maxItems, maxLength);
+  };
+
+  OBSERVATION_FIELDS.forEach((field) => addField(
+    field.key,
+    field.label,
+    draft.observation[field.key],
+    VISUAL_ANALYSIS_ARRAY_LIMITS[field.key],
+    EDITOR_ITEM_LENGTHS.observation,
+  ));
+  FORMAL_FIELDS.forEach((field) => addField(
+    field.key,
+    field.label,
+    draft.formal[field.key],
+    VISUAL_ANALYSIS_ARRAY_LIMITS[field.key],
+    EDITOR_ITEM_LENGTHS.formal,
+  ));
+  CONTEXT_FIELDS.forEach((field) => addField(
+    field.key,
+    field.label,
+    draft.context[field.key],
+    VISUAL_ANALYSIS_ARRAY_LIMITS[field.key],
+    EDITOR_ITEM_LENGTHS.context,
+  ));
+  addField("propositions", "제안", draft.propositions, VISUAL_ANALYSIS_ARRAY_LIMITS.propositions, EDITOR_ITEM_LENGTHS.propositions);
+  addField("uncertainty", "불확실성", draft.uncertainty, VISUAL_ANALYSIS_ARRAY_LIMITS.uncertainty, EDITOR_ITEM_LENGTHS.uncertainty);
+
+  const meaningful = [
+    ...Object.values(draft.observation),
+    ...Object.values(draft.formal),
+    ...Object.values(draft.context),
+    draft.propositions,
+    draft.uncertainty,
+  ].some((values) => values.some((value) => value.trim().length > 0));
+  const hasFieldErrors = Object.values(fields).some((field) => field.count !== null || Object.keys(field.items).length > 0);
+  return {
+    fields,
+    form: meaningful ? null : "관찰, 형식, 맥락, 제안, 불확실성 중 적어도 하나는 남겨야 합니다.",
+    hasErrors: hasFieldErrors || !meaningful,
+  };
+}
+
 export default function VisualAnalysisEditor({ analysis, onCancel, onSave }: VisualAnalysisEditorProps) {
   const [draft, setDraft] = useState<DraftPayload>(() => fromAnalysis(analysis));
   const [saving, setSaving] = useState(false);
@@ -89,15 +212,16 @@ export default function VisualAnalysisEditor({ analysis, onCancel, onSave }: Vis
   const [saveAttempted, setSaveAttempted] = useState(false);
 
   const saveLabel = saveAttempted && error ? "다시 저장" : "저장";
+  const validation = validateEditorDraft(draft);
   const helperText = useMemo(
     () => "짧은 문장 단위로 다듬고, 비어 있는 항목은 지워 두세요.",
     [],
   );
 
   async function submit() {
-    const validated = validateVisualAnalysis(draft);
-    if (!validated) {
-      setError("관찰, 형식, 맥락, 제안, 불확실성 중 적어도 하나는 남겨야 합니다.");
+    const currentValidation = validateEditorDraft(draft);
+    if (currentValidation.hasErrors) {
+      setError("입력 오류를 해결한 뒤 저장해 주세요.");
       setSaveAttempted(true);
       return;
     }
@@ -105,7 +229,7 @@ export default function VisualAnalysisEditor({ analysis, onCancel, onSave }: Vis
     setError("");
     setSaveAttempted(true);
     try {
-      await onSave(validated);
+      await onSave(draft);
     } catch {
       setError("저장하지 못했습니다. 입력을 유지한 상태로 다시 시도해 주세요.");
     } finally {
@@ -134,6 +258,8 @@ export default function VisualAnalysisEditor({ analysis, onCancel, onSave }: Vis
         fields={OBSERVATION_FIELDS.map((field) => ({
           ...field,
           maxItems: VISUAL_ANALYSIS_ARRAY_LIMITS[field.key],
+          maxLength: EDITOR_ITEM_LENGTHS.observation,
+          errors: fieldErrors(validation.fields, field.key),
           values: draft.observation[field.key],
           onChange: (index, value) => setDraft((current) => ({
             ...current,
@@ -164,6 +290,8 @@ export default function VisualAnalysisEditor({ analysis, onCancel, onSave }: Vis
         fields={FORMAL_FIELDS.map((field) => ({
           ...field,
           maxItems: VISUAL_ANALYSIS_ARRAY_LIMITS[field.key],
+          maxLength: EDITOR_ITEM_LENGTHS.formal,
+          errors: fieldErrors(validation.fields, field.key),
           values: draft.formal[field.key],
           onChange: (index, value) => setDraft((current) => ({
             ...current,
@@ -194,6 +322,8 @@ export default function VisualAnalysisEditor({ analysis, onCancel, onSave }: Vis
         fields={CONTEXT_FIELDS.map((field) => ({
           ...field,
           maxItems: VISUAL_ANALYSIS_ARRAY_LIMITS[field.key],
+          maxLength: EDITOR_ITEM_LENGTHS.context,
+          errors: fieldErrors(validation.fields, field.key),
           values: draft.context[field.key],
           onChange: (index, value) => setDraft((current) => ({
             ...current,
@@ -222,6 +352,8 @@ export default function VisualAnalysisEditor({ analysis, onCancel, onSave }: Vis
       <SingleFieldGroup
         label="제안"
         maxItems={VISUAL_ANALYSIS_ARRAY_LIMITS.propositions}
+        maxLength={EDITOR_ITEM_LENGTHS.propositions}
+        errors={fieldErrors(validation.fields, "propositions")}
         values={draft.propositions}
         onChange={(index, value) => setDraft((current) => ({ ...current, propositions: replaceValue(current.propositions, index, value) }))}
         onAdd={() => setDraft((current) => ({ ...current, propositions: appendValue(current.propositions, VISUAL_ANALYSIS_ARRAY_LIMITS.propositions) }))}
@@ -231,12 +363,15 @@ export default function VisualAnalysisEditor({ analysis, onCancel, onSave }: Vis
       <SingleFieldGroup
         label="불확실성"
         maxItems={VISUAL_ANALYSIS_ARRAY_LIMITS.uncertainty}
+        maxLength={EDITOR_ITEM_LENGTHS.uncertainty}
+        errors={fieldErrors(validation.fields, "uncertainty")}
         values={draft.uncertainty}
         onChange={(index, value) => setDraft((current) => ({ ...current, uncertainty: replaceValue(current.uncertainty, index, value) }))}
         onAdd={() => setDraft((current) => ({ ...current, uncertainty: appendValue(current.uncertainty, VISUAL_ANALYSIS_ARRAY_LIMITS.uncertainty) }))}
         onRemove={(index) => setDraft((current) => ({ ...current, uncertainty: removeValue(current.uncertainty, index) }))}
       />
 
+      {validation.form && <p className="visual-analysis-editor__error" role="alert">{validation.form}</p>}
       {error && <p className="visual-analysis-editor__error" role="alert">{error}</p>}
 
       <div className="visual-analysis-editor__actions">
@@ -250,25 +385,34 @@ export default function VisualAnalysisEditor({ analysis, onCancel, onSave }: Vis
 interface EditorFieldProps {
   label: string;
   maxItems: number;
+  maxLength: number;
+  errors: FieldErrors;
   values: string[];
   onChange: (index: number, value: string) => void;
   onAdd: () => void;
   onRemove: (index: number) => void;
 }
 
-function SingleFieldGroup({ label, maxItems, values, onChange, onAdd, onRemove }: EditorFieldProps) {
+function SingleFieldGroup({ label, maxItems, maxLength, errors, values, onChange, onAdd, onRemove }: EditorFieldProps) {
   return (
     <section className="visual-analysis-editor__group">
       <div className="visual-analysis-editor__group-heading">
         <h5>{label}</h5>
         <button type="button" className="ui-button-secondary" onClick={onAdd} disabled={values.length >= maxItems}>항목 추가</button>
       </div>
+      {errors.count && <p className="visual-analysis-editor__error" role="alert">{errors.count}</p>}
       {(values.length > 0 ? values : [""]).map((value, index) => (
         <div className="visual-analysis-editor__item" key={`${label}-${index}`}>
           <label>
             <span>{label} {index + 1}</span>
-            <input value={value} onChange={(event) => onChange(index, event.target.value)} />
+            <input
+              value={value}
+              maxLength={maxLength}
+              aria-invalid={Boolean(errors.items[index])}
+              onChange={(event) => onChange(index, event.target.value)}
+            />
           </label>
+          {errors.items[index] && <p className="visual-analysis-editor__error" role="alert">{errors.items[index]}</p>}
           <button type="button" className="ui-button-secondary" onClick={() => onRemove(index)} aria-label={`${label} ${index + 1} 삭제`}>삭제</button>
         </div>
       ))}
@@ -286,6 +430,8 @@ function EditorGroup({ title, fields }: { title: string; fields: Array<EditorFie
             key={field.key}
             label={field.label}
             maxItems={field.maxItems}
+            maxLength={field.maxLength}
+            errors={field.errors}
             values={field.values}
             onChange={field.onChange}
             onAdd={field.onAdd}
