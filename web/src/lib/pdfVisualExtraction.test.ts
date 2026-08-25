@@ -59,12 +59,14 @@ function createVisualExtractionDb(options: {
   inputFormat?: string;
   runId?: string;
   uploadedPages?: number[];
+  totalUnits?: number;
 }) {
   const sourceId = options.sourceId ?? "source-1";
   const activeVersionId = options.activeVersionId ?? "version-active";
   const inputFormat = options.inputFormat ?? "PDF_TEXT";
   const runId = options.runId ?? "run-1";
   const uploadedPages = options.uploadedPages ?? [];
+  const totalUnits = options.totalUnits ?? 85;
 
   return {
     prepare(sql: string) {
@@ -86,7 +88,7 @@ function createVisualExtractionDb(options: {
                   parentVersionId: activeVersionId,
                   originKind: "PDF_PAGE_CROP",
                   status: "UPLOADING",
-                  totalUnits: 85,
+                  totalUnits,
                   uploadedUnits: uploadedPages.length,
                   processedUnits: 0,
                   selectedCount: 0,
@@ -303,6 +305,71 @@ describe("visual extraction pdf route", () => {
     });
     expect(enqueueResearchJob).not.toHaveBeenCalled();
   });
+
+  it("rejects out-of-range pages and mismatched content hashes before storing temp webp bytes", async () => {
+    createOrResumeRun.mockResolvedValue({
+      id: "run-1",
+      parentSourceId: "source-1",
+      parentVersionId: "version-active",
+      originKind: "PDF_PAGE_CROP",
+      status: "UPLOADING",
+      totalUnits: 3,
+      uploadedUnits: 0,
+      processedUnits: 0,
+      selectedCount: 0,
+      reviewCount: 0,
+      filteredCount: 0,
+      unavailableCount: 0,
+      errorCode: null,
+      error: null,
+      createdAt: "2026-08-25T09:00:00.000Z",
+      updatedAt: "2026-08-25T09:00:00.000Z",
+      finishedAt: null,
+    });
+    const { default: visualExtraction } = await import("../../../worker/src/routes/visualExtraction");
+    const originals = createOriginalsBucket();
+    const webpBase64 = Buffer.from("RIFF0000WEBPpayload").toString("base64");
+
+    const outOfRange = await visualExtraction.request("/pdf/runs/run-1/pages/4", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sourceId: "source-1",
+        versionId: "version-active",
+        width: 1200,
+        height: 900,
+        contentHash: "hash-1",
+        imageBase64: webpBase64,
+      }),
+    }, {
+      DB: createVisualExtractionDb({ uploadedPages: [], totalUnits: 3 }),
+      ORIGINALS: originals,
+    } as Env);
+
+    expect(outOfRange.status).toBe(400);
+    expect(recordUnit).not.toHaveBeenCalled();
+    expect(originals.put).not.toHaveBeenCalled();
+
+    const mismatchedHash = await visualExtraction.request("/pdf/runs/run-1/pages/2", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sourceId: "source-1",
+        versionId: "version-active",
+        width: 1200,
+        height: 900,
+        contentHash: "client-side-hash",
+        imageBase64: webpBase64,
+      }),
+    }, {
+      DB: createVisualExtractionDb({ uploadedPages: [], totalUnits: 3 }),
+      ORIGINALS: originals,
+    } as Env);
+
+    expect(mismatchedHash.status).toBe(400);
+    expect(recordUnit).not.toHaveBeenCalled();
+    expect(originals.put).not.toHaveBeenCalled();
+  });
 });
 
 describe("renderPdfVisualPages", () => {
@@ -390,5 +457,36 @@ describe("renderPdfVisualPages", () => {
 
     expect(result.pages).toEqual([]);
     expect(getPage).not.toHaveBeenCalled();
+  });
+});
+
+describe("startOrResumePdfVisualExtraction", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it("threads AbortSignal into the initial original pdf download", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.signal).toBe(controller.signal);
+      throw abortError;
+    });
+    const controller = new AbortController();
+    const abortError = new DOMException("Aborted", "AbortError");
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { startOrResumePdfVisualExtraction } = await import("./pdfVisualExtraction");
+
+    await expect(startOrResumePdfVisualExtraction({
+      sourceId: "source-1",
+      versionId: "version-active",
+      originalUrl: "/api/reservoir/source-1/original?version=version-active",
+      signal: controller.signal,
+    })).rejects.toMatchObject({ name: "AbortError" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/reservoir/source-1/original?version=version-active",
+      expect.objectContaining({ signal: controller.signal }),
+    );
   });
 });

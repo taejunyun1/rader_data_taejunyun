@@ -5,6 +5,7 @@ import type { VisualExtractionRunSummary } from "@radar/shared";
 import type { InputFormat } from "@radar/shared/ingestion";
 
 const visualExtraction = new Hono<{ Bindings: Env }>();
+const MAX_PDF_PAGE_UPLOAD_BYTES = 12 * 1024 * 1024;
 
 interface PdfSourceRow {
   source_id: string;
@@ -57,6 +58,11 @@ function hasWebpSignature(bytes: Uint8Array): boolean {
   if (bytes.length < 12) return false;
   return String.fromCharCode(...bytes.slice(0, 4)) === "RIFF"
     && String.fromCharCode(...bytes.slice(8, 12)) === "WEBP";
+}
+
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest)).map((value) => value.toString(16).padStart(2, "0")).join("");
 }
 
 async function loadPdfSourceVersion(db: D1Database, sourceId: string, versionId: string): Promise<PdfSourceRow | null> {
@@ -184,6 +190,7 @@ visualExtraction.put("/pdf/runs/:runId/pages/:pageNumber", async (c) => {
   const sourceId = body?.sourceId?.trim();
   const versionId = body?.versionId?.trim();
   const imageBase64 = body?.imageBase64?.trim();
+  const requestedHash = body?.contentHash?.trim().toLowerCase() ?? "";
   if (!sourceId || !versionId || !Number.isInteger(pageNumber) || pageNumber <= 0 || !imageBase64) {
     return c.json({ error: "invalid_pdf_page_upload" }, 400);
   }
@@ -191,9 +198,13 @@ visualExtraction.put("/pdf/runs/:runId/pages/:pageNumber", async (c) => {
   if (!source) return c.json({ error: "pdf_active_version_not_found" }, 404);
   const run = await ensureRunMatches(c.env.DB, runId, sourceId, versionId);
   if (!run) return c.json({ error: "visual_extraction_run_not_found" }, 404);
+  if (run.totalUnits <= 0 || pageNumber > run.totalUnits) return c.json({ error: "pdf_page_out_of_range" }, 400);
 
   const bytes = b64ToBytes(imageBase64);
+  if (bytes.byteLength > MAX_PDF_PAGE_UPLOAD_BYTES) return c.json({ error: "pdf_page_too_large" }, 400);
   if (!hasWebpSignature(bytes)) return c.json({ error: "invalid_webp_signature" }, 400);
+  const computedHash = await sha256Hex(bytes);
+  if (!requestedHash || computedHash !== requestedHash) return c.json({ error: "pdf_page_hash_mismatch" }, 400);
 
   const key = `visual-temp/${runId}/page-${pageNumber}.webp`;
   await c.env.ORIGINALS.put(key, bytes, {
@@ -207,7 +218,7 @@ visualExtraction.put("/pdf/runs/:runId/pages/:pageNumber", async (c) => {
     tempR2Key: key,
     width: typeof body?.width === "number" ? body.width : null,
     height: typeof body?.height === "number" ? body.height : null,
-    contentHash: body?.contentHash?.trim() || null,
+    contentHash: computedHash,
   });
   const payload = await buildRunPayload(c.env.DB, runId);
   if (!payload) return c.json({ error: "visual_extraction_run_not_found" }, 404);

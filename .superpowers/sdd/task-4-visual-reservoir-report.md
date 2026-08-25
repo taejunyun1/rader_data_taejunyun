@@ -31,6 +31,10 @@ Implemented Task 4 from `.superpowers/sdd/task-4-brief.md` only:
 - Added `web/src/components/visual/PdfExtractionProgress.tsx`
 - Integrated PDF extraction controls into `web/src/views/ReservoirView.tsx`
 - Added focused tests and a PDF fixture file
+- Follow-up reviewer fixes:
+  - reject out-of-range PDF page uploads before temp object storage
+  - recompute SHA-256 from uploaded WebP bytes on the server and reject mismatches
+  - propagate `AbortSignal` into the initial PDF original download path
 
 ## Verification
 

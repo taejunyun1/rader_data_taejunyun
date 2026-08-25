@@ -179,7 +179,7 @@ export async function startOrResumePdfVisualExtraction(input: {
   originalUrl: string;
   signal?: AbortSignal;
 }): Promise<PdfVisualExtractionResult> {
-  const originalResponse = await fetch(input.originalUrl);
+  const originalResponse = await fetch(input.originalUrl, { signal: input.signal });
   if (!originalResponse.ok) throw new Error("pdf_original_not_available");
   const originalBlob = await originalResponse.blob();
   const pageCount = await loadPdfPageCount(originalBlob);
