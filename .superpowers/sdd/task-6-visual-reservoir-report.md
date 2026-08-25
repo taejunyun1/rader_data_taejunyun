@@ -10,7 +10,7 @@ Date: 2026-08-26
 - Implemented `PATCH /api/visual-assets/:id/rights` with `PERMITTED` basis enforcement and rights review timestamp recording.
 - Implemented `POST /api/visual-assets/:id/retry` across transform, analysis, and extraction recovery paths using the existing research job dedupe key behavior.
 - Implemented `POST /api/visual-assets/:id/storage-transition` for `ARCHIVAL -> CAPSULE` and `CAPSULE -> TEXT_ONLY` with `USER_VERIFIED` gating, capsule/original presence checks, and `visual_asset_operations` journaling.
-- Corrected review provenance so accept/edit rows explicitly carry the current AUTO_SUGGESTION analysis/version as their parent; detail, analysis retry, dismiss, and storage verification are scoped to the current capsule version.
+- Corrected review provenance so accept rows use the current AUTO_SUGGESTION base while edit rows use the immediately prior AUTO_SUGGESTION or USER_VERIFIED row on the current capsule version; repeated edits therefore form a concrete parent-analysis chain. Detail, analysis retry, dismiss, and storage verification remain scoped to the current capsule version.
 - Corrected HTML extraction retry to reuse the supplied `extractionRunId` and process only failed/non-terminal units, including units outside the initial candidate window; PDF run provenance validation is aligned with the same guard.
 - Corrected assignment to join the source's active version back to that source in the guarded update, with optional stale-version rejection and no partial parent/status update.
 - Corrected storage failure handling so a deletion followed by DB-finalization failure leaves a failed operation plus pending state for recovery instead of claiming the old bytes remain.
@@ -30,7 +30,7 @@ Date: 2026-08-26
 
 Results:
 
-- Focused Vitest passed: 55 tests.
+- Focused Vitest passed: 56 tests, including repeated-edit provenance coverage.
 - Workspace typecheck passed for `shared`, `worker`, and `web`.
 - `git diff --check` passed.
 

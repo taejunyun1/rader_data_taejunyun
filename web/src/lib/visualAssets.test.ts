@@ -1145,7 +1145,7 @@ describe("visual asset routes", () => {
     });
   });
 
-  it("edits a suggestion by appending a new USER_VERIFIED row that chains to the current auto suggestion base", async () => {
+  it("edits a suggestion by appending a new USER_VERIFIED row to the immediately prior verified base", async () => {
     const fixture = createVisualAssetRouteFixture();
     fixture.insertSource({ id: "source-1", activeVersionId: "version-source-1" });
     fixture.insertSourceVersion({ id: "version-source-1", sourceId: "source-1", version: 1 });
@@ -1183,9 +1183,59 @@ describe("visual asset routes", () => {
     const analyses = fixture.analysisRowsFor("asset-edit").filter((row) => row.analysis_type === "USER_VERIFIED");
     expect(analyses).toHaveLength(2);
     expect(analyses.at(-1)).toMatchObject({
-      parent_analysis_id: "analysis-auto",
+      parent_analysis_id: "analysis-user-1",
+      visual_version_id: "asset-edit-capsule",
       review_status: "EDITED",
       payload_json: JSON.stringify(editedPayload),
+    });
+  });
+
+  it("chains repeated edits through each immediately prior USER_VERIFIED row", async () => {
+    const fixture = createVisualAssetRouteFixture();
+    fixture.insertSource({ id: "source-1", activeVersionId: "version-source-1" });
+    fixture.insertSourceVersion({ id: "version-source-1", sourceId: "source-1", version: 1 });
+    fixture.insertAsset({ id: "asset-repeated-edit", parentSourceId: "source-1", parentVersionId: "version-source-1" });
+    fixture.insertAssetVersion({ id: "asset-repeated-edit-capsule", visualAssetId: "asset-repeated-edit", version: 1, variant: "CAPSULE", r2Key: "visuals/asset-repeated-edit/capsule.webp" });
+    fixture.insertAnalysis({
+      id: "analysis-repeated-auto",
+      visualAssetId: "asset-repeated-edit",
+      visualVersionId: "asset-repeated-edit-capsule",
+      analysisType: "AUTO_SUGGESTION",
+      payload: validVisualAnalysisPayload("repeated-auto"),
+      reviewStatus: "PENDING",
+      createdAt: "2026-08-25T05:20:00.000Z",
+    });
+
+    const { default: visualAssets } = await import("../../../worker/src/routes/visualAssets");
+    const firstPayload = validVisualAnalysisPayload("repeated-edit-1");
+    const firstResponse = await visualAssets.request("/asset-repeated-edit/analysis", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "edit", payload: firstPayload }),
+    }, fixture.env);
+    expect(firstResponse.status).toBe(200);
+
+    const firstVerified = fixture.analysisRowsFor("asset-repeated-edit").find((row) => row.analysis_type === "USER_VERIFIED");
+    expect(firstVerified).toMatchObject({
+      parent_analysis_id: "analysis-repeated-auto",
+      visual_version_id: "asset-repeated-edit-capsule",
+      payload_json: JSON.stringify(firstPayload),
+    });
+
+    const secondPayload = validVisualAnalysisPayload("repeated-edit-2");
+    const secondResponse = await visualAssets.request("/asset-repeated-edit/analysis", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "edit", payload: secondPayload }),
+    }, fixture.env);
+    expect(secondResponse.status).toBe(200);
+
+    const verifiedRows = fixture.analysisRowsFor("asset-repeated-edit").filter((row) => row.analysis_type === "USER_VERIFIED");
+    expect(verifiedRows).toHaveLength(2);
+    expect(verifiedRows.at(-1)).toMatchObject({
+      parent_analysis_id: firstVerified?.id,
+      visual_version_id: "asset-repeated-edit-capsule",
+      payload_json: JSON.stringify(secondPayload),
     });
   });
 

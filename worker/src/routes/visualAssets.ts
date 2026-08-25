@@ -9,6 +9,7 @@ import {
   createPersonalVisual,
   createUserVerifiedVisualAnalysis,
   getLatestVisualAnalysisForVersion,
+  getLatestVisualAnalysisRowForVersion,
   getOriginalVisualVersion,
   getVisualAnalysisRowForVersion,
   getVisualAsset,
@@ -137,31 +138,33 @@ visualAssets.patch("/:id/analysis", async (c) => {
   if (!action) return c.json({ error: "analysis_action_invalid" }, 400);
   const capsule = await getVisualVersion(c.env.DB, visualAssetId, "CAPSULE");
   if (!capsule) return c.json({ error: "visual_capsule_not_ready" }, 409);
-  const latest = await getVisualAnalysisRowForVersion(c.env.DB, visualAssetId, "AUTO_SUGGESTION", capsule.id);
-  if (!latest) return c.json({ error: "analysis_not_found" }, 404);
+  const currentAutoSuggestion = await getVisualAnalysisRowForVersion(c.env.DB, visualAssetId, "AUTO_SUGGESTION", capsule.id);
+  if (!currentAutoSuggestion) return c.json({ error: "analysis_not_found" }, 404);
 
   if (action === "edit") {
     const payload = validateVisualAnalysis(body.payload);
     if (!payload) return c.json({ error: "analysis_payload_invalid" }, 400);
+    const editBase = await getLatestVisualAnalysisRowForVersion(c.env.DB, visualAssetId, capsule.id);
+    if (!editBase) return c.json({ error: "analysis_not_found" }, 404);
     const created = await createUserVerifiedVisualAnalysis(c.env.DB, {
       visualAssetId,
       payload,
       reviewStatus: "EDITED",
-      baseAnalysisId: latest.id,
-      baseVisualVersionId: latest.visualVersionId,
+      baseAnalysisId: editBase.id,
+      baseVisualVersionId: editBase.visualVersionId,
     });
     if (!created) return c.json({ error: "analysis_base_stale" }, 409);
   } else if (action === "accept") {
     const created = await createUserVerifiedVisualAnalysis(c.env.DB, {
       visualAssetId,
-      payload: latest.payload,
+      payload: currentAutoSuggestion.payload,
       reviewStatus: "ACCEPTED",
-      baseAnalysisId: latest.id,
-      baseVisualVersionId: latest.visualVersionId,
+      baseAnalysisId: currentAutoSuggestion.id,
+      baseVisualVersionId: currentAutoSuggestion.visualVersionId,
     });
     if (!created) return c.json({ error: "analysis_base_stale" }, 409);
   } else {
-    await updateAutoSuggestionReviewStatus(c.env.DB, visualAssetId, "DISMISSED", latest.visualVersionId);
+    await updateAutoSuggestionReviewStatus(c.env.DB, visualAssetId, "DISMISSED", currentAutoSuggestion.visualVersionId);
   }
   return c.json({ asset: await loadAssetSummary(c.env.DB, visualAssetId) });
 });

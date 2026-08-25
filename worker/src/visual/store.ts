@@ -287,6 +287,20 @@ export async function getLatestVisualAnalysisForVersion(
   return toVisualAnalysisSummary(row);
 }
 
+export async function getLatestVisualAnalysisRowForVersion(
+  db: D1Database,
+  visualAssetId: string,
+  visualVersionId: string,
+): Promise<VisualAnalysisRow | null> {
+  const row = await db.prepare(
+    `${ANALYSIS_SELECT}
+     WHERE visual_asset_id = ? AND visual_version_id = ?
+       AND analysis_type IN ('AUTO_SUGGESTION', 'USER_VERIFIED')
+     ORDER BY created_at DESC, id DESC LIMIT 1`
+  ).bind(visualAssetId, visualVersionId).first<DbRow>();
+  return toVisualAnalysisRow(row);
+}
+
 export async function getVisualAnalysisRow(
   db: D1Database,
   visualAssetId: string,
@@ -342,7 +356,8 @@ export async function createUserVerifiedVisualAnalysis(
 ): Promise<VisualAnalysisSummary | null> {
   const parent = await db.prepare(
     `${ANALYSIS_SELECT}
-     WHERE id = ? AND visual_asset_id = ? AND visual_version_id = ? AND analysis_type = 'AUTO_SUGGESTION'
+     WHERE id = ? AND visual_asset_id = ? AND visual_version_id = ?
+       AND analysis_type IN ('AUTO_SUGGESTION', 'USER_VERIFIED')
        AND visual_version_id = (
          SELECT id FROM visual_asset_versions
          WHERE visual_asset_id = ? AND variant = 'CAPSULE' AND deleted_at IS NULL
