@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { VisualAssetDetail, VisualAssetSummary } from "@radar/shared";
@@ -362,6 +362,41 @@ describe("Visual workspace", () => {
     expect(globalThis.URL.revokeObjectURL).toHaveBeenCalledWith("blob:preview");
   });
 
+  it("announces PDF crop failures, keeps the source link available, and retries rendering", async () => {
+    let originalFetches = 0;
+    vi.mocked(fetch).mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/visual-assets/asset-1") {
+        return Promise.resolve(new Response(JSON.stringify({
+          asset: buildDetail({
+            originKind: "PDF_PAGE_CROP",
+            storageState: "LINK_ONLY",
+            pageNumber: 4,
+            bbox: { x: 0.1, y: 0.2, width: 0.3, height: 0.4, page: 4 },
+          }),
+        })));
+      }
+      if (url === "/api/reservoir/source-1/original?version=version-1") {
+        originalFetches += 1;
+        if (originalFetches === 1) return Promise.resolve(new Response(null, { status: 503 }));
+        return Promise.resolve(new Response(new Blob(["%PDF-1.7"], { type: "application/pdf" })));
+      }
+      return Promise.resolve(new Response(JSON.stringify({})));
+    });
+
+    render(<VisualAssetPanel assets={[buildSummary({ originKind: "PDF_PAGE_CROP", pageNumber: 4 })]} />);
+    await userEvent.click(screen.getByRole("button", { name: /도판 1/ }));
+
+    const inspector = await screen.findByRole("complementary", { name: "시각 자료 상세" });
+    const alert = await within(inspector).findByRole("alert");
+    expect(alert).toHaveTextContent("PDF 잘라보기를 준비하지 못했습니다.");
+    expect(within(alert).getByRole("link", { name: "원문에서 보기" })).toHaveAttribute("href", "https://example.com/figure-1");
+
+    await userEvent.click(within(alert).getByRole("button", { name: "다시 불러오기" }));
+    expect(await within(inspector).findByRole("img", { name: "PDF 잘라보기 미리보기" })).toBeInTheDocument();
+    expect(originalFetches).toBe(2);
+  });
+
   it("keeps web LINK_ONLY assets rights-safe by showing text context and the source link instead of hotlinking the image", async () => {
     render(<VisualAssetPanel assets={[buildSummary()]} />);
     await userEvent.click(screen.getByRole("button", { name: /도판 1/ }));
@@ -370,6 +405,27 @@ describe("Visual workspace", () => {
     expect(within(inspector).queryByRole("img", { name: /도판 1/ })).not.toBeInTheDocument();
     expect(within(inspector).getByText("원문 첫 문단 옆에서 이 이미지를 설명합니다.")).toBeInTheDocument();
     expect(within(inspector).getByRole("link", { name: "원문에서 보기" })).toHaveAttribute("href", "https://example.com/figure-1");
+  });
+
+  it("shows a readable fallback when a stored image preview cannot be loaded", async () => {
+    const detail = buildDetail({ storageState: "CAPSULE", thumbnailUrl: "/broken-preview.webp" });
+    vi.mocked(fetch).mockImplementation((input: RequestInfo | URL) => {
+      if (String(input) === "/api/visual-assets/asset-1") {
+        return Promise.resolve(new Response(JSON.stringify({ asset: detail })));
+      }
+      return Promise.resolve(new Response(JSON.stringify({})));
+    });
+
+    render(<VisualAssetPanel assets={[buildSummary({ storageState: "CAPSULE", thumbnailUrl: "/broken-preview.webp" })]} />);
+    const cardImage = screen.getByRole("img", { name: "도판 1" });
+    fireEvent.error(cardImage);
+    expect(screen.getByRole("status")).toHaveTextContent("미리보기를 불러오지 못했습니다.");
+
+    await userEvent.click(screen.getByRole("button", { name: /도판 1/ }));
+    const inspector = await screen.findByRole("complementary", { name: "시각 자료 상세" });
+    const inspectorImage = within(inspector).getByRole("img", { name: "도판 1" });
+    fireEvent.error(inspectorImage);
+    expect(within(inspector).getByRole("status")).toHaveTextContent("미리보기를 불러오지 못했습니다.");
   });
 
   it("shows a single retry action with staged failure guidance instead of a raw technical error", async () => {

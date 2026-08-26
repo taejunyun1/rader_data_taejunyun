@@ -935,6 +935,10 @@ test.describe("visual extraction web and pdf coverage", () => {
     await page.getByRole("button", { name: /BBox crop from page 17/ }).click();
     const inspector = page.getByRole("dialog", { name: "시각 자료 상세" });
     await expect(inspector).toBeVisible();
+    const cropPreview = inspector.getByRole("img", { name: "PDF 잘라보기 미리보기" });
+    await expect(cropPreview).toBeVisible();
+    await expect(cropPreview).toHaveAttribute("src", /^blob:/);
+    await expect.poll(async () => cropPreview.evaluate((image) => image.complete && image.naturalWidth > 0)).toBe(true);
     await expect(inspector).toContainText("페이지 · 17");
     await expect(inspector).toContainText("후보 키 · page-17-bbox-1");
     await expect(inspector).toContainText("선정 · 0 · 검토 · 1 · 제외 · 39 · 사용 불가 · 1");

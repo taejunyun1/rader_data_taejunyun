@@ -265,6 +265,10 @@ async function installPersonalFixture(page: Page) {
     } as VisualAssetDetail,
   };
 
+  await page.route("**/fixtures/personal-thumb.png", async (route) => {
+    await route.fulfill({ body: pngFixture(), contentType: "image/png" });
+  });
+
   function sourceDetail(): ReservoirSourceDetail {
     return {
       source: {
@@ -523,9 +527,16 @@ test("personal visual flow covers upload, retry, verified analysis, rights and s
   await openReservoir(page);
   const unassignedSection = page.getByRole("region", { name: "연결되지 않은 시각 자료" });
   await expect(unassignedSection).toBeVisible();
+  const cardImage = unassignedSection.getByRole("img", { name: "개인 업로드 이미지" });
+  await expect(cardImage).toHaveAttribute("src", "/fixtures/personal-thumb.png");
+  await expect(cardImage).toBeVisible();
+  await expect.poll(async () => cardImage.evaluate((image) => ({ complete: image.complete, naturalWidth: image.naturalWidth }))).toEqual({ complete: true, naturalWidth: 1 });
   await unassignedSection.getByRole("button", { name: /개인 업로드 이미지/ }).click();
 
   let inspector = page.getByRole("complementary", { name: "시각 자료 상세" });
+  const inspectorImage = inspector.getByRole("img", { name: "개인 업로드 이미지" });
+  await expect(inspectorImage).toBeVisible();
+  await expect.poll(async () => inspectorImage.evaluate((image) => ({ complete: image.complete, naturalWidth: image.naturalWidth }))).toEqual({ complete: true, naturalWidth: 1 });
   await expect(inspector).toContainText("FAILED");
   await inspector.getByRole("button", { name: "다시 처리" }).click();
   expect(fixture.counts().retryCalls).toBe(1);

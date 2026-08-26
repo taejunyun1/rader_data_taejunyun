@@ -4,6 +4,7 @@ import type { VisualAnalysisSummary, VisualAssetDetail } from "@radar/shared";
 import { useModalAccessibility } from "../reading/modalAccessibility";
 import PdfCropPreview from "./PdfCropPreview";
 import VisualAnalysisEditor from "./VisualAnalysisEditor";
+import VisualPreviewImage from "./VisualPreviewImage";
 
 interface VisualInspectorProps {
   asset: VisualAssetDetail | null;
@@ -164,7 +165,7 @@ export default function VisualInspector({ asset, loading, error, compact, onClos
 
           {previewMode(asset) === "image" && asset.thumbnailUrl && (
             <figure className="visual-inspector__preview">
-              <img src={asset.thumbnailUrl} alt={asset.caption || "시각 자료 미리보기"} />
+              <VisualPreviewImage src={asset.thumbnailUrl} alt={asset.caption || "시각 자료 미리보기"} />
               <figcaption>캡슐 이미지를 미리 보여 줍니다.</figcaption>
             </figure>
           )}
@@ -175,6 +176,7 @@ export default function VisualInspector({ asset, loading, error, compact, onClos
               versionId={asset.parentVersionId}
               pageNumber={asset.pageNumber}
               bbox={asset.bbox}
+              sourceUrl={asset.sourceUrl}
             />
           )}
 

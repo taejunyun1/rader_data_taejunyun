@@ -6,6 +6,7 @@ interface PdfCropPreviewProps {
   versionId: string;
   pageNumber: number;
   bbox: NormalizedVisualBbox;
+  sourceUrl?: string | null;
 }
 
 let pdfjsLib: typeof import("pdfjs-dist") | null = null;
@@ -33,9 +34,10 @@ function cropToBlob(canvas: HTMLCanvasElement): Promise<Blob> {
   });
 }
 
-export default function PdfCropPreview({ sourceId, versionId, pageNumber, bbox }: PdfCropPreviewProps) {
+export default function PdfCropPreview({ sourceId, versionId, pageNumber, bbox, sourceUrl }: PdfCropPreviewProps) {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -105,10 +107,18 @@ export default function PdfCropPreview({ sourceId, versionId, pageNumber, bbox }
         cropCanvas.height = 0;
       }
     };
-  }, [bbox.height, bbox.width, bbox.x, bbox.y, pageNumber, sourceId, versionId]);
+  }, [attempt, bbox.height, bbox.width, bbox.x, bbox.y, pageNumber, sourceId, versionId]);
 
   if (error) {
-    return <p className="visual-inspector__hint">PDF 잘라보기를 준비하지 못했습니다.</p>;
+    return (
+      <section className="visual-inspector__preview-error" role="alert">
+        <p>PDF 잘라보기를 준비하지 못했습니다.</p>
+        <div className="visual-inspector__preview-error-actions">
+          <button type="button" className="ui-button-secondary" onClick={() => setAttempt((current) => current + 1)}>다시 불러오기</button>
+          {sourceUrl && <a href={sourceUrl} target="_blank" rel="noreferrer">원문에서 보기</a>}
+        </div>
+      </section>
+    );
   }
 
   if (!previewUrl) {

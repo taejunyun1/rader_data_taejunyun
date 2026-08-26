@@ -3,6 +3,7 @@ import type { VisualAssetDetail, VisualAssetSummary, VisualExtractionRunSummary 
 import FilteredVisualsDisclosure from "./FilteredVisualsDisclosure";
 import VisualExtractionStatus from "./VisualExtractionStatus";
 import VisualInspector from "./VisualInspector";
+import VisualPreviewImage from "./VisualPreviewImage";
 
 interface VisualSourceOption {
   id: string;
@@ -312,7 +313,7 @@ export default function VisualAssetPanel({
                   onClick={(event) => void openInspector(asset, event.currentTarget)}
                 >
                   <div className="visual-asset-card__media">
-                    {asset.thumbnailUrl ? <img src={asset.thumbnailUrl} alt={asset.caption || `${KIND_LABELS[asset.visualKind]} 미리보기`} loading="lazy" /> : <span aria-hidden="true">◌</span>}
+                    {asset.thumbnailUrl ? <VisualPreviewImage src={asset.thumbnailUrl} alt={asset.caption || `${KIND_LABELS[asset.visualKind]} 미리보기`} loading="lazy" /> : <span aria-hidden="true">◌</span>}
                   </div>
                   <div className="visual-asset-card__body">
                     <div className="visual-asset-card__meta">
