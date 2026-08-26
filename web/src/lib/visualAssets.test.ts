@@ -2271,7 +2271,7 @@ describe("visual asset routes", () => {
       rights_basis: "Author email permission",
       is_personal_work: 0,
     });
-    expect(String(fixture.assetRow("asset-rights")?.rights_reviewed_at ?? "")).toContain("2026-08-25T");
+    expect(String(fixture.assetRow("asset-rights")?.rights_reviewed_at ?? "")).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
   });
 
   it("reuses the active transform retry job on repeated clicks so duplicate work is not created", async () => {
@@ -2413,7 +2413,7 @@ describe("visual asset routes", () => {
       storage_state: "CAPSULE",
       pending_storage_state: null,
     });
-    expect(fixture.assetVersionRow("asset-transition-original")?.deleted_at).toContain("2026-08-25T");
+    expect(fixture.assetVersionRow("asset-transition-original")?.deleted_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
     expect(fixture.operationRowsFor("asset-transition")).toEqual([
       expect.objectContaining({
         operation_kind: "DELETE_ORIGINAL",
@@ -2517,7 +2517,7 @@ describe("visual asset routes", () => {
       storage_state: "TEXT_ONLY",
       pending_storage_state: null,
     });
-    expect(fixture.assetVersionRow("asset-text-only-capsule")?.deleted_at).toContain("2026-08-25T");
+    expect(fixture.assetVersionRow("asset-text-only-capsule")?.deleted_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
   });
 
   it("rejects storage transitions for externally rights-gated assets even if legacy bytes still exist", async () => {

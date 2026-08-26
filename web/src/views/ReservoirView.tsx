@@ -72,6 +72,11 @@ interface DeepAnalysisBlock {
   charCount: number;
 }
 
+type ReservoirDecisionRetry =
+  | { kind: "signal"; action: DecisionAction["id"] }
+  | { kind: "reanalyze" }
+  | { kind: "refetch" };
+
 interface ReservoirFilterIntent {
   kind: string;
   topic: string;
@@ -199,6 +204,7 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [decisionOpen, setDecisionOpen] = useState(false);
   const [decisionError, setDecisionError] = useState("");
+  const [decisionRetry, setDecisionRetry] = useState<ReservoirDecisionRetry | null>(null);
   const [pendingAction, setPendingAction] = useState<DecisionAction["id"] | null>(null);
   const [detail, setDetail] = useState<SourceDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -316,6 +322,7 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
       actionRequest.current += 1;
       setActionPending(false);
       setPendingAction(null);
+      setDecisionRetry(null);
     }
     return interactionRequest.current;
   }
@@ -328,6 +335,7 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
     setDetailError("");
     setDecisionOpen(false);
     setDecisionError("");
+    setDecisionRetry(null);
     setDeepBlock(null);
     pdfExtractionAbortRef.current?.abort();
     pdfExtractionAbortRef.current = null;
@@ -396,6 +404,7 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
     setActionPending(true);
     setPendingAction(action);
     setDecisionError("");
+    setDecisionRetry({ kind: "signal", action });
     setDecisionOpen(false);
     try {
       const response = await fetch("/api/signals", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceId, action }) });
@@ -408,9 +417,13 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
         const detailRequestId = await openDetail(sourceId, { preserveAction: true });
         if (actionRequest.current !== actionRequestId || interactionRequest.current !== detailRequestId) return;
       }
+      setDecisionRetry(null);
       await load(filterIntent);
     } catch {
-      if (isCurrent()) setDecisionError("분류를 저장하지 못했습니다. 다시 시도해 주세요.");
+      if (isCurrent()) {
+        setDecisionError("분류를 저장하지 못했습니다. 다시 시도해 주세요.");
+        setMsg("");
+      }
     }
     finally {
       if (actionRequest.current === actionRequestId) {
@@ -443,17 +456,24 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
     actionRequest.current = actionRequestId;
     const isCurrent = () => interactionRequest.current === requestId && actionRequest.current === actionRequestId;
     setActionPending(true);
+    setDecisionRetry({ kind: "reanalyze" });
+    setDecisionError("");
     setMsg("다시 분석하는 중입니다.");
     setDecisionOpen(false);
     try {
       const response = await fetch(`/api/inbox/retry/${sourceId}?analyze=1`, { method: "POST" });
       const data = await response.json() as { status?: string; error?: string };
+      if (!response.ok) throw new Error(data.error ?? "분석을 다시 시작하지 못했습니다.");
       if (!isCurrent()) return;
       setMsg(data.status === "analyzed" ? "분석을 완료했습니다." : `분석에 실패했습니다: ${String(data.error ?? "알 수 없는 오류").slice(0, 120)}`);
       const detailRequestId = await openDetail(sourceId, { preserveAction: true });
       if (actionRequest.current !== actionRequestId || interactionRequest.current !== detailRequestId) return;
+      setDecisionRetry(null);
     } catch {
-      if (isCurrent()) setMsg("분석을 다시 시작하지 못했습니다.");
+      if (isCurrent()) {
+        setDecisionError("분석을 다시 시작하지 못했습니다.");
+        setMsg("");
+      }
     }
     finally {
       if (actionRequest.current === actionRequestId) setActionPending(false);
@@ -468,6 +488,8 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
     actionRequest.current = actionRequestId;
     const isCurrent = () => interactionRequest.current === requestId && actionRequest.current === actionRequestId;
     setActionPending(true);
+    setDecisionRetry({ kind: "refetch" });
+    setDecisionError("");
     setMsg("원문 수집을 요청하는 중입니다.");
     setDecisionOpen(false);
     try {
@@ -478,11 +500,22 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
       await onJobCreated?.();
       if (!isCurrent()) return;
       setMsg(data.reused ? "이미 진행 중인 원문 수집을 계속합니다." : "원문 수집을 시작했습니다. 작업센터에서 진행 상태를 확인하세요.");
+      setDecisionRetry(null);
     } catch (error) {
-      if (isCurrent()) setMsg(error instanceof Error ? error.message : "원문 수집을 시작하지 못했습니다.");
+      if (isCurrent()) {
+        setDecisionError(error instanceof Error ? error.message : "원문 수집을 시작하지 못했습니다.");
+        setMsg("");
+      }
     } finally {
       if (actionRequest.current === actionRequestId) setActionPending(false);
     }
+  }
+
+  function retryDecision() {
+    if (!decisionRetry) return;
+    if (decisionRetry.kind === "signal") void signal(decisionRetry.action);
+    else if (decisionRetry.kind === "reanalyze") void reanalyze();
+    else void refetch();
   }
 
   async function runDeepAnalysis() {
@@ -704,6 +737,7 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
         onAssetUpdated={syncVisualAsset}
       />
       {msg && <p className="reservoir-message" role="status">{msg}</p>}
+      {decisionError && <StatusMessage kind="error" title={decisionError} action={decisionRetry ? <button className="ui-button-secondary" onClick={retryDecision}>다시 시도</button> : undefined} />}
       {listError ? <StatusMessage kind="error" title={listError} action={<button className="ui-button-secondary" onClick={() => void load()}>다시 시도</button>} /> : <SplitWorkspace
         readingKey={selectedId}
         mobilePane={selectedId ? "reading" : "index"}

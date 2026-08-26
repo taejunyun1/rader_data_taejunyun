@@ -154,6 +154,7 @@ let pendingRefetch: Promise<Response> | null;
 let pendingReservoirLists: Record<string, Promise<Response> | undefined>;
 let pendingTopicResponses: Array<Promise<Response>>;
 let viewSignalFailure = false;
+let decisionSignalFailure: string | null = null;
 let sourceOneDetailFailure = false;
 let pdfExtractionResult: PdfVisualExtractionResult;
 let currentVisualDetail: VisualAssetDetail;
@@ -177,6 +178,7 @@ beforeEach(() => {
   pendingReservoirLists = {};
   pendingTopicResponses = [];
   viewSignalFailure = false;
+  decisionSignalFailure = null;
   sourceOneDetailFailure = false;
   currentVisualDetail = visualDetail;
   currentUnassignedVisualDetail = unassignedVisualDetail;
@@ -243,6 +245,11 @@ beforeEach(() => {
     if (url === "/api/signals" && init?.method === "POST") {
       const action = JSON.parse(String(init.body ?? "{}")) as { action?: string };
       if (action.action === "view" && viewSignalFailure) return Promise.reject(new Error("signal_failed"));
+      if (action.action !== "view" && decisionSignalFailure) {
+        const error = decisionSignalFailure;
+        decisionSignalFailure = null;
+        return Promise.resolve(new Response(JSON.stringify({ error }), { status: 500 }));
+      }
       if (action.action !== "view" && pendingDecisionSignal) return pendingDecisionSignal;
       return Promise.resolve(new Response(JSON.stringify({ ok: true })));
     }
@@ -554,6 +561,25 @@ describe("ReservoirView", () => {
     await userEvent.click(screen.getByRole("button", { name: "판단하기" }));
     await userEvent.click(screen.getByRole("button", { name: "발전시키기" }));
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/signals", expect.objectContaining({ method: "POST", body: JSON.stringify({ sourceId: "source-1", action: "develop" }) })));
+  });
+
+  it("surfaces a failed decision in the reading view with a retry action", async () => {
+    const user = userEvent.setup();
+    decisionSignalFailure = "signal_failed";
+    render(<ReservoirView />);
+
+    await user.click(await screen.findByRole("button", { name: /자료 A/ }));
+    await user.click(screen.getByRole("button", { name: "판단하기" }));
+    await user.click(screen.getByRole("button", { name: "관찰하기" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("분류를 저장하지 못했습니다.");
+    await user.click(within(alert).getByRole("button", { name: "다시 시도" }));
+
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.filter(([input, init]) => (
+      input === "/api/signals" && init?.method === "POST" && String(init.body).includes('"action":"watch"')
+    ))).toHaveLength(2));
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
   });
 
   it("does not reselect an earlier source when its pending decision completes", async () => {

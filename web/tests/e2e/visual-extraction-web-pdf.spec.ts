@@ -930,7 +930,7 @@ test.describe("visual extraction web and pdf coverage", () => {
     await expect(page.getByRole("dialog", { name: "PDF 시각 자료 추출" })).toBeVisible();
     await expect(page.getByRole("dialog", { name: "읽은 뒤 판단" })).toHaveCount(0);
     await expect(page.getByRole("dialog", { name: "시각 자료 상세" })).toHaveCount(0);
-    await page.getByRole("button", { name: "닫기", exact: true }).click();
+    await page.getByRole("dialog", { name: "PDF 시각 자료 추출" }).getByRole("button", { name: "닫기", exact: true }).click();
 
     await page.getByRole("button", { name: /BBox crop from page 17/ }).click();
     const inspector = page.getByRole("dialog", { name: "시각 자료 상세" });
@@ -942,7 +942,7 @@ test.describe("visual extraction web and pdf coverage", () => {
     await expect(page.getByRole("dialog", { name: "PDF 시각 자료 추출" })).toHaveCount(0);
     await expect(page.getByRole("dialog", { name: "읽은 뒤 판단" })).toHaveCount(0);
 
-    await page.getByRole("button", { name: "닫기" }).click();
+    await inspector.getByRole("button", { name: "닫기", exact: true }).click();
     await page.getByRole("button", { name: "판단하기" }).click();
     await expect(page.getByRole("dialog", { name: "읽은 뒤 판단" })).toBeVisible();
     await expect(page.getByRole("dialog", { name: "PDF 시각 자료 추출" })).toHaveCount(0);

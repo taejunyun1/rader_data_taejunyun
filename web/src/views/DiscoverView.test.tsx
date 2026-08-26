@@ -12,6 +12,7 @@ const secondCandidate = { ...candidate, id: "candidate-2", title: "다음 후보
 let currentCandidate = candidate;
 let candidateItems: typeof candidate[] | null = null;
 let pendingCandidateAction: Promise<Response> | null = null;
+let candidateActionFailure: string | null = null;
 let candidateListResponse: ((url: string) => Promise<Response> | null) | null = null;
 let fieldSignalListResponse: ((url: string) => Promise<Response> | null) | null = null;
 let pendingFieldSignalAction: Promise<Response> | null = null;
@@ -63,12 +64,20 @@ beforeEach(() => {
   currentCandidate = candidate;
   candidateItems = null;
   pendingCandidateAction = null;
+  candidateActionFailure = null;
   candidateListResponse = null;
   fieldSignalListResponse = null;
   pendingFieldSignalAction = null;
   vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
-    if (url === "/api/discover/candidates/candidate-1/keep" && init?.method === "POST") return pendingCandidateAction ?? Promise.resolve(new Response(JSON.stringify({ ok: true, status: "KEPT", sourceId: "source-1", jobId: "job-acquisition-1" })));
+    if (/^\/api\/discover\/candidates\/candidate-1\/(keep|watch|ignore)$/.test(url) && init?.method === "POST") {
+      if (candidateActionFailure) {
+        const error = candidateActionFailure;
+        candidateActionFailure = null;
+        return Promise.resolve(new Response(JSON.stringify({ error }), { status: 500 }));
+      }
+      return pendingCandidateAction ?? Promise.resolve(new Response(JSON.stringify({ ok: true, status: "KEPT", sourceId: "source-1", jobId: "job-acquisition-1" })));
+    }
     if (url.startsWith("/api/discover/signals?") && !init?.method) {
       const deferred = fieldSignalListResponse?.(url);
       if (deferred) return deferred;
@@ -118,6 +127,25 @@ describe("DiscoverView", () => {
       expect(await screen.findByRole("heading", { name: "다음 후보" })).toBeInTheDocument();
     },
   );
+
+  it("surfaces a failed candidate decision in the reading view with a retry action", async () => {
+    const user = userEvent.setup();
+    candidateActionFailure = "후보 분류 저장에 실패했습니다.";
+    render(<DiscoverView onNavigate={vi.fn()} />);
+
+    await user.click(await screen.findByRole("button", { name: /자료 후보/ }));
+    await user.click(screen.getByRole("button", { name: "판단하기" }));
+    await user.click(screen.getByRole("button", { name: "관찰하기" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("후보 분류 저장에 실패했습니다.");
+    await user.click(within(alert).getByRole("button", { name: "다시 시도" }));
+
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.filter(([input, init]) => (
+      String(input) === "/api/discover/candidates/candidate-1/watch" && init?.method === "POST"
+    ))).toHaveLength(2));
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+  });
 
   it("keeps actual access links visible while reading a candidate", async () => {
     render(<DiscoverView onNavigate={vi.fn()} />);

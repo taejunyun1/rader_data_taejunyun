@@ -74,6 +74,11 @@ interface KeptAcquisitionIntent extends CandidateIntent {
   actionGeneration: number;
 }
 
+interface CandidateDecisionRetry {
+  candidateId: string;
+  action: DecisionAction["id"];
+}
+
 interface FieldSignalFilterIntent {
   status: DiscoveryFieldSignalStatus;
   type: "" | DiscoveryFieldSignalType;
@@ -200,6 +205,7 @@ export default function DiscoverView({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [decisionOpen, setDecisionOpen] = useState(false);
   const [decisionError, setDecisionError] = useState("");
+  const [decisionRetry, setDecisionRetry] = useState<CandidateDecisionRetry | null>(null);
   const [pendingAction, setPendingAction] = useState<DecisionAction["id"] | null>(null);
   const [msg, setMsg] = useState("");
   const [listError, setListError] = useState("");
@@ -273,6 +279,7 @@ export default function DiscoverView({
     setBusy(false);
     setPendingAction(null);
     setDecisionError("");
+    setDecisionRetry(null);
     setStatusFilter(status);
     setLaneFilter(lane);
     return next;
@@ -342,6 +349,7 @@ export default function DiscoverView({
     setSelectedId(null);
     setDecisionOpen(false);
     setDecisionError("");
+    setDecisionRetry(null);
     setBusy(false);
     setPendingAction(null);
   }, [advanceCandidateIntent, replaceKeptAcquisitionIntent]);
@@ -527,6 +535,7 @@ export default function DiscoverView({
     setBusy(true);
     setPendingAction(action);
     setDecisionError("");
+    setDecisionRetry({ candidateId: id, action });
     try {
       const backendAction = action === "develop" || action === "keep" ? "keep" : action;
       const response = await fetch(`/api/discover/candidates/${id}/${backendAction}`, { method: "POST" });
@@ -558,6 +567,7 @@ export default function DiscoverView({
           : `${action === "watch" ? "관찰하기" : "제외하기"}로 기록했습니다.`);
         setDecisionOpen(false);
       }
+      setDecisionRetry(null);
       await load(intent, filterIntent);
     } catch (error) {
       if (!isCurrent()) return;
@@ -568,6 +578,12 @@ export default function DiscoverView({
         setPendingAction(null);
       }
     }
+  }
+
+  function retryDecision() {
+    const retry = decisionRetry;
+    if (!retry || retry.candidateId !== selectedId) return;
+    void act(retry.candidateId, retry.action);
   }
 
   async function actOnFieldSignal(id: string, action: "save" | "dismiss" | "restore") {
@@ -598,6 +614,7 @@ export default function DiscoverView({
     advanceCandidateIntent(id);
     setSelectedId(id);
     setDecisionError("");
+    setDecisionRetry(null);
     setDecisionOpen(false);
     setBusy(false);
     setPendingAction(null);
@@ -650,6 +667,7 @@ export default function DiscoverView({
         <button className={contentMode === "FIELD_SIGNAL" ? "is-active" : ""} role="tab" aria-selected={contentMode === "FIELD_SIGNAL"} onClick={() => setContentMode("FIELD_SIGNAL")}>현장 신호</button>
       </div>
       {msg && <p className="reservoir-message" role="status">{msg}</p>}
+      {decisionError && <StatusMessage kind="error" title={decisionError} action={decisionRetry ? <button className="ui-button-secondary" onClick={retryDecision}>다시 시도</button> : undefined} />}
       {contentMode === "READING" && (
         <>
           <div className="discovery-toolbar">
