@@ -1,9 +1,20 @@
 import type { VisualAssetSummary, VisualExtractionRunSummary } from "@radar/shared";
 
+type VisualTextScope = "FULLTEXT" | "PARTIAL" | "METADATA_ONLY" | "EMPTY" | "UNKNOWN";
+
+export interface VisualAcquisitionState {
+  textScope: VisualTextScope;
+  qualityStatus: string;
+  charCount: number;
+}
+
 interface VisualExtractionStatusProps {
   assets: VisualAssetSummary[];
   sourceKind: "WEB" | "PDF";
   run?: VisualExtractionRunSummary | null;
+  acquisition?: VisualAcquisitionState | null;
+  onRequestAcquisition?: () => void | Promise<void>;
+  acquisitionPending?: boolean;
 }
 
 function linkOnlyRightsCount(assets: VisualAssetSummary[]): number {
@@ -16,7 +27,14 @@ function linkOnlyRightsCount(assets: VisualAssetSummary[]): number {
   )).length;
 }
 
-export default function VisualExtractionStatus({ assets, sourceKind, run = null }: VisualExtractionStatusProps) {
+export default function VisualExtractionStatus({
+  assets,
+  sourceKind,
+  run = null,
+  acquisition = null,
+  onRequestAcquisition,
+  acquisitionPending = false,
+}: VisualExtractionStatusProps) {
   const visibleAssets = assets.filter((asset) => asset.selectionStatus === "SELECTED" || asset.selectionStatus === "REVIEW");
   const filteredAssets = assets.filter((asset) => asset.selectionStatus === "DECORATIVE" || asset.selectionStatus === "DUPLICATE" || asset.selectionStatus === "UNAVAILABLE");
   const failedAssets = assets.filter((asset) => asset.processingStatus === "FAILED");
@@ -25,14 +43,28 @@ export default function VisualExtractionStatus({ assets, sourceKind, run = null 
 
   let title = "";
   let description = "";
+  const textNotReady = sourceKind === "WEB"
+    && assets.length === 0
+    && acquisition
+    && (acquisition.textScope !== "FULLTEXT" || acquisition.qualityStatus !== "READY");
 
   if (failedAssets.length > 0 || run?.status === "FAILED") {
     title = "처리 실패";
     description = "시각 자료를 다시 확인하거나 처리 단계를 다시 시작해야 합니다.";
+  } else if (textNotReady) {
+    title = "원문 수집 후 시각 자료 확인";
+    if (acquisition.textScope === "METADATA_ONLY") {
+      description = `현재는 제목·링크만 저장되어 있습니다 (${acquisition.charCount.toLocaleString("ko-KR")}자). 원문을 가져오면 이미지 추출을 시작합니다.`;
+    } else if (acquisition.textScope === "PARTIAL") {
+      description = `본문이 일부만 저장되어 있습니다 (${acquisition.charCount.toLocaleString("ko-KR")}자). 원문을 다시 가져오면 이미지 추출을 시작합니다.`;
+    } else {
+      description = "분석할 원문이 없어 이미지 추출을 시작하지 않았습니다. 원문을 먼저 가져와 주세요.";
+    }
   } else if (
     sourceKind === "WEB"
     && assets.length === 0
-    && (!run || run.status === "QUEUED" || run.status === "RUNNING" || run.status === "UPLOADING")
+    && ((!acquisition && !run)
+      || (run && (run.status === "QUEUED" || run.status === "RUNNING" || run.status === "UPLOADING")))
   ) {
     title = "시각 자료 확인 중";
     description = "저장된 웹 원문에서 연구 가치가 있는 이미지를 추리는 중입니다.";
@@ -68,6 +100,16 @@ export default function VisualExtractionStatus({ assets, sourceKind, run = null 
       <p className="reading-section__label">시각 자료 상태</p>
       <h3>{title}</h3>
       <p>{description}</p>
+      {textNotReady && onRequestAcquisition && (
+        <button
+          type="button"
+          className="ui-button-secondary visual-extraction-status__action"
+          onClick={() => void onRequestAcquisition()}
+          disabled={acquisitionPending}
+        >
+          {acquisitionPending ? "원문 수집 중…" : "원문 다시 가져오기"}
+        </button>
+      )}
     </section>
   );
 }

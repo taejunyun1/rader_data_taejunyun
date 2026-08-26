@@ -691,7 +691,7 @@ describe("ReservoirView", () => {
 
     expect(await screen.findByText("메타데이터만 저장되어 심층 정리를 시작할 수 없습니다. 원문을 다시 가져온 뒤 시도해 주세요."))
       .toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "원문 수집 필요" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "원문 다시 가져오기" })).toBeEnabled();
   });
 
   it("reanalyzes the current version without starting source acquisition", async () => {
@@ -780,7 +780,8 @@ describe("ReservoirView", () => {
     render(<ReservoirView />);
     await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
 
-    expect(screen.getByRole("button", { name: "원문 수집 필요" })).toBeDisabled();
+    expect(screen.getAllByRole("button", { name: "원문 다시 가져오기" })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "원문 다시 가져오기" }).every((button) => !(button as HTMLButtonElement).disabled)).toBe(true);
     expect(screen.getByText(/METADATA_ONLY.*REVIEW.*92자/)).toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalledWith("/api/reservoir/source-1/deep-analysis", expect.anything());
   });

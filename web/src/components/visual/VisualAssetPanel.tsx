@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { VisualAssetDetail, VisualAssetSummary, VisualExtractionRunSummary } from "@radar/shared";
 import FilteredVisualsDisclosure from "./FilteredVisualsDisclosure";
-import VisualExtractionStatus from "./VisualExtractionStatus";
+import VisualExtractionStatus, { type VisualAcquisitionState } from "./VisualExtractionStatus";
 import VisualInspector from "./VisualInspector";
 import VisualPreviewImage from "./VisualPreviewImage";
 
@@ -15,6 +15,7 @@ interface VisualSourceOption {
 interface VisualExtractionContext {
   sourceKind: "WEB" | "PDF";
   run?: VisualExtractionRunSummary | null;
+  acquisition?: VisualAcquisitionState | null;
 }
 
 interface VisualAssetPanelProps {
@@ -23,6 +24,8 @@ interface VisualAssetPanelProps {
   mode?: "linked" | "unassigned";
   extractionContext?: VisualExtractionContext | null;
   showExtractionStatus?: boolean;
+  onRequestAcquisition?: () => void | Promise<void>;
+  acquisitionPending?: boolean;
   sourceOptions?: VisualSourceOption[];
   onAnalysisAction?: (assetId: string, action: "accept" | "dismiss") => void | Promise<void>;
   onAssetUpdated?: (asset: VisualAssetSummary) => void;
@@ -77,6 +80,8 @@ export default function VisualAssetPanel({
   mode = "linked",
   extractionContext = null,
   showExtractionStatus = true,
+  onRequestAcquisition,
+  acquisitionPending = false,
   sourceOptions = [],
   onAnalysisAction,
   onAssetUpdated,
@@ -296,6 +301,9 @@ export default function VisualAssetPanel({
           assets={localAssets}
           sourceKind={extractionContext.sourceKind}
           run={extractionContext.run ?? null}
+          acquisition={extractionContext.acquisition ?? null}
+          onRequestAcquisition={onRequestAcquisition}
+          acquisitionPending={acquisitionPending}
         />
       )}
 

@@ -550,6 +550,38 @@ describe("Visual workspace", () => {
 
     expect(screen.getByText("PDF 시각 자료는 직접 시작해야 합니다.")).toBeInTheDocument();
     expect(screen.getByText("PDF는 브라우저에서 페이지를 나눠 올려야 해서 자동으로 시작하지 않습니다.")).toBeInTheDocument();
+
+    rerender(
+      <VisualAssetPanel
+        assets={[]}
+        extractionContext={{
+          sourceKind: "WEB",
+          run: null,
+          acquisition: { textScope: "METADATA_ONLY", qualityStatus: "EMPTY", charCount: 0 },
+        }}
+      />,
+    );
+    expect(screen.getByText("원문 수집 후 시각 자료 확인")).toBeInTheDocument();
+    expect(screen.getByText("현재는 제목·링크만 저장되어 있습니다 (0자). 원문을 가져오면 이미지 추출을 시작합니다.")).toBeInTheDocument();
+    expect(screen.queryByText("시각 자료 확인 중")).not.toBeInTheDocument();
+  });
+
+  it("offers source acquisition when a web source has metadata only", async () => {
+    const onRequestAcquisition = vi.fn().mockResolvedValue(undefined);
+    render(
+      <VisualAssetPanel
+        assets={[]}
+        extractionContext={{
+          sourceKind: "WEB",
+          run: null,
+          acquisition: { textScope: "METADATA_ONLY", qualityStatus: "REVIEW", charCount: 92 },
+        }}
+        onRequestAcquisition={onRequestAcquisition}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "원문 다시 가져오기" }));
+    expect(onRequestAcquisition).toHaveBeenCalledOnce();
   });
 
   it("distinguishes empty and status states for no images, all filtered, review needed, rights-safe link-only, and failures", () => {

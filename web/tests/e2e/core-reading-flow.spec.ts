@@ -283,6 +283,10 @@ test("a JS-shell acquisition failure leaves the metadata-only source blocked fro
   const decisionDialog = page.getByRole("dialog", { name: "읽은 뒤 판단" });
   await expect(decisionDialog.getByRole("button", { name: "다시 가져오기" })).toBeEnabled();
   await decisionDialog.getByRole("button", { name: "닫기", exact: true }).click();
-  await expect(page.getByRole("button", { name: "원문 수집 필요" })).toBeDisabled();
+  await expect(readingPane.getByRole("heading", { name: "원문 수집 후 시각 자료 확인" })).toBeVisible();
+  const acquisitionButtons = readingPane.getByRole("button", { name: "원문 다시 가져오기" });
+  await expect(acquisitionButtons).toHaveCount(2);
+  await expect(acquisitionButtons.nth(0)).toBeEnabled();
+  await expect(acquisitionButtons.nth(1)).toBeEnabled();
   await expect(page.getByText(/메타데이터만 저장되어 심층 정리를 시작할 수 없습니다/)).toBeVisible();
 });
