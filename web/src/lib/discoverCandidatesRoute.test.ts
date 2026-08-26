@@ -70,6 +70,32 @@ describe("discover candidate decision route", () => {
     expect(enqueueResearchJobMock).not.toHaveBeenCalled();
   });
 
+  it("does not persist non-http candidate identifiers as canonical URLs", async () => {
+    const state = {
+      status: "CANDIDATE",
+      sourceId: null as string | null,
+      job: null as { id: string; status: string } | null,
+      provider: "manual",
+      openalexId: "W123456789",
+      externalUrl: "javascript:alert(1)",
+    };
+    createSourceMock.mockResolvedValue({ sourceId: "source-1" });
+
+    const response = await discover.request(
+      "http://localhost/candidates/candidate-1/keep",
+      { method: "POST" },
+      { DB: createCandidateDb(state) } as unknown as Env,
+    );
+
+    expect(response.status).toBe(200);
+    expect(createSourceMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ canonicalUrl: undefined }),
+    );
+    await expect(response.json()).resolves.toMatchObject({ sourceId: "source-1", acquisitionStatus: "LINK_ONLY" });
+    expect(enqueueResearchJobMock).not.toHaveBeenCalled();
+  });
+
   it("reuses the source and acquisition job when a kept candidate is submitted again", async () => {
     const state = {
       status: "CANDIDATE",

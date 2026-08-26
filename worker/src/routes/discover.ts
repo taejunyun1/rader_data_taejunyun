@@ -61,7 +61,7 @@ interface CandidateAcquisitionInput {
 }
 
 async function resolveCandidateAcquisition(cand: CandidateAcquisitionInput): Promise<{ link: string | undefined; doi: string | undefined; acquisitionUrl: string | null }> {
-  const link = usableHttpUrl(cand.external_url) ?? usableHttpUrl(cand.openalex_id) ?? cand.external_url ?? cand.openalex_id ?? undefined;
+  const link = usableHttpUrl(cand.external_url) ?? usableHttpUrl(cand.openalex_id) ?? undefined;
   let doi: string | undefined;
   let oaUrl: string | null = null;
   if (cand.provider === "openalex") {
