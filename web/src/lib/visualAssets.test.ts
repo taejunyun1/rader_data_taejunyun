@@ -2122,7 +2122,7 @@ describe("visual asset routes", () => {
     });
   });
 
-  it("atomically rejects non-personal, parented, already-assigned, and analyzed assignment targets", async () => {
+  it("atomically rejects non-personal, parented, and already-assigned targets while allowing a verified personal asset", async () => {
     const fixture = createVisualAssetRouteFixture();
     fixture.insertSource({ id: "source-target", activeVersionId: "version-target" });
     fixture.insertSourceVersion({ id: "version-target", sourceId: "source-target", version: 1 });
@@ -2163,7 +2163,7 @@ describe("visual asset routes", () => {
     });
 
     const { default: visualAssets } = await import("../../../worker/src/routes/visualAssets");
-    for (const assetId of ["asset-extracted", "asset-parented", "asset-analyzed"]) {
+    for (const assetId of ["asset-extracted", "asset-parented"]) {
       const response = await visualAssets.request(`/${assetId}/assignment`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -2172,9 +2172,16 @@ describe("visual asset routes", () => {
       expect(response.status).toBe(409);
     }
 
+    const analyzedResponse = await visualAssets.request("/asset-analyzed/assignment", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sourceId: "source-target", sourceVersionId: "version-target" }),
+    }, fixture.env);
+    expect(analyzedResponse.status).toBe(200);
+
     expect(fixture.assetRow("asset-extracted")).toMatchObject({ parent_source_id: null, assignment_status: "UNASSIGNED" });
     expect(fixture.assetRow("asset-parented")).toMatchObject({ parent_source_id: "source-target", assignment_status: "UNASSIGNED" });
-    expect(fixture.assetRow("asset-analyzed")).toMatchObject({ parent_source_id: null, assignment_status: "UNASSIGNED" });
+    expect(fixture.assetRow("asset-analyzed")).toMatchObject({ parent_source_id: "source-target", parent_version_id: "version-target", assignment_status: "ASSIGNED" });
   });
 
   it("recovers decorative or duplicate assets without erasing the original automated decision audit", async () => {

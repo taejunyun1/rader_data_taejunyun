@@ -199,9 +199,6 @@ visualAssets.patch("/:id/assignment", async (c) => {
        AND assignment_status = 'UNASSIGNED'
        AND parent_source_id IS NULL
        AND parent_version_id IS NULL
-       AND NOT EXISTS (
-         SELECT 1 FROM visual_analyses a WHERE a.visual_asset_id = visual_assets.id
-       )
        AND EXISTS (
          SELECT 1
          FROM sources s
@@ -227,7 +224,6 @@ visualAssets.patch("/:id/assignment", async (c) => {
       || current.assignmentStatus !== "UNASSIGNED"
       || current.parentSourceId !== null
       || current.parentVersionId !== null
-      || await hasVisualAnalysis(c.env.DB, visualAssetId)
     ) {
       return c.json({ error: "assignment_asset_not_eligible" }, 409);
     }
@@ -236,10 +232,6 @@ visualAssets.patch("/:id/assignment", async (c) => {
 
   return c.json({ asset: await loadAssetSummary(c.env.DB, visualAssetId) });
 });
-
-async function hasVisualAnalysis(db: D1Database, visualAssetId: string): Promise<boolean> {
-  return Boolean(await db.prepare("SELECT id FROM visual_analyses WHERE visual_asset_id = ? LIMIT 1").bind(visualAssetId).first());
-}
 
 visualAssets.patch("/:id/selection", async (c) => {
   const visualAssetId = c.req.param("id");
