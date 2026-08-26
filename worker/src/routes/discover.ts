@@ -109,13 +109,30 @@ discover.post("/candidates/:id/:action", async (c) => {
   if (!["keep", "watch", "ignore"].includes(action)) return c.json({ error: "invalid_action" }, 400);
 
   const cand = await c.env.DB
-    .prepare("SELECT id, openalex_id, title, authors, year, status, provider, external_url, access_status FROM discovery_candidates WHERE id = ?")
+    .prepare("SELECT id, openalex_id, title, authors, year, status, provider, external_url, access_status, source_id FROM discovery_candidates WHERE id = ?")
     .bind(id)
-    .first<{ id: string; openalex_id: string | null; title: string; authors: string | null; year: number | null; status: string; provider: string; external_url: string | null; access_status: string | null }>();
+    .first<{ id: string; openalex_id: string | null; title: string; authors: string | null; year: number | null; status: string; provider: string; external_url: string | null; access_status: string | null; source_id: string | null }>();
   if (!cand) return c.json({ error: "not_found" }, 404);
 
   const newStatus = action === "keep" ? "KEPT" : action === "watch" ? "WATCHED" : "IGNORED";
   await c.env.DB.prepare("UPDATE discovery_candidates SET status = ? WHERE id = ?").bind(newStatus, id).run();
+
+  if (action === "keep" && cand.source_id) {
+    const existingJob = await c.env.DB.prepare(
+      `SELECT id, status
+       FROM research_jobs
+       WHERE kind = 'SOURCE_ACQUISITION'
+         AND json_extract(input_json, '$.sourceId') = ?
+       ORDER BY created_at DESC LIMIT 1`,
+    ).bind(cand.source_id).first<{ id: string; status: string }>();
+    const reusableJob = existingJob && !["FAILED", "BLOCKED"].includes(existingJob.status) ? existingJob : null;
+    return c.json({
+      ok: true,
+      status: newStatus,
+      sourceId: cand.source_id,
+      ...(reusableJob ? { jobId: reusableJob.id, ...(reusableJob.status === "QUEUED" || reusableJob.status === "RUNNING" ? { acquisitionStatus: "QUEUED" as const } : {}) } : {}),
+    });
+  }
 
   let sourceId: string | null = null;
   let jobId: string | undefined;
@@ -152,6 +169,7 @@ discover.post("/candidates/:id/:action", async (c) => {
       metadata: { provider: cand.provider, externalId: cand.openalex_id, oaUrl: acquisitionUrl, accessStatus: cand.access_status },
     });
     sourceId = r.sourceId;
+    await c.env.DB.prepare("UPDATE discovery_candidates SET source_id = ? WHERE id = ? AND source_id IS NULL").bind(sourceId, id).run();
     if (acquisitionUrl) {
       const requestedBy = c.req.header("CF-Access-Authenticated-User-Email") ?? "local";
       const queued = await enqueueResearchJob(c.env, { kind: "SOURCE_ACQUISITION", input: { sourceId, url: acquisitionUrl } }, requestedBy);

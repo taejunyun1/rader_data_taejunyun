@@ -548,11 +548,13 @@ export default function DiscoverView({
         if (!isCurrent()) return;
       }
       if (action === "develop" && data.sourceId) {
-        await fetch("/api/signals", {
+        const signalResponse = await fetch("/api/signals", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ sourceId: data.sourceId, action: "develop" }),
         });
+        const signalData = await signalResponse.json() as { error?: string };
+        if (!signalResponse.ok) throw new Error(signalData.error ?? "발전 신호를 저장하지 못했습니다.");
         if (!isCurrent()) return;
         setMsg("발전시키기로 기록했습니다. 저장소에서 이어 읽습니다.");
         setDecisionOpen(false);

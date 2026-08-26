@@ -1,7 +1,7 @@
 # UI Accessibility Remediation Report
 
 Date: 2026-08-26
-Scope: Visual Inspector, decision sheets, mobile PDF extraction sheet, Discover/Reservoir async decision UX, and web verification fixtures/tests.
+Scope: Visual Inspector, decision sheets, mobile PDF extraction sheet, Discover/Reservoir async decision UX, the Discover candidate keep route, and web verification fixtures/tests.
 
 ## Findings
 
@@ -9,6 +9,7 @@ Scope: Visual Inspector, decision sheets, mobile PDF extraction sheet, Discover/
 - The decision sheet trapped focus only partially and did not hide/inert background content while open.
 - The mobile PDF extraction sheet restored trigger focus on close, but it did not manage initial focus, focus trapping, Escape, or background isolation.
 - DiscoverView and ReservoirView closed decision sheets before awaiting actions, so failures were reported only to an unmounted/closed sheet.
+- DiscoverView's develop flow treated a failed `/api/signals` response as success; retrying then repeated the keep request, while the keep route did not persist or reuse the created source/job.
 - Visual asset tests asserted a stale fixed calendar date, and the PDF extraction fixture's valid xref whitespace was visible to Git's text diff checker.
 
 ## Remediation
@@ -23,6 +24,7 @@ Scope: Visual Inspector, decision sheets, mobile PDF extraction sheet, Discover/
 - Applied the shared modal behavior to the decision sheet and the mobile PDF extraction sheet.
 - Dismissed the decision sheet when decision, reanalysis, or refetch actions start so async work no longer leaves the background inaccessible.
 - Added active-view error status and retry affordances for failed DiscoverView and ReservoirView decision actions.
+- Made failed develop-signal responses visible to DiscoverView and made the candidate keep route persist `source_id` and reuse an existing source/acquisition job on repeat requests.
 - Replaced fixed visual-asset dates with deterministic ISO timestamp validation.
 - Scoped the PDF and inspector close controls to their respective dialogs and marked the binary PDF fixture as non-text in `.gitattributes`.
 - Expanded tests to cover keyboard behavior, focus restoration, background isolation, pending-action dismissal, failure visibility, and retry behavior.
@@ -31,9 +33,11 @@ Scope: Visual Inspector, decision sheets, mobile PDF extraction sheet, Discover/
 
 - `pnpm exec vitest run src/views/DiscoverView.test.tsx src/views/ReservoirView.test.tsx src/lib/visualAssets.test.ts`
   - Passed: 128 / 128 tests
+- `pnpm exec vitest run src/views/DiscoverView.test.tsx src/lib/discoverCandidatesRoute.test.ts`
+  - Passed: 2 files / 32 tests
 - `pnpm exec vitest run`
   - Passed: 41 files / 412 tests
-- `pnpm run typecheck`
+- `pnpm run typecheck` (workspace)
   - Passed
 - `pnpm run build`
   - Passed
@@ -45,4 +49,4 @@ Scope: Visual Inspector, decision sheets, mobile PDF extraction sheet, Discover/
 ## Limitations
 
 - Playwright verification covered the targeted visual-extraction spec, not the full E2E suite; ports 4173–4175 were already occupied, so the isolated run used port 4176.
-- No deployment or backend/API changes were performed.
+- No deployment was performed; the only backend change is the scoped idempotency guard for the Discover candidate keep route.

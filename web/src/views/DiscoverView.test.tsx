@@ -13,6 +13,7 @@ let currentCandidate = candidate;
 let candidateItems: typeof candidate[] | null = null;
 let pendingCandidateAction: Promise<Response> | null = null;
 let candidateActionFailure: string | null = null;
+let candidateSignalFailure: string | null = null;
 let candidateListResponse: ((url: string) => Promise<Response> | null) | null = null;
 let fieldSignalListResponse: ((url: string) => Promise<Response> | null) | null = null;
 let pendingFieldSignalAction: Promise<Response> | null = null;
@@ -65,6 +66,7 @@ beforeEach(() => {
   candidateItems = null;
   pendingCandidateAction = null;
   candidateActionFailure = null;
+  candidateSignalFailure = null;
   candidateListResponse = null;
   fieldSignalListResponse = null;
   pendingFieldSignalAction = null;
@@ -104,7 +106,14 @@ beforeEach(() => {
     if (url === "/api/discover/queries") return Promise.resolve(new Response(JSON.stringify({ queries: [] })));
     if (url === "/api/discover/feeds") return Promise.resolve(new Response(JSON.stringify({ feeds: [] })));
     if (url === "/api/settings/homepage") return Promise.resolve(new Response(JSON.stringify({ projects: [] })));
-    if (url === "/api/signals" && init?.method === "POST") return Promise.resolve(new Response(JSON.stringify({ ok: true })));
+    if (url === "/api/signals" && init?.method === "POST") {
+      if (candidateSignalFailure) {
+        const error = candidateSignalFailure;
+        candidateSignalFailure = null;
+        return Promise.resolve(new Response(JSON.stringify({ error }), { status: 500 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({ ok: true })));
+    }
     return Promise.resolve(new Response(JSON.stringify({ ok: true })));
   }));
 });
@@ -143,6 +152,25 @@ describe("DiscoverView", () => {
 
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.filter(([input, init]) => (
       String(input) === "/api/discover/candidates/candidate-1/watch" && init?.method === "POST"
+    ))).toHaveLength(2));
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+  });
+
+  it("retries a failed develop signal after the keep has already succeeded", async () => {
+    const user = userEvent.setup();
+    candidateSignalFailure = "발전 신호 저장에 실패했습니다.";
+    render(<DiscoverView onNavigate={vi.fn()} />);
+
+    await user.click(await screen.findByRole("button", { name: /자료 후보/ }));
+    await user.click(screen.getByRole("button", { name: "판단하기" }));
+    await user.click(screen.getByRole("button", { name: "발전시키기" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("발전 신호 저장에 실패했습니다.");
+    await user.click(within(alert).getByRole("button", { name: "다시 시도" }));
+
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.filter(([input, init]) => (
+      String(input) === "/api/signals" && init?.method === "POST"
     ))).toHaveLength(2));
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
   });
