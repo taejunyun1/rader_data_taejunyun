@@ -53,6 +53,32 @@ function candidatePdfUrl(value: string | null | undefined): string | null {
   return candidate;
 }
 
+interface CandidateAcquisitionInput {
+  openalex_id: string | null;
+  title: string;
+  provider: string;
+  external_url: string | null;
+}
+
+async function resolveCandidateAcquisition(cand: CandidateAcquisitionInput): Promise<{ link: string | undefined; doi: string | undefined; acquisitionUrl: string | null }> {
+  const link = usableHttpUrl(cand.external_url) ?? usableHttpUrl(cand.openalex_id) ?? cand.external_url ?? cand.openalex_id ?? undefined;
+  let doi: string | undefined;
+  let oaUrl: string | null = null;
+  if (cand.provider === "openalex") {
+    const detail = await searchWorks(cand.title, 1);
+    const match = detail.items.find((work) => work.id === cand.openalex_id);
+    doi = match?.doi?.replace("https://doi.org/", "") ?? undefined;
+    oaUrl = match?.openAccessUrl ?? null;
+  }
+  const provider = cand.provider.toLowerCase();
+  const acquisitionUrl = provider === "openalex"
+    ? usableHttpUrl(oaUrl) ?? usableHttpUrl(cand.external_url)
+    : provider === "arxiv"
+      ? candidatePdfUrl(cand.external_url ?? cand.openalex_id)
+      : usableHttpUrl(cand.external_url);
+  return { link, doi, acquisitionUrl };
+}
+
 discover.get("/sources", (c) => c.json({ items: DISCOVERY_SOURCE_PRESETS }));
 
 discover.get("/candidates", async (c) => {
@@ -126,33 +152,28 @@ discover.post("/candidates/:id/:action", async (c) => {
        ORDER BY created_at DESC LIMIT 1`,
     ).bind(cand.source_id).first<{ id: string; status: string }>();
     const reusableJob = existingJob && !["FAILED", "BLOCKED"].includes(existingJob.status) ? existingJob : null;
-    return c.json({
-      ok: true,
-      status: newStatus,
-      sourceId: cand.source_id,
-      ...(reusableJob ? { jobId: reusableJob.id, ...(reusableJob.status === "QUEUED" || reusableJob.status === "RUNNING" ? { acquisitionStatus: "QUEUED" as const } : {}) } : {}),
-    });
+    if (reusableJob) {
+      return c.json({
+        ok: true,
+        status: newStatus,
+        sourceId: cand.source_id,
+        jobId: reusableJob.id,
+        ...(reusableJob.status === "QUEUED" || reusableJob.status === "RUNNING" ? { acquisitionStatus: "QUEUED" as const } : {}),
+      });
+    }
+
+    const { acquisitionUrl } = await resolveCandidateAcquisition(cand);
+    if (!acquisitionUrl) return c.json({ ok: true, status: newStatus, sourceId: cand.source_id, acquisitionStatus: "LINK_ONLY" as const });
+    const requestedBy = c.req.header("CF-Access-Authenticated-User-Email") ?? "local";
+    const queued = await enqueueResearchJob(c.env, { kind: "SOURCE_ACQUISITION", input: { sourceId: cand.source_id, url: acquisitionUrl } }, requestedBy);
+    return c.json({ ok: true, status: newStatus, sourceId: cand.source_id, jobId: queued.job.id, acquisitionStatus: "QUEUED" as const });
   }
 
   let sourceId: string | null = null;
   let jobId: string | undefined;
   let acquisitionStatus: "QUEUED" | "LINK_ONLY" | undefined;
   if (action === "keep") {
-    const link = usableHttpUrl(cand.external_url) ?? usableHttpUrl(cand.openalex_id) ?? cand.external_url ?? cand.openalex_id ?? undefined;
-    let doi: string | undefined;
-    let oaUrl: string | null = null;
-    if (cand.provider === "openalex") {
-      const detail = await searchWorks(cand.title, 1);
-      const match = detail.items.find((w) => w.id === cand.openalex_id);
-      doi = match?.doi?.replace("https://doi.org/", "") ?? undefined;
-      oaUrl = match?.openAccessUrl ?? null;
-    }
-    const provider = cand.provider.toLowerCase();
-    const acquisitionUrl = provider === "openalex"
-      ? usableHttpUrl(oaUrl) ?? usableHttpUrl(cand.external_url)
-      : provider === "arxiv"
-        ? candidatePdfUrl(cand.external_url ?? cand.openalex_id)
-        : usableHttpUrl(cand.external_url);
+    const { link, doi, acquisitionUrl } = await resolveCandidateAcquisition(cand);
     const r = await createSource(c.env, {
       kind: "DISCOVERY",
       title: cand.title,

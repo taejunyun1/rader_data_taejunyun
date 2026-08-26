@@ -14,6 +14,7 @@ let candidateItems: typeof candidate[] | null = null;
 let pendingCandidateAction: Promise<Response> | null = null;
 let candidateActionFailure: string | null = null;
 let candidateSignalFailure: string | null = null;
+let candidateKeepResponses: Array<Record<string, unknown>> | null = null;
 let candidateListResponse: ((url: string) => Promise<Response> | null) | null = null;
 let fieldSignalListResponse: ((url: string) => Promise<Response> | null) | null = null;
 let pendingFieldSignalAction: Promise<Response> | null = null;
@@ -67,6 +68,7 @@ beforeEach(() => {
   pendingCandidateAction = null;
   candidateActionFailure = null;
   candidateSignalFailure = null;
+  candidateKeepResponses = null;
   candidateListResponse = null;
   fieldSignalListResponse = null;
   pendingFieldSignalAction = null;
@@ -78,7 +80,8 @@ beforeEach(() => {
         candidateActionFailure = null;
         return Promise.resolve(new Response(JSON.stringify({ error }), { status: 500 }));
       }
-      return pendingCandidateAction ?? Promise.resolve(new Response(JSON.stringify({ ok: true, status: "KEPT", sourceId: "source-1", jobId: "job-acquisition-1" })));
+      const responseBody = candidateKeepResponses?.shift() ?? { ok: true, status: "KEPT", sourceId: "source-1", jobId: "job-acquisition-1" };
+      return pendingCandidateAction ?? Promise.resolve(new Response(JSON.stringify(responseBody)));
     }
     if (url.startsWith("/api/discover/signals?") && !init?.method) {
       const deferred = fieldSignalListResponse?.(url);
@@ -158,8 +161,13 @@ describe("DiscoverView", () => {
 
   it("retries a failed develop signal after the keep has already succeeded", async () => {
     const user = userEvent.setup();
+    candidateKeepResponses = [
+      { ok: true, status: "KEPT", sourceId: "source-1", jobId: "job-failed", acquisitionStatus: "QUEUED" },
+      { ok: true, status: "KEPT", sourceId: "source-1", jobId: "job-recovered", acquisitionStatus: "QUEUED" },
+    ];
     candidateSignalFailure = "발전 신호 저장에 실패했습니다.";
-    render(<DiscoverView onNavigate={vi.fn()} />);
+    const onJobCreated = vi.fn();
+    render(<DiscoverView onNavigate={vi.fn()} onJobCreated={onJobCreated} />);
 
     await user.click(await screen.findByRole("button", { name: /자료 후보/ }));
     await user.click(screen.getByRole("button", { name: "판단하기" }));
@@ -172,6 +180,7 @@ describe("DiscoverView", () => {
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.filter(([input, init]) => (
       String(input) === "/api/signals" && init?.method === "POST"
     ))).toHaveLength(2));
+    expect(onJobCreated).toHaveBeenCalledTimes(2);
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
   });
 

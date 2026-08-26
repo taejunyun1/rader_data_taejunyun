@@ -15,6 +15,61 @@ describe("discover candidate decision route", () => {
     vi.clearAllMocks();
   });
 
+  it.each([
+    ["a failed", { id: "job-failed", status: "FAILED" }],
+    ["a blocked", { id: "job-blocked", status: "BLOCKED" }],
+    ["a missing", null],
+  ] as const)("re-enqueues acquisition for a persisted source with %s job", async (_label, existingJob) => {
+    const state = {
+      status: "KEPT",
+      sourceId: "source-1",
+      job: existingJob,
+    };
+    const db = createCandidateDb(state);
+    enqueueResearchJobMock.mockImplementation(async () => {
+      state.job = { id: "job-recovered", status: "QUEUED" };
+      return { job: { id: "job-recovered" }, reused: false };
+    });
+
+    const response = await discover.request(
+      "http://localhost/candidates/candidate-1/keep",
+      { method: "POST" },
+      { DB: db } as unknown as Env,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ sourceId: "source-1", jobId: "job-recovered", acquisitionStatus: "QUEUED" });
+    expect(createSourceMock).not.toHaveBeenCalled();
+    expect(enqueueResearchJobMock).toHaveBeenCalledTimes(1);
+    expect(enqueueResearchJobMock).toHaveBeenCalledWith(
+      expect.objectContaining({ DB: db }),
+      { kind: "SOURCE_ACQUISITION", input: { sourceId: "source-1", url: "https://arxiv.org/pdf/1234.5678.pdf" } },
+      "local",
+    );
+  });
+
+  it("returns link-only when a persisted source has no recoverable acquisition URL", async () => {
+    const state = {
+      status: "KEPT",
+      sourceId: "source-1",
+      job: { id: "job-failed", status: "FAILED" },
+      provider: "manual",
+      openalexId: null,
+      externalUrl: null,
+    };
+
+    const response = await discover.request(
+      "http://localhost/candidates/candidate-1/keep",
+      { method: "POST" },
+      { DB: createCandidateDb(state) } as unknown as Env,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ sourceId: "source-1", acquisitionStatus: "LINK_ONLY" });
+    expect(createSourceMock).not.toHaveBeenCalled();
+    expect(enqueueResearchJobMock).not.toHaveBeenCalled();
+  });
+
   it("reuses the source and acquisition job when a kept candidate is submitted again", async () => {
     const state = {
       status: "CANDIDATE",
@@ -40,9 +95,29 @@ describe("discover candidate decision route", () => {
     expect(enqueueResearchJobMock).toHaveBeenCalledTimes(1);
     expect(state.sourceId).toBe("source-1");
   });
+
+  it("reuses a succeeded acquisition without enqueueing again", async () => {
+    const state = {
+      status: "KEPT",
+      sourceId: "source-1",
+      job: { id: "job-succeeded", status: "SUCCEEDED" },
+    };
+
+    const response = await discover.request(
+      "http://localhost/candidates/candidate-1/keep",
+      { method: "POST" },
+      { DB: createCandidateDb(state) } as unknown as Env,
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as Record<string, unknown>;
+    expect(body).toMatchObject({ sourceId: "source-1", jobId: "job-succeeded" });
+    expect(body).not.toHaveProperty("acquisitionStatus");
+    expect(enqueueResearchJobMock).not.toHaveBeenCalled();
+  });
 });
 
-function createCandidateDb(state: { status: string; sourceId: string | null; job: { id: string; status: string } | null }): D1Database {
+function createCandidateDb(state: { status: string; sourceId: string | null; job: { id: string; status: string } | null; provider?: string; openalexId?: string | null; externalUrl?: string | null }): D1Database {
   return {
     prepare(query: string) {
       let bindings: unknown[] = [];
@@ -55,13 +130,13 @@ function createCandidateDb(state: { status: string; sourceId: string | null; job
           if (query.startsWith("SELECT id, openalex_id")) {
             return {
               id: "candidate-1",
-              openalex_id: "https://arxiv.org/abs/1234.5678",
+              openalex_id: state.openalexId === undefined ? "https://arxiv.org/abs/1234.5678" : state.openalexId,
               title: "자료 후보",
               authors: "저자",
               year: 2026,
               status: state.status,
-              provider: "arxiv",
-              external_url: "https://arxiv.org/pdf/1234.5678.pdf",
+              provider: state.provider ?? "arxiv",
+              external_url: state.externalUrl === undefined ? "https://arxiv.org/pdf/1234.5678.pdf" : state.externalUrl,
               access_status: "PDF",
               source_id: state.sourceId,
             } as T;
