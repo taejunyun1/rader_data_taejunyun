@@ -8,7 +8,16 @@ import {
   type DiscoveryRecommendationSource,
 } from "@radar/shared/discovery";
 
-type CandidateRecommendation = Omit<DiscoveryKeywordRecommendation, "selected">;
+export type CandidateRecommendation = Omit<DiscoveryKeywordRecommendation, "selected">;
+
+const recommendationSourceOrder: DiscoveryRecommendationSource[] = [
+  "SAVED",
+  "MOMENTUM",
+  "DISTILL",
+  "RESEARCH_GAP",
+  "COUNTER",
+  "UNDERREPRESENTED",
+];
 
 function cleanKeyword(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -29,17 +38,52 @@ function addRecommendation(
   list.push({ keyword, lane, source, score, reason });
 }
 
-function finalize(list: CandidateRecommendation[], selected: string[]): DiscoveryKeywordRecommendation[] {
+function compareCandidates(a: CandidateRecommendation, b: CandidateRecommendation): number {
+  return b.score - a.score
+    || a.keyword.localeCompare(b.keyword)
+    || recommendationSourceOrder.indexOf(a.source) - recommendationSourceOrder.indexOf(b.source);
+}
+
+export function diversifyRecommendations(items: CandidateRecommendation[], selected: string[]): DiscoveryKeywordRecommendation[] {
   const best = new Map<string, CandidateRecommendation>();
-  for (const item of list) {
+  for (const item of items) {
     const key = normalizeDiscoveryTitle(item.keyword);
     const previous = best.get(key);
-    if (!previous || item.score > previous.score) best.set(key, item);
+    if (!previous || compareCandidates(item, previous) < 0) best.set(key, item);
   }
-  return [...best.values()]
-    .sort((a, b) => b.score - a.score || a.keyword.localeCompare(b.keyword))
-    .slice(0, 8)
-    .map((item) => ({ ...item, selected: selected.some((value) => normalizeDiscoveryTitle(value) === normalizeDiscoveryTitle(item.keyword)) }));
+
+  const bySource = new Map<DiscoveryRecommendationSource, CandidateRecommendation[]>();
+  for (const item of best.values()) {
+    const sourceItems = bySource.get(item.source) ?? [];
+    sourceItems.push(item);
+    bySource.set(item.source, sourceItems);
+  }
+  for (const sourceItems of bySource.values()) sourceItems.sort(compareCandidates);
+
+  const offsets = new Map<DiscoveryRecommendationSource, number>();
+  const diversified: CandidateRecommendation[] = [];
+  while (diversified.length < 8) {
+    let added = false;
+    for (const source of recommendationSourceOrder) {
+      const sourceItems = bySource.get(source) ?? [];
+      const offset = offsets.get(source) ?? 0;
+      if (offset >= sourceItems.length) continue;
+      const item = sourceItems[offset];
+      if (!item) continue;
+      diversified.push(item);
+      offsets.set(source, offset + 1);
+      added = true;
+      if (diversified.length === 8) break;
+    }
+    if (!added) break;
+  }
+
+  const selectedKeywords = new Set(selected.map(normalizeDiscoveryTitle));
+  return diversified.map((item) => ({ ...item, selected: selectedKeywords.has(normalizeDiscoveryTitle(item.keyword)) }));
+}
+
+function finalize(list: CandidateRecommendation[], selected: string[]): DiscoveryKeywordRecommendation[] {
+  return diversifyRecommendations(list, selected);
 }
 
 function parse(value: string | null | undefined): Record<string, unknown> | null {

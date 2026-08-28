@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import type { DiscoveryKeywordRecommendation, DiscoveryLane, DiscoveryProfile } from "@radar/shared/discovery";
 
 interface Props {
@@ -21,9 +21,19 @@ function strengthLabel(strength: number): string {
   return "깊게";
 }
 
+function visibleRecommendations(items: DiscoveryKeywordRecommendation[], offset: number): DiscoveryKeywordRecommendation[] {
+  if (items.length === 0) return [];
+  return Array.from({ length: Math.min(4, items.length) }, (_, index) => {
+    const item = items[(offset + index) % items.length];
+    if (!item) throw new Error("추천 항목을 찾을 수 없습니다.");
+    return item;
+  });
+}
+
 export default function DiscoveryDirectionPanel({ profile, recommendations, dirty, onChange, onSave }: Props) {
   const [draft, setDraft] = useState("");
   const [draftLane, setDraftLane] = useState<DiscoveryLane>("ORIGINAL");
+  const [recommendationOffsets, setRecommendationOffsets] = useState<Record<DiscoveryLane, number>>({ ORIGINAL: 0, COUNTER: 0 });
   const lanes: DiscoveryLane[] = ["ORIGINAL", "COUNTER"];
 
   const updateLane = (lane: DiscoveryLane, patch: Partial<DiscoveryProfile["original"]>) => {
@@ -38,8 +48,6 @@ export default function DiscoveryDirectionPanel({ profile, recommendations, dirt
     updateLane(lane, { keywords: [...profile[key].keywords, value].slice(0, 4) });
   };
 
-  const suggestion = useMemo(() => recommendations[draftLane === "ORIGINAL" ? "original" : "counter"].filter((item) => !item.selected).slice(0, 8), [draftLane, recommendations]);
-
   return (
     <section className="discovery-direction-panel" aria-labelledby="discovery-direction-title">
       <div className="discovery-direction-panel__heading">
@@ -49,7 +57,8 @@ export default function DiscoveryDirectionPanel({ profile, recommendations, dirt
       <div className="discovery-direction-panel__grid">
         {lanes.map((lane) => {
           const key = lane === "ORIGINAL" ? "original" : "counter";
-          const laneRecommendations = recommendations[key];
+          const laneRecommendations = recommendations[key].filter((item) => !item.selected);
+          const displayedRecommendations = visibleRecommendations(laneRecommendations, recommendationOffsets[lane] % Math.max(laneRecommendations.length, 1));
           return (
             <section className={`discovery-direction-card discovery-direction-card--${lane.toLowerCase()}`} key={lane} aria-label={laneCopy[lane].title}>
               <div className="discovery-direction-card__title"><div><h3>{laneCopy[lane].title}</h3><p>{laneCopy[lane].description}</p></div><strong>{profile[key].strength} · {strengthLabel(profile[key].strength)}</strong></div>
@@ -59,7 +68,7 @@ export default function DiscoveryDirectionPanel({ profile, recommendations, dirt
                 {profile[key].keywords.length === 0 && <span className="table-note">저장된 키워드 없음</span>}
               </div>
               <div className="discovery-keyword-input"><input aria-label={`${laneCopy[lane].title} 키워드 입력`} value={draftLane === lane ? draft : ""} disabled={profile[key].keywords.length >= 4} placeholder={profile[key].keywords.length >= 4 ? "최대 4개" : "키워드 추가"} onFocus={() => setDraftLane(lane)} onChange={(event) => { setDraftLane(lane); setDraft(event.target.value); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addKeyword(lane, draft); setDraft(""); } }} /><button type="button" className="ui-button-secondary" disabled={profile[key].keywords.length >= 4 || !draft.trim()} onClick={() => { addKeyword(lane, draft); setDraft(""); }}>추가</button></div>
-              <div className="discovery-recommendations"><span>추천</span>{laneRecommendations.slice(0, 4).map((item) => <button type="button" className="keyword-chip" title={item.reason} key={`${item.source}-${item.keyword}`} onClick={() => addKeyword(lane, item.keyword)}>{item.keyword}</button>)}{laneRecommendations.length === 0 && <small>새 추천이 아직 없습니다.</small>}</div>
+              <div className="discovery-recommendations"><span>추천</span>{displayedRecommendations.map((item) => <button type="button" className="keyword-chip" title={item.reason} key={`${item.source}-${item.keyword}`} onClick={() => addKeyword(lane, item.keyword)}>{item.keyword}</button>)}{laneRecommendations.length > 4 && <button type="button" className="ui-button-secondary" onClick={() => setRecommendationOffsets((offsets) => ({ ...offsets, [lane]: (offsets[lane] + 4) % laneRecommendations.length }))}>새 추천 보기</button>}{laneRecommendations.length === 0 && <small>새 추천이 아직 없습니다.</small>}</div>
             </section>
           );
         })}
