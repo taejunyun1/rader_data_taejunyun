@@ -1,5 +1,11 @@
 import type { ResearchJob, ResearchJobResultRef } from "@radar/shared/discovery";
-import { isActiveResearchJob, jobLabel, jobResultTarget, jobTitle, visualExtractionCountSummary } from "../../lib/researchJobs";
+import {
+  isActiveResearchJob,
+  jobFailurePresentation,
+  jobResultTarget,
+  jobTitle,
+  visualExtractionCountSummary,
+} from "../../lib/researchJobs";
 
 interface Props {
   jobs: ResearchJob[];
@@ -22,6 +28,7 @@ export default function JobCenter({ jobs, onDismiss, onRetry, onResult }: Props)
     <div className="job-center" aria-label="백그라운드 작업">
       {jobs.slice(0, 5).map((job) => {
         const countSummary = visualExtractionCountSummary(job);
+        const failure = jobFailurePresentation(job);
         return (
         <div className={`job-center__item job-center__item--${job.status.toLowerCase()}`} key={job.id}>
           <span className="job-center__status" aria-hidden="true">{isActiveResearchJob(job) ? "●" : job.status === "SUCCEEDED" ? "✓" : "!"}</span>
@@ -30,13 +37,27 @@ export default function JobCenter({ jobs, onDismiss, onRetry, onResult }: Props)
             {job.message && <span>{job.message}</span>}
             {countSummary.primary && <span>{countSummary.primary}</span>}
             {countSummary.secondary && <span>{countSummary.secondary}</span>}
-            {job.error && <span>{job.error}</span>}
+            {failure?.message && <span>{failure.message}</span>}
           </div>
           {job.status === "SUCCEEDED" && job.resultRef && <button className="job-center__action" type="button" onClick={() => {
             const target = jobResultTarget(job);
             if (target) onResult(target);
           }}>결과 보기</button>}
-          {(job.status === "FAILED" || job.status === "BLOCKED") && <button className="job-center__action" type="button" onClick={() => onRetry(job.id)}>다시 실행</button>}
+          {failure?.sourceUrl && (
+            <a
+              className="job-center__action"
+              href={failure.sourceUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
+              원문 열기
+            </a>
+          )}
+          {(job.status === "FAILED" || job.status === "BLOCKED")
+            && (failure?.retryable ?? true)
+            && (
+              <button className="job-center__action" type="button" onClick={() => onRetry(job.id)}>다시 실행</button>
+            )}
           {!isActiveResearchJob(job) && <button className="job-center__dismiss" aria-label={`${jobTitle(job)} 닫기`} type="button" onClick={() => onDismiss(job.id)}>×</button>}
         </div>
       );})}

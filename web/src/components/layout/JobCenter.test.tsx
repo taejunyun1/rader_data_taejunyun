@@ -48,6 +48,87 @@ describe("JobCenter", () => {
     expect(onRetry).toHaveBeenCalledWith("job-1");
   });
 
+  it("explains a confirmed publisher challenge without offering blind retry", () => {
+    render(<JobCenter
+      jobs={[job({
+        kind: "SOURCE_ACQUISITION",
+        status: "FAILED",
+        message: "작업에 실패했습니다.",
+        input: {
+          sourceId: "source-1",
+          url: "https://publisher.example/article",
+        },
+        resultRef: null,
+        errorCode: "workflow_runtime_failed",
+        error: "remote_acquisition_failure;code=HTTP_4XX;status=403;reason=ACCESS_CHALLENGE",
+      })]}
+      onDismiss={vi.fn()}
+      onRetry={vi.fn()}
+      onResult={vi.fn()}
+    />);
+
+    expect(screen.getByText(/원문 사이트가 자동 수집을 허용하지 않습니다/))
+      .toBeInTheDocument();
+    expect(screen.queryByText(/remote_acquisition_failure|HTTP_4XX/))
+      .not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "다시 실행" }))
+      .not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "원문 열기" }))
+      .toHaveAttribute("href", "https://publisher.example/article");
+  });
+
+  it("keeps retry for rate limits and hides the raw acquisition error", async () => {
+    const onRetry = vi.fn();
+    render(<JobCenter
+      jobs={[job({
+        kind: "SOURCE_ACQUISITION",
+        status: "FAILED",
+        input: {
+          sourceId: "source-1",
+          url: "https://publisher.example/article",
+        },
+        resultRef: null,
+        errorCode: "workflow_runtime_failed",
+        error: "remote_acquisition_failure;code=HTTP_4XX;status=429",
+      })]}
+      onDismiss={vi.fn()}
+      onRetry={onRetry}
+      onResult={vi.fn()}
+    />);
+
+    expect(screen.getByText(/요청 한도에 도달했습니다/)).toBeInTheDocument();
+    expect(screen.queryByText(/remote_acquisition_failure|HTTP_4XX/))
+      .not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "다시 실행" }));
+    expect(onRetry).toHaveBeenCalledWith("job-1");
+  });
+
+  it("handles legacy acquisition errors without exposing implementation text", () => {
+    render(<JobCenter
+      jobs={[job({
+        kind: "SOURCE_ACQUISITION",
+        status: "FAILED",
+        input: {
+          sourceId: "source-1",
+          url: "https://publisher.example/article",
+        },
+        resultRef: null,
+        errorCode: "workflow_runtime_failed",
+        error: "RemoteAcquisitionError: HTTP_4XX",
+      })]}
+      onDismiss={vi.fn()}
+      onRetry={vi.fn()}
+      onResult={vi.fn()}
+    />);
+
+    expect(screen.getByText("원문 수집을 완료하지 못했습니다."))
+      .toBeInTheDocument();
+    expect(screen.queryByText("RemoteAcquisitionError: HTTP_4XX"))
+      .not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "다시 실행" }))
+      .toBeInTheDocument();
+  });
+
   it("opens an acquisition result by source id without an analysis id", async () => {
     const onResult = vi.fn();
     const resultRef = { view: "RESERVOIR", sourceId: "source-1", acquisition: true } as const;

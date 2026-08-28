@@ -83,6 +83,119 @@ export function jobResultTarget(job: ResearchJob): ResearchJobResultRef | null {
   return job.resultRef;
 }
 
+export interface ResearchJobFailurePresentation {
+  message: string | null;
+  retryable: boolean;
+  sourceUrl: string | null;
+}
+
+interface RemoteAcquisitionDiagnostic {
+  code: string | null;
+  status: number | null;
+  reason: string | null;
+}
+
+function parseRemoteAcquisitionDiagnostic(
+  error: string | null,
+): RemoteAcquisitionDiagnostic {
+  const code = error?.match(/(?:^|;)code=([A-Z0-9_]+)/)?.[1]
+    ?? error?.match(/RemoteAcquisitionError:\s*([A-Z0-9_]+)/)?.[1]
+    ?? null;
+  const rawStatus = error?.match(/(?:^|;)status=(\d{3})/)?.[1];
+  const reason = error?.match(/(?:^|;)reason=([A-Z0-9_]+)/)?.[1] ?? null;
+  return {
+    code,
+    status: rawStatus ? Number(rawStatus) : null,
+    reason,
+  };
+}
+
+function acquisitionSourceUrl(job: ResearchJob): string | null {
+  if (!job.input || typeof job.input !== "object") return null;
+  const raw = (job.input as { url?: unknown }).url;
+  if (typeof raw !== "string") return null;
+  try {
+    const parsed = new URL(raw);
+    if (
+      (parsed.protocol !== "http:" && parsed.protocol !== "https:")
+      || parsed.username
+      || parsed.password
+    ) {
+      return null;
+    }
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+export function jobFailurePresentation(
+  job: ResearchJob,
+): ResearchJobFailurePresentation | null {
+  if (job.status !== "FAILED" && job.status !== "BLOCKED") return null;
+  if (job.kind !== "SOURCE_ACQUISITION") {
+    return {
+      message: job.error,
+      retryable: true,
+      sourceUrl: null,
+    };
+  }
+
+  const diagnostic = parseRemoteAcquisitionDiagnostic(job.error);
+  const permanentStatus = diagnostic.status !== null
+    && [401, 403, 404, 410].includes(diagnostic.status);
+  const challenged = diagnostic.reason === "ACCESS_CHALLENGE";
+  const permanentCode = [
+    "UNSUPPORTED_CONTENT_TYPE",
+    "SIZE_LIMIT",
+    "REDIRECT_BLOCKED",
+    "PDF_SIGNATURE_INVALID",
+    "EXTRACTION_EMPTY",
+  ].includes(diagnostic.code ?? "");
+
+  if (permanentStatus || challenged) {
+    return {
+      message: "원문 사이트가 자동 수집을 허용하지 않습니다. 브라우저에서 원문을 확인하거나, 전문이 필요하면 Inbox에 텍스트 또는 파일로 추가해 주세요.",
+      retryable: false,
+      sourceUrl: acquisitionSourceUrl(job),
+    };
+  }
+  if (diagnostic.status === 408 || diagnostic.code === "FETCH_TIMEOUT") {
+    return {
+      message: "원문 사이트의 응답 시간이 초과됐습니다. 잠시 후 다시 실행해 주세요.",
+      retryable: true,
+      sourceUrl: null,
+    };
+  }
+  if (diagnostic.status === 429) {
+    return {
+      message: "원문 사이트의 요청 한도에 도달했습니다. 잠시 후 다시 실행해 주세요.",
+      retryable: true,
+      sourceUrl: null,
+    };
+  }
+  if (diagnostic.code === "HTTP_5XX") {
+    return {
+      message: "원문 사이트의 일시적인 서버 오류로 수집하지 못했습니다.",
+      retryable: true,
+      sourceUrl: null,
+    };
+  }
+  if (permanentCode) {
+    return {
+      message: "이 링크에서는 지원되는 원문을 가져올 수 없습니다. 원문 형식이나 접근 경로를 확인해 주세요.",
+      retryable: false,
+      sourceUrl: null,
+    };
+  }
+
+  return {
+    message: "원문 수집을 완료하지 못했습니다.",
+    retryable: true,
+    sourceUrl: null,
+  };
+}
+
 export function normalizeResearchJob(value: unknown): ResearchJob | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
