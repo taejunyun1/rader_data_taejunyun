@@ -123,6 +123,8 @@ Discovery 현장 신호는 CAA News·Association for Art History·ICP 공식 RSS
 - job 상태는 `QUEUED`, `RUNNING`, `SUCCEEDED`, `FAILED`, `BLOCKED`다. 원격 수집 오류는 `FETCH_TIMEOUT`, `HTTP_4XX`, `HTTP_5XX`, `UNSUPPORTED_CONTENT_TYPE`, `SIZE_LIMIT`, `REDIRECT_BLOCKED`, `PDF_SIGNATURE_INVALID`, `EXTRACTION_EMPTY`, `PDF_CONVERSION_FAILED`; version 저장 오류는 `source_version_store_failed`; 품질 미달 processing 오류는 `text_not_ready`다. Workflow의 일반 실패 `error_code`는 `workflow_runtime_failed`이고 원래 원인은 job error와 `processing_jobs.error`에 남는다. fetch/extraction이 version 추가 전에 실패하면 실패용 `source_version`을 만들거나 active로 승격하지 않으므로, Reservoir는 기존 `DISCOVERY_METADATA/METADATA_ONLY` active version과 심층 정리 차단 상태를 그대로 표시한다.
 - RSS title/summary는 `cleanDiscoverySourceText`에서 CDATA wrapper, XML entity, HTML tag, 중복 공백을 정리한 뒤 관련성·중복 판정에 사용한다. 사용자 custom feed는 저장 시점에도 같은 public URL boundary를 거쳐 localhost/private/non-HTTP(S)/malformed 값을 거부하고, 본문 2 MiB 초과 feed는 `SIZE_LIMIT`로 처리한다.
 - historical backfill은 `POST /api/settings/backfill-discovery`로만 실행한다. `origin LIKE 'discovery:%'`이고 active version이 `FULLTEXT`가 아니거나 1,000자 미만인 자료를 오래된 순으로 회당 최대 10건 선택하며, canonical URL이 없거나 active dedupe job이 있으면 skip한다. 이 backfill과 Keep acquisition에는 자동 cron이 없다. 기존 주간 Discovery 후보/현장 신호 수집 cron은 그대로 별도 운영한다.
+- 홈페이지 읽을거리 R2 sync의 curated summary는 `HOMEPAGE_JSON / METADATA_ONLY / DISCOVERY_METADATA / REVIEW`다. 기존 `FULLTEXT / MANUAL_TEXT` 초기 summary는 `0024_homepage_summary_scope.sql`에서 text·hash·R2 key·version identity를 바꾸지 않고 provenance만 보정한다.
+- remote 4xx 진단은 기존 `HTTP_4XX` code 아래 status와 `ACCESS_CHALLENGE` detail을 보존한다. Workflow `error_code`는 계속 `workflow_runtime_failed`이며 Job Center는 raw exception 대신 영구 접근 제한과 일시 실패를 구분한다.
 
 ### 4-2. Visual Reservoir 추출·권리·보존 경계
 
