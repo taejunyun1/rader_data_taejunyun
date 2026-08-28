@@ -60,6 +60,7 @@ export interface AppendAcquisitionVersionInput {
   acquiredAt?: string | null;
   versionOrigin?: VersionOrigin;
   parentVersionId?: string | null;
+  rawContentHash?: string | null;
 }
 
 const MAX_VERSION_RESERVATION_ATTEMPTS = 5;
@@ -130,6 +131,7 @@ export async function appendAcquisitionVersion(
   const meaningfulChars = normalized.report.meaningfulChars;
   const qualityStatus = qualityStatusForTextScope(input.textScope, normalized.qualityStatus, meaningfulChars);
   const contentHash = await sha256Hex(extractedText);
+  const normalizedContentHash = await sha256Hex(normalized.normalizedText);
   const ts = input.acquiredAt ?? new Date().toISOString();
   const parentVersionId = input.parentVersionId ?? activeVersion?.id ?? null;
   const { version } = await insertAcquisitionVersion(db, {
@@ -138,6 +140,8 @@ export async function appendAcquisitionVersion(
     r2Key: input.r2Key,
     extractedText,
     contentHash,
+    rawContentHash: input.rawContentHash ?? null,
+    normalizedContentHash,
     normalizedText: normalized.normalizedText,
     normalizationReportJson: JSON.stringify(normalized.report),
     versionOrigin: incomingOrigin,
@@ -177,6 +181,8 @@ async function insertAcquisitionVersion(
     r2Key: string | null;
     extractedText: string;
     contentHash: string;
+    rawContentHash: string | null;
+    normalizedContentHash: string;
     normalizedText: string;
     normalizationReportJson: string;
     versionOrigin: VersionOrigin;
@@ -199,10 +205,10 @@ async function insertAcquisitionVersion(
     try {
       await db.prepare(
         `INSERT INTO source_versions
-         (id, source_id, version, r2_key, extracted_text, char_count, content_hash, normalized_text,
+         (id, source_id, version, r2_key, extracted_text, char_count, content_hash, raw_content_hash, normalized_content_hash, normalized_text,
           normalization_status, normalization_report_json, version_origin, parent_version_id, review_status, created_at,
           text_scope, extraction_method, extraction_error, content_type, final_url, acquired_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'READY', ?, ?, ?, 'PENDING_REVIEW', ?, ?, ?, ?, ?, ?, ?)`
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'READY', ?, ?, ?, 'PENDING_REVIEW', ?, ?, ?, ?, ?, ?, ?)`
       ).bind(
         input.versionId,
         input.sourceId,
@@ -211,6 +217,8 @@ async function insertAcquisitionVersion(
         input.extractedText,
         input.extractedText.length,
         input.contentHash,
+        input.rawContentHash,
+        input.normalizedContentHash,
         input.normalizedText,
         input.normalizationReportJson,
         input.versionOrigin,
@@ -259,7 +267,7 @@ export async function activateVersion(db: D1Database, sourceId: string, versionI
         `UPDATE sources
          SET active_version_id = ?,
              r2_key = (SELECT r2_key FROM source_versions WHERE id = ?),
-             file_hash = COALESCE((SELECT content_hash FROM source_versions WHERE id = ?), file_hash),
+             file_hash = COALESCE((SELECT raw_content_hash FROM source_versions WHERE id = ?), file_hash),
              quality_status = ?, updated_at = ?
          WHERE id = ?`
       )

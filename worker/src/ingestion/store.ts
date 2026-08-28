@@ -11,7 +11,8 @@ import {
 } from "@radar/shared/ingestion";
 import { findDuplicate } from "./dedup";
 import { uuid, sha256Hex } from "./ids";
-import { titleNorm } from "./normalize";
+import { normalizeDoi, normalizeUrl, titleNorm } from "./normalize";
+import { activateVersion, getActiveVersion } from "./versioning";
 
 export interface CreateSourceInput {
   kind: SourceKind;
@@ -82,36 +83,44 @@ function asciiOnly(meta: Record<string, string>): Record<string, string> {
 
 export async function createSource(env: Env, input: CreateSourceInput): Promise<CreateSourceResult> {
   const fileHash = await sha256Hex(input.original);
+  // Stage the bytes before identity lookup. This keeps the reservoir's original-first
+  // invariant even when the lookup resolves to an existing logical source.
+  const stagedOriginalKey = await stageIncomingOriginal(env, input, fileHash);
 
-  const dup = await findDuplicate(env.DB, {
-    doi: input.doi ?? null,
-    canonicalUrl: input.canonicalUrl ?? null,
-    title: input.title,
-    authors: input.authors ?? null,
-    fileHash,
-  });
+  try {
+    const dup = await findDuplicate(env.DB, {
+      doi: input.doi ?? null,
+      canonicalUrl: input.canonicalUrl ?? null,
+      title: input.title,
+      authors: input.authors ?? null,
+      fileHash,
+    });
 
-  if (dup) {
-    await recordReimport(env, dup.sourceId, dup.field, input.origin);
-    const row = await env.DB.prepare("SELECT title, quality_status, active_version_id FROM sources WHERE id = ?")
-      .bind(dup.sourceId)
-      .first<{ title: string; quality_status: QualityStatus | null; active_version_id: string | null }>();
-    return {
-      sourceId: dup.sourceId,
-      duplicateOf: dup.sourceId,
-      title: row?.title ?? input.title,
-      qualityStatus: row?.quality_status ?? undefined,
-      activeVersionId: row?.active_version_id ?? undefined,
-    };
-  }
+    if (dup) {
+      const existingVersion = await env.DB.prepare(
+        "SELECT id, version FROM source_versions WHERE source_id = ? AND raw_content_hash = ? LIMIT 1",
+      ).bind(dup.sourceId, fileHash).first<{ id: string; version: number }>();
+      if (!existingVersion) {
+        return appendReimportedVersion(env, dup.sourceId, input, fileHash, stagedOriginalKey);
+      }
+      await recordReimport(env, dup.sourceId, dup.field, input.origin);
+      const row = await env.DB.prepare("SELECT title, quality_status, active_version_id FROM sources WHERE id = ?")
+        .bind(dup.sourceId)
+        .first<{ title: string; quality_status: QualityStatus | null; active_version_id: string | null }>();
+      return {
+        sourceId: dup.sourceId,
+        duplicateOf: dup.sourceId,
+        title: row?.title ?? input.title,
+        qualityStatus: row?.quality_status ?? undefined,
+        activeVersionId: row?.active_version_id ?? undefined,
+      };
+    }
 
   const id = uuid();
   const versionId = uuid();
   const clean = input.filename ? sanitizeFilename(input.filename) : null;
   const r2Key = input.storedOriginal === null ? null : `originals/${id}/v1${clean ? `-${clean}` : ""}`;
-  if (r2Key) await env.ORIGINALS.put(r2Key, input.storedOriginal ?? input.original, {
-    customMetadata: asciiOnly({ sourceId: id, origin: input.origin }),
-  });
+  if (r2Key) await copyStagedOriginal(env, stagedOriginalKey, r2Key, id, input.origin, input.storedOriginal ?? input.original);
   const previewKey = input.preview ? `previews/${id}/v1.jpg` : null;
   if (previewKey && input.preview) await env.ORIGINALS.put(previewKey, input.preview.data, { httpMetadata: { contentType: input.preview.contentType } });
 
@@ -124,6 +133,7 @@ export async function createSource(env: Env, input: CreateSourceInput): Promise<
   const extractionMethod = input.extractionMethod ?? (text ? "MANUAL_TEXT" : "DISCOVERY_METADATA");
   const qualityStatus = qualityStatusForTextScope(textScope, normalized.qualityStatus, normalized.report.meaningfulChars);
   const versionContentHash = await sha256Hex(text || input.original);
+  const normalizedContentHash = await sha256Hex(normalized.normalizedText);
   const status = text ? "extracted" : "stored";
   const ts = nowIso();
 
@@ -162,10 +172,10 @@ export async function createSource(env: Env, input: CreateSourceInput): Promise<
     env.DB
       .prepare(
         `INSERT INTO source_versions
-         (id, source_id, version, r2_key, extracted_text, char_count, content_hash, normalized_text,
+         (id, source_id, version, r2_key, extracted_text, char_count, content_hash, raw_content_hash, normalized_content_hash, normalized_text,
           normalization_status, normalization_report_json, version_origin, review_status, created_at,
           text_scope, extraction_method, extraction_error, content_type, final_url, acquired_at)
-         VALUES (?, ?, 1, ?, ?, ?, ?, ?, 'READY', ?, ?, 'ACTIVE', ?, ?, ?, ?, ?, ?, ?)`
+         VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, 'READY', ?, ?, 'ACTIVE', ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         versionId,
@@ -174,6 +184,8 @@ export async function createSource(env: Env, input: CreateSourceInput): Promise<
         text,
         text.length,
         versionContentHash,
+        fileHash,
+        normalizedContentHash,
         normalized.normalizedText,
         JSON.stringify(normalized.report),
         input.versionOrigin ?? "INITIAL_INGEST",
@@ -197,9 +209,124 @@ export async function createSource(env: Env, input: CreateSourceInput): Promise<
          VALUES (?, ?, 'import', 1.0, ?, ?)`
       )
       .bind(uuid(), id, JSON.stringify({ origin: input.origin }), ts),
+    ...identityStatements(env.DB, id, input, fileHash, ts),
   ]);
 
-  return { sourceId: id, duplicateOf: null, title: input.title, qualityStatus, activeVersionId: versionId };
+    return { sourceId: id, duplicateOf: null, title: input.title, qualityStatus, activeVersionId: versionId };
+  } finally {
+    await deleteStagedOriginal(env, stagedOriginalKey);
+  }
+}
+
+async function appendReimportedVersion(
+  env: Env,
+  sourceId: string,
+  input: CreateSourceInput,
+  rawContentHash: string,
+  stagedOriginalKey: string | null,
+): Promise<CreateSourceResult> {
+  const source = await env.DB.prepare("SELECT title FROM sources WHERE id = ?").bind(sourceId).first<{ title: string }>();
+  if (!source) throw new Error("source_not_found");
+  const row = await env.DB.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM source_versions WHERE source_id = ?")
+    .bind(sourceId).first<{ version: number }>();
+  const version = (row?.version ?? 0) + 1;
+  const versionId = uuid();
+  const clean = input.filename ? sanitizeFilename(input.filename) : null;
+  const r2Key = input.storedOriginal === null ? null : `originals/${sourceId}/v${version}${clean ? `-${clean}` : ""}`;
+  if (r2Key) await copyStagedOriginal(env, stagedOriginalKey, r2Key, sourceId, input.origin, input.storedOriginal ?? input.original);
+
+  const text = (input.extractedText ?? "").slice(0, 500_000);
+  const derivedMeta = deriveIngestMeta(input.origin, input.filename, input.metadata);
+  const inputFormat = input.inputFormat ?? derivedMeta.format;
+  const normalized = normalizeIngestText(text, inputFormat);
+  const textScope = input.textScope ?? (text ? "FULLTEXT" : "METADATA_ONLY");
+  const extractionMethod = input.extractionMethod ?? (text ? "MANUAL_TEXT" : "DISCOVERY_METADATA");
+  const qualityStatus = qualityStatusForTextScope(textScope, normalized.qualityStatus, normalized.report.meaningfulChars);
+  const ts = nowIso();
+  const normalizedContentHash = await sha256Hex(normalized.normalizedText);
+  const versionContentHash = await sha256Hex(text || input.original);
+
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO source_versions
+       (id, source_id, version, r2_key, extracted_text, char_count, content_hash, raw_content_hash, normalized_content_hash, normalized_text,
+        normalization_status, normalization_report_json, version_origin, parent_version_id, review_status, created_at,
+        text_scope, extraction_method, extraction_error, content_type, final_url, acquired_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'READY', ?, ?,
+        (SELECT active_version_id FROM sources WHERE id = ?), 'ACTIVE', ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      versionId, sourceId, version, r2Key, text, text.length, versionContentHash, rawContentHash, normalizedContentHash,
+      normalized.normalizedText, JSON.stringify(normalized.report), input.versionOrigin ?? "INITIAL_INGEST", sourceId, ts,
+      textScope, extractionMethod, input.extractionError ?? null, input.contentType ?? null, input.finalUrl ?? null, input.acquiredAt ?? ts,
+    ),
+    env.DB.prepare("UPDATE sources SET origins_json = ?, updated_at = ? WHERE id = ?")
+      .bind(await appendOrigin(env.DB, sourceId, input.origin), ts, sourceId),
+    env.DB.prepare(
+      `INSERT INTO processing_jobs (id, source_id, stage, status, error, retry_count, created_at, updated_at)
+       VALUES (?, ?, 'ingest', ?, NULL, 0, ?, ?)`
+    ).bind(uuid(), sourceId, text ? "extracted" : "stored", ts, ts),
+    env.DB.prepare(
+      `INSERT INTO user_signals (id, source_id, action, weight, context, created_at)
+       VALUES (?, ?, 'import', 1.0, ?, ?)`
+    ).bind(uuid(), sourceId, JSON.stringify({ origin: input.origin, version: versionId }), ts),
+    ...identityStatements(env.DB, sourceId, input, rawContentHash, ts),
+  ]);
+  await activateVersion(env.DB, sourceId, versionId, qualityStatus, ts);
+  return { sourceId, duplicateOf: sourceId, title: source.title, qualityStatus, activeVersionId: versionId };
+}
+
+async function stageIncomingOriginal(env: Env, input: CreateSourceInput, rawContentHash: string): Promise<string | null> {
+  if (input.storedOriginal === null) return null;
+  const key = `originals/_intake/${rawContentHash}`;
+  await env.ORIGINALS.put(key, input.storedOriginal ?? input.original, {
+    customMetadata: asciiOnly({ origin: input.origin, staged: "true" }),
+  });
+  return key;
+}
+
+async function copyStagedOriginal(
+  env: Env,
+  stagedKey: string | null,
+  targetKey: string,
+  sourceId: string,
+  origin: string,
+  value: string | ArrayBuffer,
+): Promise<void> {
+  if (!stagedKey) return;
+  await env.ORIGINALS.put(targetKey, value, {
+    customMetadata: asciiOnly({ sourceId, origin }),
+  });
+}
+
+async function deleteStagedOriginal(env: Env, stagedKey: string | null): Promise<void> {
+  if (!stagedKey) return;
+  try { await env.ORIGINALS.delete(stagedKey); } catch { /* cleanup is best effort */ }
+}
+
+async function appendOrigin(db: D1Database, sourceId: string, origin: string): Promise<string> {
+  const row = await db.prepare("SELECT origins_json FROM sources WHERE id = ?").bind(sourceId).first<{ origins_json: string | null }>();
+  let origins: string[] = [];
+  try { origins = row?.origins_json ? JSON.parse(row.origins_json) as string[] : []; } catch { origins = []; }
+  if (!origins.includes(origin)) origins.push(origin);
+  return JSON.stringify(origins);
+}
+
+function identityStatements(
+  db: D1Database,
+  sourceId: string,
+  input: CreateSourceInput,
+  rawHash: string,
+  createdAt: string,
+): D1PreparedStatement[] {
+  const entries = [
+    input.doi ? ["DOI", normalizeDoi(input.doi)] : null,
+    input.canonicalUrl ? ["CANONICAL_URL", normalizeUrl(input.canonicalUrl) ?? input.canonicalUrl] : null,
+    input.title && input.authors ? ["TITLE_AUTHOR", `${titleNorm(input.title)}::${input.authors.split(/[,;]/)[0]!.trim().toLowerCase()}`] : null,
+    ["RAW_HASH", rawHash],
+  ].filter((entry): entry is [string, string] => Boolean(entry?.[1]));
+  return entries.map(([kind, value]) => db.prepare(
+    "INSERT OR IGNORE INTO source_identity_keys (identity_kind, identity_value, source_id, created_at) VALUES (?, ?, ?, ?)",
+  ).bind(kind, value, sourceId, createdAt));
 }
 
 async function recordReimport(env: Env, sourceId: string, field: string, origin: string): Promise<void> {

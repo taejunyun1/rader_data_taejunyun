@@ -6,6 +6,7 @@ import {
   type RemoteDocumentKind,
   type RemoteFetchErrorCode,
 } from "./fetchRemoteDocument";
+import { sha256Hex } from "./ids";
 
 export interface RemoteAcquisitionInput {
   sourceId: string;
@@ -24,6 +25,7 @@ export interface RemoteAcquisitionResult {
   warnings: string[];
   textScope: TextScope;
   extractionMethod: ExtractionMethod;
+  rawContentHash: string;
 }
 
 interface RemoteAcquisitionOptions {
@@ -51,6 +53,7 @@ export async function acquireRemoteSource(
     const remote = await fetchRemoteDocument(input.url, { fetchImpl: options.fetchImpl });
     const r2Key = buildOriginalKey(input.sourceId, input.version, input.versionId, remote.kind);
     await env.ORIGINALS.put(r2Key, remote.body);
+    const rawContentHash = await sha256Hex(remote.body);
 
     if (remote.kind === "PDF") {
       const extracted = await extractRemotePdf(env, input, remote.body);
@@ -64,6 +67,7 @@ export async function acquireRemoteSource(
         warnings: extracted.warnings,
         textScope: extracted.scope,
         extractionMethod: "PDF_REMOTE_TO_MARKDOWN",
+        rawContentHash,
       };
     }
 
@@ -81,6 +85,7 @@ export async function acquireRemoteSource(
       warnings: extracted.warnings,
       textScope: extracted.scope,
       extractionMethod: extracted.method,
+      rawContentHash,
     };
   } catch (error) {
     if (error instanceof RemoteAcquisitionError) throw error;

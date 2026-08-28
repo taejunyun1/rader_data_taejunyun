@@ -21,7 +21,7 @@ export default defineConfig({
     })),
   ],
   test: {
-    include: ["test/backfillDiscovery.test.ts"],
+    include: ["test/backfillDiscovery.test.ts", "test/sourceVersionIntegrity.test.ts"],
     exclude: ["test/settingsBackfillRoute.test.ts"],
     setupFiles: ["./test/helpers/runtime.ts"],
     fileParallelism: false,

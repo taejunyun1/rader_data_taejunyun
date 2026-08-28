@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -104,6 +104,13 @@ describe("ingestion normalization", () => {
     expect(migrationSql).not.toMatch(/^\s*(?:BEGIN|COMMIT)\s*;/im);
   });
 
+  it("adds the source-version integrity migration", () => {
+    const migrationPath = join(process.cwd(), "../worker/migrations/0021_source_version_integrity.sql");
+    const migrationSql = existsSync(migrationPath) ? readFileSync(migrationPath, "utf8") : "";
+
+    expect(migrationSql).toContain("raw_content_hash");
+  });
+
   it("stores metadata-only discovery sources without a fake original", async () => {
     const env = createCreateSourceEnv();
 
@@ -121,8 +128,8 @@ describe("ingestion normalization", () => {
     expect(env.sourceVersionInsert?.params[2]).toBeNull();
     expect(env.sourceVersionInsert?.params[3]).toBe("");
     expect(env.sourceVersionInsert?.params[4]).toBe(0);
-    expect(env.sourceVersionInsert?.params[10]).toBe("METADATA_ONLY");
-    expect(env.sourceVersionInsert?.params[11]).toBe("DISCOVERY_METADATA");
+    expect(env.sourceVersionInsert?.params[12]).toBe("METADATA_ONLY");
+    expect(env.sourceVersionInsert?.params[13]).toBe("DISCOVERY_METADATA");
   });
 
   it("stores fulltext provenance on manual text imports", async () => {
@@ -136,8 +143,8 @@ describe("ingestion normalization", () => {
       extractedText: "충분히 긴 수동 입력 텍스트입니다. 연구 메모로 분석 가능한 수준의 본문을 포함합니다.",
     });
 
-    expect(env.sourceVersionInsert?.params[10]).toBe("FULLTEXT");
-    expect(env.sourceVersionInsert?.params[11]).toBe("MANUAL_TEXT");
+    expect(env.sourceVersionInsert?.params[12]).toBe("FULLTEXT");
+    expect(env.sourceVersionInsert?.params[13]).toBe("MANUAL_TEXT");
   });
 
   it("exports an acquisition version writer", async () => {
@@ -370,6 +377,7 @@ function createCreateSourceEnv(): Env & {
   sourceVersionInsert: { query: string; params: unknown[] } | null;
 } {
   const r2Puts: Array<{ key: string; value: unknown; options?: Record<string, unknown> }> = [];
+  const r2Objects = new Map<string, unknown>();
   let sourceVersionInsert: { query: string; params: unknown[] } | null = null;
 
   const env = {
@@ -403,6 +411,14 @@ function createCreateSourceEnv(): Env & {
     ORIGINALS: {
       async put(key: string, value: unknown, options?: Record<string, unknown>) {
         r2Puts.push({ key, value, options });
+        r2Objects.set(key, value);
+      },
+      async get(key: string) {
+        const value = r2Objects.get(key);
+        return value === undefined ? null : { body: value };
+      },
+      async delete(key: string) {
+        r2Objects.delete(key);
       },
     },
   } as Env & {

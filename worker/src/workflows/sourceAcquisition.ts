@@ -96,6 +96,7 @@ export async function executeSourceAcquisitionJob(input: ExecuteSourceAcquisitio
       acquiredAt: new Date().toISOString(),
       parentVersionId: current?.id ?? null,
       versionOrigin: "REEXTRACT",
+      rawContentHash: acquired.rawContentHash,
     });
   } catch (error) {
     await tryUpdateIngestJobFailed(env.DB, sourceId, "source_version_store_failed");
