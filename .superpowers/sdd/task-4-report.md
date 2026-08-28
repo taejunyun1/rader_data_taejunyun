@@ -56,3 +56,36 @@ The plan named `vitest.route.config.ts`, but that config is a Node shim with no 
 ## Remaining scope
 
 The bounded run is executed during the accepted POST request and persisted as completed before the 202 response. A later workflow/queue integration can move the same bounded service behind `waitUntil` or a dedicated Worker workflow if multi-batch background continuation is required; Task 4 adds no new workflow binding.
+
+## Review fix — 2026-08-29
+
+### Outcome
+
+- Refresh now reads the latest completed run cursor for the same mode and scans with `s.id > cursor`, requesting 51 rows to process a maximum of 50 and expose a persisted `hasMore` continuation contract.
+- A final batch stores a null continuation cursor; a later call begins a new bounded cycle. PREVIEW and APPLY keep independent cursor progress, so applying does not accidentally inherit preview traversal state.
+- Exact fingerprint matches can cross a 50-source boundary: the current batch is joined against persisted `source_fingerprints`, capped at 200 reference pairs per invocation.
+- Candidate construction uses exact fingerprint and normalized-title bigram blocks. Only evaluator results that are real `AUTO_MERGE` or `REVIEW` candidates are persisted; unrelated `SEPARATE` comparisons no longer create D1 rows.
+- Fingerprints and candidates use multi-row statements, with statement and D1 batch chunk limits. Candidate status is reloaded in bounded pair chunks so existing manual resolutions remain authoritative.
+- Added route coverage proving `POST /api/reservoir/duplicates/:candidateId` with `MERGE` creates a `MANUAL` logical group, returns `MERGED`, and retains both source rows.
+
+### TDD evidence
+
+1. RED: focused tests reported missing `hasMore` and 1,225 candidate INSERT preparations for a 50-source run.
+2. RED: the cross-boundary DOI case returned no candidate before the persisted-fingerprint lookup.
+3. RED mutation check: temporarily disabling the existing MERGE branch made the new manual action route test fail with HTTP 404 instead of 200; the branch was immediately restored before implementation verification.
+4. GREEN: `pnpm --filter @radar/worker exec vitest run --config vitest.config.ts src/reservoir/refresh.test.ts src/routes/reservoir.test.ts` passed 2 files and 6 tests.
+5. GREEN: `pnpm --filter @radar/worker run typecheck` completed with `tsc --noEmit` exit 0.
+6. `git diff --check` passed for the scoped Task 4 files and this report.
+
+### Preservation audit
+
+- No deploy or remote migration command was run.
+- No source, source-version, R2, provenance, or quality-state mutation was added.
+- The PDF visual-extraction route work already present in `worker/src/routes/reservoir.ts` was not modified or staged by this review fix.
+- Unrelated dirty reports and untracked workspace artifacts were left untouched and excluded from the commit.
+
+## Re-review fix — 2026-08-29
+
+- `selectCanonicalSourceId` now queries source IDs in fixed 90-ID chunks, then combines all chunk candidates using the original deterministic ranking (signals, full text, text length, creation time, ID).
+- Added APPLY regression coverage with 101 connected source IDs and verified the scoped refresh suite: 44 tests passed.
+- No deploy, migration, push, R2, or AI operation was performed.
