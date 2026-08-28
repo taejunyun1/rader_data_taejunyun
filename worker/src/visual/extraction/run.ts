@@ -1372,6 +1372,7 @@ async function detectPdfPageCandidates(
     const parsed = parsePdfCandidateResponse(responseText(result));
     return parsed.length ? parsed : [fallbackPdfCandidate(unit)];
   } catch (error) {
+    if (error instanceof Error && error.message === "usage_settlement_required") throw error;
     if (isVisualExtractionVisionBlocked(error)) {
       return [fallbackPdfCandidate(unit, `vision_skipped_${error.reason}`)];
     }
