@@ -8,15 +8,21 @@
     "deploy": "wrangler deploy",
     "db:migrate": "wrangler d1 migrations apply research-radar-db",
     "cf:typegen": "wrangler types",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest --config vitest.config.ts",
+    "test:run": "vitest run --config vitest.config.ts",
+    "test:coverage": "vitest run --config vitest.config.ts --coverage"
   },
   "dependencies": {
     "@radar/shared": "workspace:*",
     "hono": "^4.13.2"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.16.0",
+    "@vitest/coverage-v8": "^4.1.11",
     "@cloudflare/workers-types": "5.20260815.1",
     "typescript": "^5.9.3",
+    "vitest": "^4.1.11",
     "wrangler": "^4.123.0"
   }
 }
