@@ -48,4 +48,27 @@ describe("source version raw-byte integrity", () => {
        VALUES (?, ?, ?, 'basic', 'INTERPRETATION', '{}', ?)`
     ).bind("orphan-analysis", source.sourceId, "missing-version", new Date().toISOString()).run()).rejects.toThrow();
   });
+
+  it("converges concurrent identity claims to one logical source", async () => {
+    const shared = {
+      ...input("concurrent source A"),
+      title: "Concurrent identity claim",
+      canonicalUrl: "https://example.com/concurrent-identity",
+      doi: "10.1234/concurrent-identity",
+    };
+    const [first, second] = await Promise.all([
+      createSource(env as unknown as Env, shared),
+      createSource(env as unknown as Env, { ...shared, original: "concurrent source B", extractedText: "concurrent source B" }),
+    ]);
+
+    expect(first.sourceId).toBe(second.sourceId);
+    const sources = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM sources WHERE canonical_url = ?",
+    ).bind(shared.canonicalUrl).first<{ n: number }>();
+    const versions = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM source_versions WHERE source_id = ?",
+    ).bind(first.sourceId).first<{ n: number }>();
+    expect(sources?.n).toBe(1);
+    expect(versions?.n).toBe(2);
+  });
 });

@@ -142,80 +142,96 @@ export async function createSource(env: Env, input: CreateSourceInput): Promise<
   const status = text ? "extracted" : "stored";
   const ts = nowIso();
 
-  await env.DB.batch([
-    env.DB
-      .prepare(
-        `INSERT INTO sources
-         (id, kind, title, title_norm, authors, year, canonical_url, doi, file_hash,
-          reliability, provenance_class, status, origin, origins_json, r2_key, metadata_json,
-          ingest_channel, input_format, active_version_id, quality_status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SOURCE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .bind(
-        id,
-        input.kind,
-        input.title,
-        titleNorm(input.title),
-        input.authors ?? null,
-        input.year ?? null,
-        input.canonicalUrl ?? null,
-        input.doi ?? null,
-        fileHash,
-        RELIABILITY_BY_KIND[input.kind] ?? "DISCOVERY",
-        status,
-        input.origin,
-        JSON.stringify([input.origin]),
-        r2Key,
-        JSON.stringify({ ...(input.metadata ?? {}), ...(previewKey ? { previewKey } : {}), ...(input.storedOriginal === null ? { originalDiscarded: true } : {}) }),
-        ingestChannel,
-        inputFormat,
-        versionId,
-        qualityStatus,
-        ts,
-        ts
-      ),
-    env.DB
-      .prepare(
-        `INSERT INTO source_versions
-         (id, source_id, version, r2_key, extracted_text, char_count, content_hash, raw_content_hash, normalized_content_hash, normalized_text,
-          normalization_status, normalization_report_json, version_origin, review_status, created_at,
-          text_scope, extraction_method, extraction_error, content_type, final_url, acquired_at)
-         VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, 'READY', ?, ?, 'ACTIVE', ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .bind(
-        versionId,
-        id,
-        r2Key,
-        text,
-        text.length,
-        versionContentHash,
-        fileHash,
-        normalizedContentHash,
-        normalized.normalizedText,
-        JSON.stringify(normalized.report),
-        input.versionOrigin ?? "INITIAL_INGEST",
-        ts,
-        textScope,
-        extractionMethod,
-        input.extractionError ?? null,
-        input.contentType ?? null,
-        input.finalUrl ?? null,
-        input.acquiredAt ?? ts,
-      ),
-    env.DB
-      .prepare(
-        `INSERT INTO processing_jobs (id, source_id, stage, status, error, retry_count, created_at, updated_at)
-         VALUES (?, ?, 'ingest', ?, NULL, 0, ?, ?)`
-      )
-      .bind(uuid(), id, status, ts, ts),
-    env.DB
-      .prepare(
-        `INSERT INTO user_signals (id, source_id, action, weight, context, created_at)
-         VALUES (?, ?, 'import', 1.0, ?, ?)`
-      )
-      .bind(uuid(), id, JSON.stringify({ origin: input.origin }), ts),
-    ...identityStatements(env.DB, id, input, fileHash, ts),
-  ]);
+  try {
+    await env.DB.batch([
+      env.DB
+        .prepare(
+          `INSERT INTO sources
+           (id, kind, title, title_norm, authors, year, canonical_url, doi, file_hash,
+            reliability, provenance_class, status, origin, origins_json, r2_key, metadata_json,
+            ingest_channel, input_format, active_version_id, quality_status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SOURCE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .bind(
+          id,
+          input.kind,
+          input.title,
+          titleNorm(input.title),
+          input.authors ?? null,
+          input.year ?? null,
+          input.canonicalUrl ?? null,
+          input.doi ?? null,
+          fileHash,
+          RELIABILITY_BY_KIND[input.kind] ?? "DISCOVERY",
+          status,
+          input.origin,
+          JSON.stringify([input.origin]),
+          r2Key,
+          JSON.stringify({ ...(input.metadata ?? {}), ...(previewKey ? { previewKey } : {}), ...(input.storedOriginal === null ? { originalDiscarded: true } : {}) }),
+          ingestChannel,
+          inputFormat,
+          versionId,
+          qualityStatus,
+          ts,
+          ts
+        ),
+      env.DB
+        .prepare(
+          `INSERT INTO source_versions
+           (id, source_id, version, r2_key, extracted_text, char_count, content_hash, raw_content_hash, normalized_content_hash, normalized_text,
+            normalization_status, normalization_report_json, version_origin, review_status, created_at,
+            text_scope, extraction_method, extraction_error, content_type, final_url, acquired_at)
+           VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, 'READY', ?, ?, 'ACTIVE', ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .bind(
+          versionId,
+          id,
+          r2Key,
+          text,
+          text.length,
+          versionContentHash,
+          fileHash,
+          normalizedContentHash,
+          normalized.normalizedText,
+          JSON.stringify(normalized.report),
+          input.versionOrigin ?? "INITIAL_INGEST",
+          ts,
+          textScope,
+          extractionMethod,
+          input.extractionError ?? null,
+          input.contentType ?? null,
+          input.finalUrl ?? null,
+          input.acquiredAt ?? ts,
+        ),
+      env.DB
+        .prepare(
+          `INSERT INTO processing_jobs (id, source_id, stage, status, error, retry_count, created_at, updated_at)
+           VALUES (?, ?, 'ingest', ?, NULL, 0, ?, ?)`
+        )
+        .bind(uuid(), id, status, ts, ts),
+      env.DB
+        .prepare(
+          `INSERT INTO user_signals (id, source_id, action, weight, context, created_at)
+           VALUES (?, ?, 'import', 1.0, ?, ?)`
+        )
+        .bind(uuid(), id, JSON.stringify({ origin: input.origin }), ts),
+      ...identityStatements(env.DB, id, input, fileHash, ts),
+    ]);
+  } catch (error) {
+    if (!isIdentityClaimConflict(error)) throw error;
+    const winner = await findDuplicate(env.DB, {
+      doi: input.doi ?? null,
+      canonicalUrl: input.canonicalUrl ?? null,
+      title: input.title,
+      authors: input.authors ?? null,
+      fileHash,
+    });
+    if (!winner || winner.sourceId === id) throw error;
+    await deleteCreatedOriginals(env, r2Key, previewKey);
+    const result = await appendReimportedVersion(env, winner.sourceId, input, fileHash, stagedOriginalKey);
+    completed = true;
+    return result;
+  }
 
     completed = true;
     return { sourceId: id, duplicateOf: null, title: input.title, qualityStatus, activeVersionId: versionId };
@@ -275,7 +291,7 @@ async function appendReimportedVersion(
       `INSERT INTO user_signals (id, source_id, action, weight, context, created_at)
        VALUES (?, ?, 'import', 1.0, ?, ?)`
     ).bind(uuid(), sourceId, JSON.stringify({ origin: input.origin, version: versionId }), ts),
-    ...identityStatements(env.DB, sourceId, input, rawContentHash, ts),
+    ...identityStatements(env.DB, sourceId, input, rawContentHash, ts, "refresh"),
   ]);
   await activateVersion(env.DB, sourceId, versionId, qualityStatus, ts);
   return { sourceId, duplicateOf: sourceId, title: source.title, qualityStatus, activeVersionId: versionId };
@@ -323,6 +339,7 @@ function identityStatements(
   input: CreateSourceInput,
   rawHash: string,
   createdAt: string,
+  mode: "claim" | "refresh" = "claim",
 ): D1PreparedStatement[] {
   const entries = [
     input.doi ? ["DOI", normalizeDoi(input.doi)] : null,
@@ -331,8 +348,20 @@ function identityStatements(
     ["RAW_HASH", rawHash],
   ].filter((entry): entry is [string, string] => Boolean(entry?.[1]));
   return entries.map(([kind, value]) => db.prepare(
-    "INSERT OR IGNORE INTO source_identity_keys (identity_kind, identity_value, source_id, created_at) VALUES (?, ?, ?, ?)",
+    `${mode === "refresh" ? "INSERT OR IGNORE" : "INSERT"} INTO source_identity_keys (identity_kind, identity_value, source_id, created_at) VALUES (?, ?, ?, ?)`,
   ).bind(kind, value, sourceId, createdAt));
+}
+
+function isIdentityClaimConflict(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("source_identity_keys") && message.toLowerCase().includes("unique");
+}
+
+async function deleteCreatedOriginals(env: Env, r2Key: string | null, previewKey: string | null): Promise<void> {
+  for (const key of [r2Key, previewKey]) {
+    if (!key) continue;
+    try { await env.ORIGINALS.delete(key); } catch { /* best effort compensation after claim conflict */ }
+  }
 }
 
 async function recordReimport(env: Env, sourceId: string, field: string, origin: string): Promise<void> {
