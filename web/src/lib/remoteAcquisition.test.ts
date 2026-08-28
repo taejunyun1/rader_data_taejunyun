@@ -977,6 +977,32 @@ describe("source acquisition workflow", () => {
     expect(fixture.enqueueResearchJob).not.toHaveBeenCalled();
   });
 
+  it("repairs activation when a reusable version was stored before activation completed", async () => {
+    const fixture = setupResearchJobWorkflowFixture();
+    fixture.findReusableAcquisitionVersion.mockResolvedValue({
+      versionId: "acq-job-orphaned-active",
+      charCount: 2400,
+      textScope: "FULLTEXT",
+      qualityStatus: "READY",
+    });
+    fixture.getActiveVersion
+      .mockResolvedValueOnce({ id: "version-1", version: 1 })
+      .mockResolvedValueOnce({ id: "acq-job-orphaned-active", version: 2 });
+    fixture.hasVisualExtractionRunForVersion.mockResolvedValue(true);
+
+    const { executeSourceAcquisitionJob, db } = await loadSourceAcquisitionRunner(fixture);
+    await executeSourceAcquisitionJob({
+      env: { DB: db } as Env,
+      job: {
+        id: "job-orphaned-active",
+        input: { sourceId: "source-1", url: "https://example.com/article" },
+      },
+      updateProgress: fixture.updateJobProgress,
+    });
+
+    expect(fixture.activateVersion).toHaveBeenCalledWith(db, "source-1", "acq-job-orphaned-active", "READY");
+  });
+
   it("does not enqueue visual extraction on a reusable active version when an extraction run already exists", async () => {
     const fixture = setupResearchJobWorkflowFixture();
     fixture.findReusableAcquisitionVersion.mockResolvedValue({
@@ -1172,6 +1198,7 @@ function setupResearchJobWorkflowFixture() {
   return {
     findReusableAcquisitionVersion: vi.fn().mockResolvedValue(null),
     getActiveVersion: vi.fn().mockResolvedValue(null),
+    activateVersion: vi.fn().mockResolvedValue(undefined),
     hasVisualExtractionRunForVersion: vi.fn().mockResolvedValue(false),
     acquireRemoteSource: vi.fn(),
     appendAcquisitionVersion: vi.fn(),
@@ -1192,6 +1219,7 @@ async function loadSourceAcquisitionRunner(fixture: ReturnType<typeof setupResea
   vi.doMock("../../../worker/src/ingestion/versioning", () => ({
     appendAcquisitionVersion: fixture.appendAcquisitionVersion,
     getActiveVersion: fixture.getActiveVersion,
+    activateVersion: fixture.activateVersion,
   }));
   vi.doMock("../../../worker/src/jobs/enqueue", () => ({
     enqueueResearchJob: fixture.enqueueResearchJob,

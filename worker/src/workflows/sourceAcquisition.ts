@@ -2,7 +2,7 @@ import type { ResearchJobResultRef } from "@radar/shared/discovery";
 import type { QualityStatus, TextScope } from "@radar/shared/ingestion";
 import { acquireRemoteSource, RemoteAcquisitionError } from "../ingestion/acquireRemoteSource";
 import { updateIngestJob } from "../ingestion/store";
-import { appendAcquisitionVersion, getActiveVersion } from "../ingestion/versioning";
+import { activateVersion, appendAcquisitionVersion, getActiveVersion } from "../ingestion/versioning";
 import { enqueueResearchJob } from "../jobs/enqueue";
 
 export interface SourceAcquisitionJobLike {
@@ -47,6 +47,12 @@ export async function executeSourceAcquisitionJob(input: ExecuteSourceAcquisitio
 
   if (existing) {
     await updateProgress(env.DB, job.id, 75, "이미 저장된 원문 버전을 확인하는 중");
+    if (existing.qualityStatus === "READY") {
+      const activeVersion = await getActiveVersion(env.DB, sourceId);
+      if (activeVersion?.id !== existing.versionId) {
+        await activateVersion(env.DB, sourceId, existing.versionId, "READY");
+      }
+    }
     await updateIngestJob(env.DB, sourceId, existing.qualityStatus === "READY" ? "extracted" : "failed", existing.qualityStatus === "READY" ? null : "text_not_ready");
     if (existing.qualityStatus === "READY") await enqueueVisualExtractionIfReusableAndMissingRun(env, sourceId, existing.versionId, warnings);
     return {
