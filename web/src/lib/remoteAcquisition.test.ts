@@ -379,6 +379,57 @@ describe("remote acquisition", () => {
       expect(result.finalUrl).toBe("https://public.example/final");
       expect(new TextDecoder().decode(result.body)).toContain("본문");
     });
+
+    it("preserves a Cloudflare access challenge without storing its response body", async () => {
+      const {
+        fetchRemoteDocument,
+        RemoteFetchError,
+      } = await import("../../../worker/src/ingestion/fetchRemoteDocument");
+      const response = withResponseUrl(new Response("publisher challenge body", {
+        status: 403,
+        headers: {
+          "content-type": "text/html",
+          "cf-mitigated": "challenge",
+        },
+      }), "https://publisher.example/article");
+
+      const error = await fetchRemoteDocument("https://publisher.example/article", {
+        fetchImpl: vi.fn().mockResolvedValue(response),
+      }).then(() => null, (cause: unknown) => cause);
+
+      expect(error).toBeInstanceOf(RemoteFetchError);
+      expect(error).toMatchObject({
+        code: "HTTP_4XX",
+        status: 403,
+        reason: "ACCESS_CHALLENGE",
+        finalUrl: "https://publisher.example/article",
+      });
+      expect((error as Error).message).toBe("HTTP_4XX");
+      expect((error as Error).message).not.toContain("publisher challenge body");
+    });
+
+    it("keeps an ordinary 429 distinguishable from an access challenge", async () => {
+      const {
+        fetchRemoteDocument,
+        RemoteFetchError,
+      } = await import("../../../worker/src/ingestion/fetchRemoteDocument");
+      const response = withResponseUrl(new Response("rate limited", {
+        status: 429,
+        headers: { "content-type": "text/plain" },
+      }), "https://publisher.example/rate-limited");
+
+      const error = await fetchRemoteDocument("https://publisher.example/rate-limited", {
+        fetchImpl: vi.fn().mockResolvedValue(response),
+      }).then(() => null, (cause: unknown) => cause);
+
+      expect(error).toBeInstanceOf(RemoteFetchError);
+      expect(error).toMatchObject({
+        code: "HTTP_4XX",
+        status: 429,
+        reason: undefined,
+        finalUrl: "https://publisher.example/rate-limited",
+      });
+    });
   });
 
   describe("fetchRemoteImage", () => {
@@ -502,7 +553,7 @@ describe("remote acquisition", () => {
     await Promise.resolve();
 
     expect(settled).toBe(true);
-    await expect(outcomePromise).resolves.toBe("FETCH_TIMEOUT");
+    await expect(outcomePromise).resolves.toBe("remote_acquisition_failure;code=FETCH_TIMEOUT");
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -535,6 +586,42 @@ describe("remote acquisition", () => {
     });
     expect(result.extractedText).toContain("본문");
     expect(env.__fixture.objects.has("originals/source-1/v2.html")).toBe(true);
+  });
+
+  it("serializes safe acquisition diagnostics and writes no failed original", async () => {
+    const {
+      acquireRemoteSource,
+      RemoteAcquisitionError,
+    } = await import("../../../worker/src/ingestion/acquireRemoteSource");
+    const env = makeAcquisitionEnv();
+    const response = withResponseUrl(new Response("publisher challenge body", {
+      status: 403,
+      headers: {
+        "content-type": "text/html",
+        "cf-mitigated": "challenge",
+      },
+    }), "https://publisher.example/article");
+
+    const error = await acquireRemoteSource(env, {
+      sourceId: "source-challenge",
+      url: "https://publisher.example/article",
+      version: 2,
+    }, {
+      fetchImpl: vi.fn().mockResolvedValue(response),
+    }).then(() => null, (cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(RemoteAcquisitionError);
+    expect(error).toMatchObject({
+      code: "HTTP_4XX",
+      status: 403,
+      reason: "ACCESS_CHALLENGE",
+      finalUrl: "https://publisher.example/article",
+    });
+    expect((error as Error).message).toBe(
+      "remote_acquisition_failure;code=HTTP_4XX;status=403;reason=ACCESS_CHALLENGE",
+    );
+    expect((error as Error).message).not.toContain("publisher challenge body");
+    expect(env.__fixture.objects.size).toBe(0);
   });
 
   it("blocks private network targets before issuing a request", async () => {
@@ -825,6 +912,41 @@ describe("source acquisition workflow", () => {
 
     expect(fixture.updateIngestJob).toHaveBeenNthCalledWith(1, db, "source-1", "received", null);
     expect(fixture.updateIngestJob).toHaveBeenNthCalledWith(2, db, "source-1", "failed", "acquire_failed");
+  });
+
+  it("keeps the processing error code stable for enriched acquisition failures", async () => {
+    const fixture = setupResearchJobWorkflowFixture();
+    const { executeSourceAcquisitionJob, db } = await loadSourceAcquisitionRunner(fixture);
+    const { RemoteAcquisitionError } = await import(
+      "../../../worker/src/ingestion/acquireRemoteSource"
+    );
+    const acquisitionError = new RemoteAcquisitionError(
+      "HTTP_4XX",
+      403,
+      "ACCESS_CHALLENGE",
+      "https://publisher.example/article",
+    );
+    fixture.acquireRemoteSource.mockRejectedValue(acquisitionError);
+
+    await expect(executeSourceAcquisitionJob({
+      env: { DB: db } as Env,
+      job: {
+        id: "job-challenge",
+        input: {
+          sourceId: "source-1",
+          url: "https://publisher.example/article",
+        },
+      },
+      updateProgress: fixture.updateJobProgress,
+    })).rejects.toBe(acquisitionError);
+
+    expect(fixture.updateIngestJob).toHaveBeenNthCalledWith(
+      2,
+      db,
+      "source-1",
+      "failed",
+      "HTTP_4XX",
+    );
   });
 
   it("preserves the append error when the failed ingest update rejects", async () => {

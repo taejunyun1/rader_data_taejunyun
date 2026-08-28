@@ -5,6 +5,7 @@ import {
   RemoteFetchError,
   type RemoteDocumentKind,
   type RemoteFetchErrorCode,
+  type RemoteFetchFailureReason,
 } from "./fetchRemoteDocument";
 import { sha256Hex } from "./ids";
 
@@ -32,9 +33,30 @@ interface RemoteAcquisitionOptions {
   fetchImpl?: typeof fetch;
 }
 
+export type RemoteAcquisitionFailureReason = RemoteFetchFailureReason;
+
+function remoteAcquisitionErrorMessage(input: {
+  code: RemoteAcquisitionErrorCode;
+  status?: number;
+  reason?: RemoteAcquisitionFailureReason;
+}): string {
+  const fields = [
+    "remote_acquisition_failure",
+    "code=" + input.code,
+  ];
+  if (typeof input.status === "number") fields.push("status=" + String(input.status));
+  if (input.reason) fields.push("reason=" + input.reason);
+  return fields.join(";");
+}
+
 export class RemoteAcquisitionError extends Error {
-  constructor(readonly code: RemoteAcquisitionErrorCode) {
-    super(code);
+  constructor(
+    readonly code: RemoteAcquisitionErrorCode,
+    readonly status?: number,
+    readonly reason?: RemoteAcquisitionFailureReason,
+    readonly finalUrl?: string,
+  ) {
+    super(remoteAcquisitionErrorMessage({ code, status, reason }));
     this.name = "RemoteAcquisitionError";
   }
 }
@@ -99,7 +121,12 @@ export async function acquireRemoteSource(
           throw new RemoteAcquisitionError("HTTP_5XX");
         }
       }
-      throw new RemoteAcquisitionError(error.code);
+      throw new RemoteAcquisitionError(
+        error.code,
+        error.status,
+        error.reason,
+        error.finalUrl,
+      );
     }
 
     if (isAbortError(error)) throw new RemoteAcquisitionError("FETCH_TIMEOUT");

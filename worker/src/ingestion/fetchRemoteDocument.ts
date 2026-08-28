@@ -36,10 +36,17 @@ export interface SafeRemoteDocument extends SafeRemoteText {
   kind: RemoteDocumentKind;
 }
 
+export type RemoteFetchFailureReason = "ACCESS_CHALLENGE";
+
 export class RemoteFetchError extends Error {
   document?: SafeRemoteText;
 
-  constructor(readonly code: RemoteFetchErrorCode, readonly status?: number) {
+  constructor(
+    readonly code: RemoteFetchErrorCode,
+    readonly status?: number,
+    readonly reason?: RemoteFetchFailureReason,
+    readonly finalUrl?: string,
+  ) {
     super(code);
     this.name = "RemoteFetchError";
   }
@@ -126,6 +133,16 @@ export async function fetchSafeRemoteBytes(
   }
 }
 
+function terminalResponseUrl(response: Response, currentUrl: string): string {
+  return normalizePublicHttpUrl(response.url || currentUrl) ?? currentUrl;
+}
+
+function remoteFailureReason(response: Response): RemoteFetchFailureReason | undefined {
+  return response.headers.get("cf-mitigated")?.trim().toLowerCase() === "challenge"
+    ? "ACCESS_CHALLENGE"
+    : undefined;
+}
+
 async function fetchWithRedirects(
   url: string,
   signal: AbortSignal,
@@ -159,11 +176,20 @@ async function fetchWithRedirects(
       continue;
     }
 
-    if (response.status >= 400 && response.status < 500) throw new RemoteFetchError("HTTP_4XX", response.status);
-    if (response.status >= 500) throw new RemoteFetchError("HTTP_5XX", response.status);
-    if (!response.ok) throw new RemoteFetchError("HTTP_5XX", response.status);
+    const finalUrl = terminalResponseUrl(response, currentUrl);
+    const reason = remoteFailureReason(response);
 
-    return { response, finalUrl: normalizePublicHttpUrl(response.url || currentUrl) ?? currentUrl };
+    if (response.status >= 400 && response.status < 500) {
+      throw new RemoteFetchError("HTTP_4XX", response.status, reason, finalUrl);
+    }
+    if (response.status >= 500) {
+      throw new RemoteFetchError("HTTP_5XX", response.status, undefined, finalUrl);
+    }
+    if (!response.ok) {
+      throw new RemoteFetchError("HTTP_5XX", response.status, undefined, finalUrl);
+    }
+
+    return { response, finalUrl };
   }
 
   throw new RemoteFetchError("REDIRECT_BLOCKED");
