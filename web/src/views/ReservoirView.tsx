@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { QualityStatus, TextScope } from "@radar/shared/ingestion";
-import type { VisualAssetSummary, VisualExtractionRunSummary } from "@radar/shared";
+import type { PdfVisualExtractionCapability, VisualAssetSummary, VisualExtractionRunSummary } from "@radar/shared";
 import type { SourceAccess } from "../lib/sourceAccess";
 import { deriveSourceAccess } from "../lib/sourceAccess";
 import { formatDateKo } from "../lib/ui";
@@ -18,7 +18,9 @@ import SourceIndex from "../components/reading/SourceIndex";
 import SplitWorkspace from "../components/reading/SplitWorkspace";
 import VisualAssetPanel from "../components/visual/VisualAssetPanel";
 import PdfExtractionProgress from "../components/visual/PdfExtractionProgress";
-import { startOrResumePdfVisualExtraction, type PdfVisualExtractionResult } from "../lib/pdfVisualExtraction";
+import PdfOriginalRecovery from "../components/visual/PdfOriginalRecovery";
+import { type PdfVisualExtractionResult } from "../lib/pdfVisualExtraction";
+import { startPdfVisualExtractionTask, stopPdfVisualExtractionTask, usePdfVisualExtractionTasks } from "../lib/pdfVisualExtractionManager";
 import type { DecisionAction, ReadingDocument, SourceAcquisitionView, SourceIndexItem } from "../components/reading/types";
 import type { ResearchJob } from "@radar/shared/discovery";
 
@@ -46,6 +48,7 @@ interface SourceDetail {
   source: Record<string, unknown> & { inputFormat?: string | null; activeVersionId?: string | null };
   acquisition?: SourceAcquisitionView | null;
   pdfExtraction?: PdfVisualExtractionResult | null;
+  visualExtractionCapability?: PdfVisualExtractionCapability;
   visualExtractionRun?: VisualExtractionRunSummary | null;
   analysis: { summary?: string; keywords?: string[]; questions?: string[]; important_fragments?: string[] } | null;
   keywords: { keyword: string; weight: number }[];
@@ -236,16 +239,17 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
   const actionRequest = useRef(0);
   const deepAnalysisRequest = useRef(0);
   const deepCompletionRef = useRef<string | null>(null);
+  const visualCompletionRef = useRef<string | null>(null);
   const deepHistoryRequest = useRef(0);
   const topicRequest = useRef(0);
   const selectedIdRef = useRef<string | null>(null);
-  const pdfExtractionAbortRef = useRef<AbortController | null>(null);
   const pdfSheetTriggerRef = useRef<HTMLButtonElement | null>(null);
   const pdfSheetLayerRef = useRef<HTMLDivElement | null>(null);
   const pdfSheetDialogRef = useRef<HTMLElement | null>(null);
   const pdfSheetCloseRef = useRef<HTMLButtonElement | null>(null);
   const filterIntentRef = useRef<ReservoirFilterIntent>({ kind: "", topic: "", decision: "active", generation: 0 });
   const compactViewport = useCompactViewport();
+  const pdfPreparationTasks = usePdfVisualExtractionTasks();
 
   const isCurrentFilterIntent = useCallback((intent: ReservoirFilterIntent): boolean => (
     filterIntentRef.current.kind === intent.kind
@@ -350,8 +354,6 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
     setDecisionError("");
     setDecisionRetry(null);
     setDeepBlock(null);
-    pdfExtractionAbortRef.current?.abort();
-    pdfExtractionAbortRef.current = null;
     setPdfExtraction(null);
     setPdfExtractionPending(false);
     setPdfSheetOpen(false);
@@ -403,6 +405,23 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
     void fetch("/api/signals", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sourceId: id, action: "view" }) }).catch(() => undefined);
     return requestId;
   }
+
+  useEffect(() => {
+    if (!detail) return;
+    const sourceId = String(detail.source.id);
+    const sourceVersionId = typeof detail.source.activeVersionId === "string" ? detail.source.activeVersionId : "";
+    const task = pdfPreparationTasks.find((candidate) => candidate.sourceId === sourceId && candidate.sourceVersionId === sourceVersionId);
+    if (!task) return;
+    setPdfExtraction((current) => ({
+      runId: task.runId || current?.runId || "",
+      status: task.status,
+      totalPages: task.totalPages || current?.totalPages || 0,
+      uploadedPages: task.uploadedPages,
+      remainingPages: Math.max(0, task.totalPages - task.uploadedPages),
+      nextPageNumber: task.uploadedPages + 1 <= task.totalPages ? task.uploadedPages + 1 : null,
+    }));
+    setPdfExtractionPending(["PREPARING", "UPLOADING", "FINALIZING"].includes(task.status));
+  }, [detail, pdfPreparationTasks]);
 
   async function signal(action: DecisionAction["id"]) {
     if (!detail) return;
@@ -590,6 +609,33 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
     });
   }, [deepJobId, jobs]);
 
+  useEffect(() => {
+    const sourceId = selectedIdRef.current;
+    const versionId = typeof detail?.source.activeVersionId === "string" ? detail.source.activeVersionId : null;
+    if (!sourceId || !versionId) return;
+    const job = jobs.find((candidate) => {
+      if (candidate.kind !== "VISUAL_EXTRACTION" || !["SUCCEEDED", "FAILED", "BLOCKED"].includes(candidate.status)) return false;
+      const input = candidate.input && typeof candidate.input === "object"
+        ? candidate.input as { sourceId?: unknown; sourceVersionId?: unknown }
+        : null;
+      return input?.sourceId === sourceId && input?.sourceVersionId === versionId;
+    });
+    if (!job) return;
+    const completionKey = `${job.id}:${job.status}:${job.updatedAt}`;
+    if (visualCompletionRef.current === completionKey) return;
+    visualCompletionRef.current = completionKey;
+    const input = job.input && typeof job.input === "object"
+      ? job.input as { extractionRunId?: unknown }
+      : null;
+    void openDetail(sourceId, {
+      preserveAction: true,
+      extractionRunId: typeof input?.extractionRunId === "string" ? input.extractionRunId : undefined,
+    }).then((requestId) => {
+      if (selectedIdRef.current !== sourceId || interactionRequest.current !== requestId) return;
+      setMsg(job.status === "SUCCEEDED" ? "시각 자료 분석 결과가 갱신되었습니다." : "시각 자료 분석을 완료하지 못했습니다. 작업센터에서 상태를 확인해 주세요.");
+    });
+  }, [detail?.source.activeVersionId, jobs]);
+
   async function openDeepHistory(analysisId: string) {
     if (!detail) return;
     const sourceId = String(detail.source.id);
@@ -654,43 +700,43 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
 
   async function startPdfExtraction() {
     if (!detail) return;
+    const capability = detail.visualExtractionCapability;
+    if (!capability?.canStart || !capability.originalUrl) {
+      setMsg("텍스트만 보존된 PDF입니다. 원본 PDF를 다시 첨부해 주세요.");
+      return;
+    }
     const sourceId = String(detail.source.id);
     const versionId = typeof detail.source.activeVersionId === "string" ? detail.source.activeVersionId : "";
     if (!versionId) return;
     const requestId = interactionRequest.current;
-    const controller = new AbortController();
-    pdfExtractionAbortRef.current = controller;
     setPdfExtractionPending(true);
+    setMsg("PDF 페이지를 준비하고 있습니다. 다른 페이지로 이동해도 계속됩니다.");
+    const task = startPdfVisualExtractionTask({
+      sourceId,
+      sourceVersionId: versionId,
+      originalUrl: capability.originalUrl,
+      title: formatSourceTitle(String(detail.source.title ?? "현재 자료")),
+    });
     try {
-      const result = await startOrResumePdfVisualExtraction({
-        sourceId,
-        versionId,
-        originalUrl: `/api/reservoir/${sourceId}/original?version=${versionId}`,
-        signal: controller.signal,
-      });
+      const result = await task.promise;
+      if (!result) return;
       if (interactionRequest.current !== requestId) return;
       setPdfExtraction(result);
       setMsg(result.remainingPages > 0 ? "남은 PDF 페이지를 이어서 업로드할 수 있습니다." : "PDF 페이지 업로드를 마쳤습니다.");
       if (result.status === "QUEUED" || result.status === "RUNNING") await onJobCreated?.();
     } catch (error) {
       if (interactionRequest.current !== requestId) return;
-      if (error instanceof Error && error.name === "AbortError") {
-        setMsg("PDF 페이지 업로드를 멈췄습니다.");
-        return;
-      }
       setMsg(error instanceof Error ? error.message : "PDF 시각 자료 추출을 시작하지 못했습니다.");
     } finally {
-      if (pdfExtractionAbortRef.current === controller) pdfExtractionAbortRef.current = null;
       if (interactionRequest.current === requestId) setPdfExtractionPending(false);
     }
   }
 
   async function stopPdfExtraction() {
-    const controller = pdfExtractionAbortRef.current;
-    controller?.abort();
-    pdfExtractionAbortRef.current = null;
+    if (!detail?.source.activeVersionId) return;
+    stopPdfVisualExtractionTask(String(detail.source.id), String(detail.source.activeVersionId));
     setPdfExtractionPending(false);
-    setMsg("PDF 페이지 업로드를 멈췄습니다.");
+    setMsg("PDF 페이지 준비를 일시 중지했습니다. 같은 자료에서 이어서 시작할 수 있습니다.");
   }
 
   function closePdfSheet() {
@@ -732,6 +778,10 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
     : null;
   const isPdfSource = detail?.source.inputFormat === "PDF_TEXT" || detail?.source.inputFormat === "PDF_SCAN";
   const hasPdfActiveVersion = typeof detail?.source.activeVersionId === "string" && detail.source.activeVersionId.trim().length > 0;
+  const pdfCapability = detail?.visualExtractionCapability;
+  const canExtractPdf = isPdfSource && hasPdfActiveVersion && pdfCapability?.canStart === true;
+  const needsPdfOriginal = isPdfSource && hasPdfActiveVersion
+    && (pdfCapability?.state === "ORIGINAL_MISSING" || pdfCapability?.state === "ORIGINAL_OBJECT_MISSING");
   const deepDisabled = acquisitionDeepBlocked || Boolean(deepBlock);
   const deepActionLabel = reviewBlocked
     ? "품질 다시 검사"
@@ -745,7 +795,7 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
       acquisition: detail.acquisition ?? null,
     }
     : null;
-  const pdfSheetVisible = compactViewport && pdfSheetOpen && isPdfSource && hasPdfActiveVersion;
+  const pdfSheetVisible = compactViewport && pdfSheetOpen && canExtractPdf;
   const { handleKeyDown: handlePdfSheetKeyDown } = useModalAccessibility({
     open: pdfSheetVisible,
     dialogRef: pdfSheetDialogRef,
@@ -792,7 +842,7 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
         readingKey={selectedId}
         mobilePane={selectedId ? "reading" : "index"}
         index={<SourceIndex title="저장소 자료" items={indexItems} selectedId={selectedId} onSelect={(id) => void openDetail(id)} />}
-      reading={detailError ? <><ReadingActionBar message="상세 내용을 불러오지 못했습니다." onBack={clearSelection} /><StatusMessage kind="error" title={detailError} action={<button className="ui-button-secondary" onClick={() => selectedId && void openDetail(selectedId)}>다시 시도</button>} /></> : detailLoading ? <><ReadingActionBar message="자료 상세 내용을 불러오는 중…" onBack={clearSelection} /><StatusMessage kind="loading" title="자료 상세 내용을 불러오는 중…" description="원문과 분석 내용을 준비하고 있습니다." /></> : document ? <><ReadingActionBar statusLabel={detail?.source.decisionStatus ? DECISION_STATUS_LABELS[detail.source.decisionStatus as DecisionAction["id"]] : null} pending={actionPending} onBack={clearSelection} onOpenDecision={() => setDecisionOpen(true)} /><div className="deep-analysis-controls" aria-label="심층 정리 실행"><label htmlFor="deep-analysis-profile">심층 정리 품질</label><select id="deep-analysis-profile" value={deepProfile} onChange={(event) => setDeepProfile(event.target.value as "precision" | "maximum")} disabled={deepPending || deepDisabled}><option value="precision">정밀 · 긴 본문 구조화</option><option value="maximum">최고 정밀 · 논거와 연결 검토</option></select><button type="button" className="ui-button" onClick={() => reviewBlocked ? void reanalyze() : deepDisabled ? void refetch() : void runDeepAnalysis()} disabled={deepPending || actionPending || (deepDisabled && !reviewBlocked && !canonicalUrl)}>{actionPending ? (reviewBlocked ? "품질 다시 검사 중…" : "원문 수집 중…") : deepPending ? "심층 정리 중…" : deepActionLabel}</button></div>{isPdfSource && hasPdfActiveVersion && !compactViewport && pdfProgressPanel}{isPdfSource && hasPdfActiveVersion && compactViewport && <div className="deep-analysis-controls"><button ref={pdfSheetTriggerRef} type="button" className="ui-button" onClick={() => setPdfSheetOpen(true)}>{pdfExtraction && pdfExtraction.remainingPages > 0 ? "계속" : "시각 자료 찾기"}</button></div>}{deepBlockReason && <p className="deep-analysis-blocked" role="status">{deepBlockReason}</p>}<ReadingPane document={document} deepAnalysis={detail?.deepAnalysis} deepAnalysisHistory={detail?.deepAnalysisHistory} onOpenDeepHistory={(id) => void openDeepHistory(id)} supplementary={visualExtractionStatus ? <VisualAssetPanel assets={[]} extractionContext={visualExtractionStatus} onRequestAcquisition={canonicalUrl && !reviewBlocked ? refetch : undefined} acquisitionPending={actionPending} title="시각 자료 상태" /> : undefined} />{detail?.visuals && <VisualAssetPanel assets={detail.visuals} extractionContext={visualExtractionStatus} showExtractionStatus={false} onAnalysisAction={reviewVisualAnalysis} onAssetUpdated={syncVisualAsset} />}</> : <StatusMessage kind="empty" title="읽을 자료를 선택하세요" description="왼쪽 목록에서 자료를 고르면 원문과 분석 내용을 함께 읽을 수 있습니다." />}
+      reading={detailError ? <><ReadingActionBar message="상세 내용을 불러오지 못했습니다." onBack={clearSelection} /><StatusMessage kind="error" title={detailError} action={<button className="ui-button-secondary" onClick={() => selectedId && void openDetail(selectedId)}>다시 시도</button>} /></> : detailLoading ? <><ReadingActionBar message="자료 상세 내용을 불러오는 중…" onBack={clearSelection} /><StatusMessage kind="loading" title="자료 상세 내용을 불러오는 중…" description="원문과 분석 내용을 준비하고 있습니다." /></> : document ? <><ReadingActionBar statusLabel={detail?.source.decisionStatus ? DECISION_STATUS_LABELS[detail.source.decisionStatus as DecisionAction["id"]] : null} pending={actionPending} onBack={clearSelection} onOpenDecision={() => setDecisionOpen(true)} /><div className="deep-analysis-controls" aria-label="심층 정리 실행"><label htmlFor="deep-analysis-profile">심층 정리 품질</label><select id="deep-analysis-profile" value={deepProfile} onChange={(event) => setDeepProfile(event.target.value as "precision" | "maximum")} disabled={deepPending || deepDisabled}><option value="precision">정밀 · 긴 본문 구조화</option><option value="maximum">최고 정밀 · 논거와 연결 검토</option></select><button type="button" className="ui-button" onClick={() => reviewBlocked ? void reanalyze() : deepDisabled ? void refetch() : void runDeepAnalysis()} disabled={deepPending || actionPending || (deepDisabled && !reviewBlocked && !canonicalUrl)}>{actionPending ? (reviewBlocked ? "품질 다시 검사 중…" : "원문 수집 중…") : deepPending ? "심층 정리 중…" : deepActionLabel}</button></div>{canExtractPdf && !compactViewport && pdfProgressPanel}{canExtractPdf && compactViewport && <div className="deep-analysis-controls"><button ref={pdfSheetTriggerRef} type="button" className="ui-button" onClick={() => setPdfSheetOpen(true)}>{pdfExtraction && pdfExtraction.remainingPages > 0 ? "계속" : "시각 자료 찾기"}</button></div>}{needsPdfOriginal && <PdfOriginalRecovery sourceId={String(detail.source.id)} onRecovered={() => openDetail(String(detail.source.id), { preserveAction: true })} />}{deepBlockReason && <p className="deep-analysis-blocked" role="status">{deepBlockReason}</p>}<ReadingPane document={document} deepAnalysis={detail?.deepAnalysis} deepAnalysisHistory={detail?.deepAnalysisHistory} onOpenDeepHistory={(id) => void openDeepHistory(id)} supplementary={visualExtractionStatus ? <VisualAssetPanel assets={[]} extractionContext={visualExtractionStatus} onRequestAcquisition={canonicalUrl && !reviewBlocked ? refetch : undefined} acquisitionPending={actionPending} title="시각 자료 상태" /> : undefined} />{detail?.visuals && <VisualAssetPanel assets={detail.visuals} extractionContext={visualExtractionStatus} showExtractionStatus={false} onAnalysisAction={reviewVisualAnalysis} onAssetUpdated={syncVisualAsset} />}</> : <StatusMessage kind="empty" title="읽을 자료를 선택하세요" description="왼쪽 목록에서 자료를 고르면 원문과 분석 내용을 함께 읽을 수 있습니다." />}
       />}
       {pdfSheetVisible && globalThis.document.body && createPortal(
         <div ref={pdfSheetLayerRef} className="decision-sheet-layer">

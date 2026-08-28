@@ -1408,6 +1408,7 @@ describe("visual extraction runner", () => {
 
   it("routes PDF versions through the PDF pipeline with the existing extraction run id", async () => {
     const { runVisualExtraction } = await import("../../../worker/src/visual/extraction/run");
+    const onProgress = vi.fn().mockResolvedValue(undefined);
     const loadSource = vi.fn().mockResolvedValue({
       sourceId: "source-1",
       sourceVersionId: "version-pdf",
@@ -1431,6 +1432,7 @@ describe("visual extraction runner", () => {
       sourceId: "source-1",
       sourceVersionId: "version-pdf",
       extractionRunId: "run-pdf",
+      onProgress,
     }, {
       loadSource,
       runHtmlExtraction,
@@ -1444,6 +1446,7 @@ describe("visual extraction runner", () => {
         sourceId: "source-1",
         sourceVersionId: "version-pdf",
         extractionRunId: "run-pdf",
+        onProgress,
       }),
       expect.objectContaining({
         inputFormat: "PDF_TEXT",

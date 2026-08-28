@@ -32,7 +32,7 @@ export default function IngestionReviewPane({ detail, busy, onReextract, onRenor
             {labelOf(INGEST_CHANNEL_LABELS, item.ingestChannel)} · {labelOf(INPUT_FORMAT_LABELS, item.inputFormat)} · {item.charCount?.toLocaleString() ?? 0}자
           </p>
         </div>
-        {detail.original.available ? <a className="ui-button-secondary inbox-review__original" href={detail.original.url} target="_blank" rel="noreferrer">원본 열기</a> : <span className="table-note">PDF 원본은 보존하지 않음</span>}
+        {detail.original.available ? <a className="ui-button-secondary inbox-review__original" href={detail.original.url} target="_blank" rel="noreferrer">원본 열기</a> : <span className="table-note">{String(item.inputFormat ?? "").startsWith("PDF") ? "PDF 원본이 없어 다시 첨부가 필요함" : "원본 파일 없음"}</span>}
       </div>
 
       <div className="inbox-badges" aria-label="자료 상태">

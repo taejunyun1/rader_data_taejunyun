@@ -81,7 +81,36 @@ function asciiOnly(meta: Record<string, string>): Record<string, string> {
   return out;
 }
 
+function isPdfFormat(value: InputFormat): boolean {
+  return value === "PDF_TEXT" || value === "PDF_SCAN";
+}
+
+function pdfSignatureBytes(value: string | ArrayBuffer): Uint8Array {
+  if (typeof value === "string") return new TextEncoder().encode(value.slice(0, 1024));
+  return new Uint8Array(value.slice(0, 1024));
+}
+
+function assertPdfOriginal(input: CreateSourceInput): void {
+  const format = input.inputFormat ?? deriveIngestMeta(input.origin, input.filename, input.metadata).format;
+  if (!isPdfFormat(format)) return;
+  const signature = new TextDecoder().decode(pdfSignatureBytes(input.original));
+  if (!signature.startsWith("%PDF-")) throw new Error("PDF_SIGNATURE_INVALID");
+}
+
+function originalMetadata(input: CreateSourceInput, sourceId: string, rawContentHash: string): Record<string, string> {
+  const format = input.inputFormat ?? deriveIngestMeta(input.origin, input.filename, input.metadata).format;
+  const filename = input.filename ? sanitizeFilename(input.filename) : "original";
+  return asciiOnly({
+    sourceId,
+    origin: input.origin,
+    sha256: rawContentHash,
+    mimeType: input.contentType ?? (isPdfFormat(format) ? "application/pdf" : "application/octet-stream"),
+    filename,
+  });
+}
+
 export async function createSource(env: Env, input: CreateSourceInput): Promise<CreateSourceResult> {
+  assertPdfOriginal(input);
   const fileHash = await sha256Hex(input.original);
   // Stage the bytes before identity lookup. This keeps the reservoir's original-first
   // invariant even when the lookup resolves to an existing logical source.
@@ -126,7 +155,13 @@ export async function createSource(env: Env, input: CreateSourceInput): Promise<
   const versionId = uuid();
   const clean = input.filename ? sanitizeFilename(input.filename) : null;
   const r2Key = input.storedOriginal === null ? null : `originals/${id}/v1${clean ? `-${clean}` : ""}`;
-  if (r2Key) await copyStagedOriginal(env, stagedOriginalKey, r2Key, id, input.origin, input.storedOriginal ?? input.original);
+  if (r2Key) await copyStagedOriginal(
+    env,
+    stagedOriginalKey,
+    r2Key,
+    input.storedOriginal ?? input.original,
+    originalMetadata(input, id, fileHash),
+  );
   const previewKey = input.preview ? `previews/${id}/v1.jpg` : null;
   if (previewKey && input.preview) await env.ORIGINALS.put(previewKey, input.preview.data, { httpMetadata: { contentType: input.preview.contentType } });
 
@@ -249,6 +284,7 @@ async function appendReimportedVersion(
   rawContentHash: string,
   stagedOriginalKey: string | null,
 ): Promise<CreateSourceResult> {
+  assertPdfOriginal(input);
   const source = await env.DB.prepare("SELECT title FROM sources WHERE id = ?").bind(sourceId).first<{ title: string }>();
   if (!source) throw new Error("source_not_found");
   const row = await env.DB.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM source_versions WHERE source_id = ?")
@@ -257,7 +293,13 @@ async function appendReimportedVersion(
   const versionId = uuid();
   const clean = input.filename ? sanitizeFilename(input.filename) : null;
   const r2Key = input.storedOriginal === null ? null : `originals/${sourceId}/v${version}${clean ? `-${clean}` : ""}`;
-  if (r2Key) await copyStagedOriginal(env, stagedOriginalKey, r2Key, sourceId, input.origin, input.storedOriginal ?? input.original);
+  if (r2Key) await copyStagedOriginal(
+    env,
+    stagedOriginalKey,
+    r2Key,
+    input.storedOriginal ?? input.original,
+    originalMetadata(input, sourceId, rawContentHash),
+  );
 
   const text = (input.extractedText ?? "").slice(0, 500_000);
   const derivedMeta = deriveIngestMeta(input.origin, input.filename, input.metadata);
@@ -312,14 +354,11 @@ async function copyStagedOriginal(
   env: Env,
   stagedKey: string | null,
   targetKey: string,
-  sourceId: string,
-  origin: string,
   value: string | ArrayBuffer,
+  metadata: Record<string, string>,
 ): Promise<void> {
   if (!stagedKey) return;
-  await env.ORIGINALS.put(targetKey, value, {
-    customMetadata: asciiOnly({ sourceId, origin }),
-  });
+  await env.ORIGINALS.put(targetKey, value, { customMetadata: metadata });
 }
 
 async function deleteStagedOriginal(env: Env, stagedKey: string | null): Promise<void> {

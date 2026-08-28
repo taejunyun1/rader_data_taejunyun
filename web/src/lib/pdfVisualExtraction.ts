@@ -1,8 +1,10 @@
+import type { PDFDocumentProxy } from "pdfjs-dist";
 let pdfjsLib: typeof import("pdfjs-dist") | null = null;
 
 const PDF_UPLOAD_CHUNK_SIZE = 40;
 const PDF_RENDER_MAX_EDGE = 1600;
 const PDF_WEBP_QUALITY = 0.82;
+const PDF_PAGE_UPLOAD_RETRY_DELAYS_MS = [150, 400] as const;
 
 export interface PdfVisualRenderedPage {
   pageNumber: number;
@@ -30,6 +32,13 @@ export interface PdfVisualExtractionResult {
   uploadedPages: number;
   remainingPages: number;
   nextPageNumber: number | null;
+}
+
+export type PdfVisualExtractionStage = "PREPARING" | "UPLOADING" | "FINALIZING" | "QUEUED";
+
+export interface PdfVisualExtractionProgressContext {
+  stage: PdfVisualExtractionStage;
+  currentPage: number | null;
 }
 
 interface PdfRunResponse {
@@ -121,6 +130,98 @@ function mapRunResponse(data: PdfRunResponse): PdfVisualExtractionResult {
   };
 }
 
+function abortError(): DOMException {
+  return new DOMException("The operation was aborted", "AbortError");
+}
+
+function isRetryablePageUploadStatus(status: number): boolean {
+  return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+function waitForRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError());
+      return;
+    }
+    let timeoutId: ReturnType<typeof globalThis.setTimeout> | undefined;
+    const onAbort = () => {
+      if (timeoutId !== undefined) globalThis.clearTimeout(timeoutId);
+      signal?.removeEventListener("abort", onAbort);
+      reject(abortError());
+    };
+    timeoutId = globalThis.setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+async function uploadPdfPageWithRetry(input: {
+  runId: string;
+  sourceId: string;
+  versionId: string;
+  page: PdfVisualRenderedPage;
+  signal?: AbortSignal;
+}): Promise<Response> {
+  const imageBase64 = await blobToBase64(input.page.blob);
+
+  for (let attempt = 0; attempt <= PDF_PAGE_UPLOAD_RETRY_DELAYS_MS.length; attempt += 1) {
+    if (input.signal?.aborted) throw abortError();
+    try {
+      const response = await fetch(`/api/visual-extraction/pdf/runs/${input.runId}/pages/${input.page.pageNumber}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceId: input.sourceId,
+          versionId: input.versionId,
+          width: input.page.width,
+          height: input.page.height,
+          contentHash: input.page.contentHash,
+          imageBase64,
+        }),
+        signal: input.signal,
+      });
+      if (response.ok) return response;
+      if (!isRetryablePageUploadStatus(response.status)) throw new Error("pdf_visual_page_upload_failed");
+    } catch (error) {
+      if (input.signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw error;
+      if (error instanceof Error && error.message === "pdf_visual_page_upload_failed") throw error;
+    }
+
+    const delayMs = PDF_PAGE_UPLOAD_RETRY_DELAYS_MS[attempt];
+    if (delayMs === undefined) break;
+    await waitForRetry(delayMs, input.signal);
+  }
+
+  throw new Error("pdf_visual_page_upload_retry_exhausted");
+}
+
+async function renderPdfVisualPage(doc: PDFDocumentProxy, pageNumber: number): Promise<PdfVisualRenderedPage> {
+  const page = await doc.getPage(pageNumber);
+  const baseViewport = page.getViewport({ scale: 1 });
+  const viewport = page.getViewport({ scale: scaleViewport(baseViewport.width, baseViewport.height) });
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(viewport.width));
+  canvas.height = Math.max(1, Math.round(viewport.height));
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("pdf_canvas_context_missing");
+  await page.render({ canvasContext: context, viewport }).promise;
+  const webpBlob = await canvasToWebp(canvas);
+  const rendered = {
+    pageNumber,
+    blob: webpBlob,
+    width: canvas.width,
+    height: canvas.height,
+    contentHash: await sha256Hex(webpBlob),
+  };
+  page.cleanup?.();
+  canvas.width = 0;
+  canvas.height = 0;
+  return rendered;
+}
+
 function pausedPdfExtractionResult(runId: string, checkpoint: PdfRunResponse["checkpoint"], totalPages: number): PdfVisualExtractionResult {
   return {
     runId,
@@ -154,23 +255,7 @@ export async function renderPdfVisualPages(
 
     for (const pageNumber of targetPages) {
       if (signal?.aborted) break;
-      const page = await doc.getPage(pageNumber);
-      const baseViewport = page.getViewport({ scale: 1 });
-      const viewport = page.getViewport({ scale: scaleViewport(baseViewport.width, baseViewport.height) });
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.max(1, Math.round(viewport.width));
-      canvas.height = Math.max(1, Math.round(viewport.height));
-      const context = canvas.getContext("2d");
-      if (!context) throw new Error("pdf_canvas_context_missing");
-      await page.render({ canvasContext: context, viewport }).promise;
-      const webpBlob = await canvasToWebp(canvas);
-      pages.push({
-        pageNumber,
-        blob: webpBlob,
-        width: canvas.width,
-        height: canvas.height,
-        contentHash: await sha256Hex(webpBlob),
-      });
+      pages.push(await renderPdfVisualPage(doc, pageNumber));
     }
 
     const remaining = nextChunkPages(totalPages, checkpoint.uploadedPages.concat(pages.map((page) => page.pageNumber)));
@@ -189,6 +274,7 @@ export async function startOrResumePdfVisualExtraction(input: {
   versionId: string;
   originalUrl: string;
   signal?: AbortSignal;
+  onProgress?: (result: PdfVisualExtractionResult, context: PdfVisualExtractionProgressContext) => void;
 }): Promise<PdfVisualExtractionResult> {
   let runData: PdfRunResponse | null = null;
   let checkpoint: PdfRunResponse["checkpoint"] = {
@@ -214,41 +300,37 @@ export async function startOrResumePdfVisualExtraction(input: {
     if (!runResponse.ok) throw new Error("pdf_visual_run_create_failed");
     runData = await runResponse.json() as PdfRunResponse;
     checkpoint = runData.checkpoint;
+    input.onProgress?.(mapRunResponse(runData), { stage: "UPLOADING", currentPage: null });
 
-    let hasMore = true;
-    while (hasMore) {
-      const rendered = await renderPdfVisualPages(originalBlob, {
-        runId: runData.run.id,
-        uploadedPages: checkpoint.uploadedPages,
-      }, input.signal);
-      totalPages = Math.max(totalPages, rendered.totalPages, checkpoint.totalPages);
-
-      for (const page of rendered.pages) {
+    const pdfjs = await loadPdfjs();
+    const doc = await pdfjs.getDocument({ data: await originalBlob.arrayBuffer() }).promise;
+    try {
+      totalPages = Math.max(totalPages, doc.numPages, checkpoint.totalPages);
+      const uploaded = new Set(checkpoint.uploadedPages);
+      for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber += 1) {
+        if (uploaded.has(pageNumber)) continue;
         if (input.signal?.aborted) return pausedPdfExtractionResult(runData.run.id, checkpoint, totalPages);
-
-        const uploadResponse = await fetch(`/api/visual-extraction/pdf/runs/${runData.run.id}/pages/${page.pageNumber}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            sourceId: input.sourceId,
-            versionId: input.versionId,
-            width: page.width,
-            height: page.height,
-            contentHash: page.contentHash,
-            imageBase64: await blobToBase64(page.blob),
-          }),
+        const page = await renderPdfVisualPage(doc, pageNumber);
+        const uploadResponse = await uploadPdfPageWithRetry({
+          runId: runData.run.id,
+          sourceId: input.sourceId,
+          versionId: input.versionId,
+          page,
           signal: input.signal,
         });
         if (!uploadResponse.ok) throw new Error("pdf_visual_page_upload_failed");
         const uploadData = await uploadResponse.json() as PdfRunResponse;
         checkpoint = uploadData.checkpoint;
+        uploaded.add(pageNumber);
+        input.onProgress?.(mapRunResponse(uploadData), { stage: "UPLOADING", currentPage: pageNumber });
       }
-
-      hasMore = rendered.hasMore;
-      if (hasMore && rendered.pages.length === 0) throw new Error("pdf_visual_checkpoint_stalled");
+    } finally {
+      await doc.destroy();
     }
 
     if (input.signal?.aborted) return pausedPdfExtractionResult(runData.run.id, checkpoint, totalPages);
+
+    input.onProgress?.(pausedPdfExtractionResult(runData.run.id, checkpoint, totalPages), { stage: "FINALIZING", currentPage: null });
 
     const finalizeResponse = await fetch(`/api/visual-extraction/pdf/runs/${runData.run.id}/finalize`, {
       method: "POST",
@@ -258,7 +340,9 @@ export async function startOrResumePdfVisualExtraction(input: {
     });
     if (!finalizeResponse.ok) throw new Error("pdf_visual_finalize_failed");
     const finalizeData = await finalizeResponse.json() as PdfRunResponse;
-    return mapRunResponse(finalizeData);
+    const result = mapRunResponse(finalizeData);
+    input.onProgress?.(result, { stage: "QUEUED", currentPage: null });
+    return result;
   } catch (error) {
     if (runData && input.signal?.aborted) return pausedPdfExtractionResult(runData.run.id, checkpoint, totalPages);
     throw error;

@@ -48,7 +48,10 @@ export default function VisualExtractionStatus({
     && acquisition
     && (acquisition.textScope !== "FULLTEXT" || acquisition.qualityStatus !== "READY");
 
-  if (failedAssets.length > 0 || run?.status === "FAILED") {
+  if (run?.status === "PARTIAL") {
+    title = "일부 페이지 처리됨";
+    description = `처리된 ${run.processedUnits.toLocaleString("ko-KR")}쪽 중 일부를 완료했습니다. 성공한 결과는 유지되며 실패한 페이지는 다시 실행할 수 있습니다.`;
+  } else if (failedAssets.length > 0 || run?.status === "FAILED") {
     title = "처리 실패";
     description = "시각 자료를 다시 확인하거나 처리 단계를 다시 시작해야 합니다.";
   } else if (textNotReady) {
@@ -82,6 +85,16 @@ export default function VisualExtractionStatus({
   ) {
     title = "이미지 없음";
     description = "추출할 만한 시각 자료를 찾지 못했습니다.";
+  } else if (
+    assets.length === 0
+    && run?.status === "SUCCEEDED"
+    && run.selectedCount === 0
+    && run.reviewCount === 0
+    && run.filteredCount === 0
+    && run.unavailableCount === 0
+  ) {
+    title = "분석 완료 · 시각 자료 없음";
+    description = `${run.totalUnits.toLocaleString("ko-KR")}쪽을 확인했지만 보존할 시각 자료 후보가 없었습니다.`;
   } else if (visibleAssets.length === 0 && filteredAssets.length > 0) {
     title = "모두 필터됨";
     description = "장식, 중복, 열 수 없는 이미지는 기본 목록에서 숨겨 두었습니다.";

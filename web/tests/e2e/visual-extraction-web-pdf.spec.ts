@@ -595,6 +595,14 @@ async function installWebPdfFixture(page: Page, options: WebPdfFixtureOptions = 
           inputFormat: "PDF_TEXT",
           activeVersionId: "version-source-pdf",
         },
+        visualExtractionCapability: {
+          state: "READY",
+          canStart: true,
+          sourceId: "source-pdf",
+          sourceVersionId: "version-source-pdf",
+          originalUrl: "/api/reservoir/source-pdf/original?version=version-source-pdf",
+          reasonCode: null,
+        },
         acquisition: {
           textScope: "FULLTEXT",
           extractionMethod: "PDF_REMOTE_TO_MARKDOWN",
@@ -981,12 +989,13 @@ test.describe("visual extraction web and pdf coverage", () => {
       checkpoint: { uploadedPages: [1], totalPages: 2, remainingPages: 1, nextPageNumber: 2 },
     });
     await fixture.waitForSecondPageUpload();
-    await expect(page.getByRole("button", { name: "중지" })).toBeVisible();
+    const readingWorkspace = page.getByTestId("split-workspace");
+    await expect(readingWorkspace.getByRole("button", { name: "중지" })).toBeVisible();
 
-    await page.getByRole("button", { name: "중지" }).click();
+    await readingWorkspace.getByRole("button", { name: "중지" }).click();
     fixture.abortSecondPageUpload();
     await expect(page.getByText("1 / 2페이지 업로드됨", { exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "계속" })).toBeVisible();
+    await expect(readingWorkspace.getByRole("button", { name: "계속" })).toBeVisible();
 
     const traceAfterPause = fixture.getPdfTrace();
     expect(traceAfterPause.filter((entry) => entry.pathname.endsWith("/pages/1"))).toHaveLength(1);
@@ -1007,7 +1016,7 @@ test.describe("visual extraction web and pdf coverage", () => {
       && response.request().method() === "POST"
       && response.status() === 202
     ));
-    await page.getByRole("button", { name: "계속" }).click();
+    await readingWorkspace.getByRole("button", { name: "계속" }).click();
 
     const resumedRun = await resumeRunResponse;
     expect(resumedRun.url()).toContain("/api/visual-extraction/pdf/runs");
@@ -1033,7 +1042,7 @@ test.describe("visual extraction web and pdf coverage", () => {
     });
     expect(fixture.getPdfTrace().at(-1)?.body).toEqual({ sourceId: "source-pdf", versionId: "version-source-pdf" });
     expect(fixture.wasPdfFinalized()).toBe(true);
-    expect(await page.getByRole("status").last().textContent()).toContain("2 / 2페이지 업로드됨");
+    await expect(page.getByText("2 / 2페이지 업로드됨", { exact: true })).toBeVisible();
     await expect(page.getByText("모든 페이지 업로드를 마쳤습니다.")).toBeVisible();
 
     await page.setViewportSize({ width: 390, height: 844 });

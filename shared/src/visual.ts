@@ -18,6 +18,17 @@ export type VisualAnalysisReviewStatus = "PENDING" | "ACCEPTED" | "EDITED" | "DI
 export type VisualExtractionRunStatus = "UPLOADING" | "QUEUED" | "RUNNING" | "SUCCEEDED" | "PARTIAL" | "FAILED" | "CANCELLED";
 export type VisualExtractionUnitStatus = "UPLOADED" | "PROCESSING" | "SUCCEEDED" | "FAILED" | "DELETED";
 
+export type PdfVisualExtractionCapabilityState = "READY" | "ORIGINAL_MISSING" | "ORIGINAL_OBJECT_MISSING" | "UNSUPPORTED";
+
+export interface PdfVisualExtractionCapability {
+  state: PdfVisualExtractionCapabilityState;
+  canStart: boolean;
+  sourceId: string;
+  sourceVersionId: string | null;
+  originalUrl: string | null;
+  reasonCode: string | null;
+}
+
 export interface VisualAnalysisSummary {
   id: string;
   payload: Record<string, unknown>;

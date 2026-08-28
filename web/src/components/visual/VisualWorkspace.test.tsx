@@ -595,6 +595,22 @@ describe("Visual workspace", () => {
 
     rerender(
       <VisualAssetPanel
+        assets={[]}
+        extractionContext={{ sourceKind: "PDF", run: buildExtractionRun({ status: "PARTIAL", processedUnits: 2, selectedCount: 1, reviewCount: 0, filteredCount: 0, unavailableCount: 1 }) }}
+      />,
+    );
+    expect(screen.getByText("일부 페이지 처리됨")).toBeInTheDocument();
+
+    rerender(
+      <VisualAssetPanel
+        assets={[]}
+        extractionContext={{ sourceKind: "PDF", run: buildExtractionRun({ totalUnits: 3, processedUnits: 3, selectedCount: 0, reviewCount: 0, filteredCount: 0, unavailableCount: 0 }) }}
+      />,
+    );
+    expect(screen.getByText("분석 완료 · 시각 자료 없음")).toBeInTheDocument();
+
+    rerender(
+      <VisualAssetPanel
         assets={[
           buildSummary({ id: "filtered-1", selectionStatus: "DECORATIVE", selectionReason: "visual-filter-v1:decorative_signal" }),
           buildSummary({ id: "filtered-2", selectionStatus: "DUPLICATE", selectionReason: "visual-filter-v1:duplicate_exact" }),

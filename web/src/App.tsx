@@ -9,12 +9,14 @@ import ReservoirView from "./views/ReservoirView";
 import SettingsView from "./views/SettingsView";
 import UsageView from "./views/UsageView";
 import { useResearchJobs } from "./lib/researchJobs";
+import { dismissPdfVisualExtractionTask, resumePdfVisualExtractionTask, stopPdfVisualExtractionTask, usePdfVisualExtractionTasks, type PdfPreparationTask } from "./lib/pdfVisualExtractionManager";
 import type { ResearchJobResultRef } from "@radar/shared/discovery";
 
 export default function App() {
   const [view, setView] = useState<View>("RADAR");
   const [usage, setUsage] = useState<UsageBadge | null>(null);
   const { jobs, refresh, dismiss, retry } = useResearchJobs();
+  const pdfTasks = usePdfVisualExtractionTasks();
   const [focus, setFocus] = useState<{ distillSessionId?: string; radarPeriod?: RadarPeriod; reservoirSourceId?: string; reservoirExtractionRunId?: string }>({});
 
   function openJobResult(result: ResearchJobResultRef) {
@@ -40,6 +42,28 @@ export default function App() {
     setFocus((current) => ({ ...current, [key]: undefined }));
   }, []);
 
+  const stopPdfTask = useCallback((task: PdfPreparationTask) => {
+    stopPdfVisualExtractionTask(task.sourceId, task.sourceVersionId);
+  }, []);
+
+  const resumePdfTask = useCallback((task: PdfPreparationTask) => {
+    const handle = resumePdfVisualExtractionTask(task.sourceId, task.sourceVersionId);
+    if (handle) void handle.promise.then((result) => {
+      if (result?.status === "QUEUED" || result?.status === "RUNNING") void refresh();
+    });
+  }, [refresh]);
+
+  useEffect(() => {
+    pdfTasks.filter((task) => task.status === "QUEUED").forEach((task) => {
+      const finished = jobs.find((job) => {
+        if (job.kind !== "VISUAL_EXTRACTION" || !["SUCCEEDED", "FAILED", "BLOCKED"].includes(job.status)) return false;
+        const input = job.input && typeof job.input === "object" ? job.input as { sourceId?: unknown; sourceVersionId?: unknown } : null;
+        return input?.sourceId === task.sourceId && input?.sourceVersionId === task.sourceVersionId;
+      });
+      if (finished) dismissPdfVisualExtractionTask(task.sourceId, task.sourceVersionId);
+    });
+  }, [jobs, pdfTasks]);
+
   useEffect(() => {
     fetch("/api/usage/summary")
       .then((r) => r.json() as Promise<UsageBadge>)
@@ -48,7 +72,7 @@ export default function App() {
   }, []);
 
   return (
-    <AppShell view={view} onNavigate={setView} usage={usage} jobs={jobs} onDismissJob={dismiss} onRetryJob={retry} onResult={openJobResult}>
+    <AppShell view={view} onNavigate={setView} usage={usage} jobs={jobs} pdfTasks={pdfTasks} onStopPdfTask={stopPdfTask} onResumePdfTask={resumePdfTask} onDismissJob={dismiss} onRetryJob={retry} onResult={openJobResult}>
       {view === "RADAR" && <RadarView onNavigate={setView} onJobCreated={refresh} focusPeriod={focus.radarPeriod} onFocusConsumed={() => consumeFocus("radarPeriod")} />}
       {view === "INBOX" && <InboxView />}
       {view === "DISTILL" && <DistillView onJobCreated={refresh} focusSessionId={focus.distillSessionId} onFocusConsumed={() => consumeFocus("distillSessionId")} />}

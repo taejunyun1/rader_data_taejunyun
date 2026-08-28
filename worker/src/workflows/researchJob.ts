@@ -245,7 +245,12 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
       await updateJobProgress(this.env.DB, job.id, 30, "시각 후보를 정리하는 중");
       const input = job.input as { sourceId: string; sourceVersionId: string; extractionRunId?: string };
       if (!extractionBudget) throw new Error("visual_extraction_budget_missing");
-      const extracted = await runVisualExtraction(this.env, { ...input, visionBudget: extractionBudget, researchJobId: job.id });
+      const extracted = await runVisualExtraction(this.env, {
+        ...input,
+        visionBudget: extractionBudget,
+        researchJobId: job.id,
+        onProgress: (progress, message) => updateJobProgress(this.env.DB, job.id, progress, message),
+      });
       return {
         result: {
           sourceId: extracted.sourceId,

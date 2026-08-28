@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { ResearchJob } from "@radar/shared/discovery";
+import type { PdfPreparationTask } from "../../lib/pdfVisualExtractionManager";
 import JobCenter from "./JobCenter";
 
 function job(overrides: Partial<ResearchJob> = {}): ResearchJob {
@@ -30,6 +31,44 @@ function job(overrides: Partial<ResearchJob> = {}): ResearchJob {
 }
 
 describe("JobCenter", () => {
+  it("keeps PDF page preparation visible with source progress", async () => {
+    const onStopPdfTask = vi.fn();
+    const task: PdfPreparationTask = {
+      runId: "run-pdf",
+      sourceId: "source-1",
+      sourceVersionId: "version-1",
+      title: "자료 A",
+      status: "UPLOADING",
+      totalPages: 57,
+      uploadedPages: 12,
+      currentPage: 12,
+      errorCode: null,
+    };
+    render(<JobCenter jobs={[]} pdfTasks={[task]} onStopPdfTask={onStopPdfTask} onResumePdfTask={vi.fn()} onDismiss={vi.fn()} onRetry={vi.fn()} onResult={vi.fn()} />);
+    expect(screen.getByText("자료 A · PDF 페이지 준비 · 12/57쪽")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "PDF 페이지 준비 중지" }));
+    expect(onStopPdfTask).toHaveBeenCalledWith(task);
+  });
+
+  it("offers resume for a paused PDF preparation task", async () => {
+    const onResumePdfTask = vi.fn();
+    const task: PdfPreparationTask = {
+      runId: "run-pdf",
+      sourceId: "source-1",
+      sourceVersionId: "version-1",
+      title: "자료 A",
+      status: "PAUSED",
+      totalPages: 57,
+      uploadedPages: 12,
+      currentPage: null,
+      errorCode: "pdf_visual_page_upload_failed",
+    };
+    render(<JobCenter jobs={[]} pdfTasks={[task]} onStopPdfTask={vi.fn()} onResumePdfTask={onResumePdfTask} onDismiss={vi.fn()} onRetry={vi.fn()} onResult={vi.fn()} />);
+    expect(screen.getByText("자료 A · PDF 페이지 준비 · 12/57쪽")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "PDF 페이지 준비 계속" }));
+    expect(onResumePdfTask).toHaveBeenCalledWith(task);
+  });
+
   it("opens the completed result and can dismiss it", async () => {
     const onResult = vi.fn();
     const onDismiss = vi.fn();

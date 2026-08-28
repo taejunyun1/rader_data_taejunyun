@@ -153,7 +153,7 @@ export default function InboxView() {
           if (file.size > 29_000_000) throw new Error("PDF는 29MB 이하만 받을 수 있습니다.");
           const [originalBase64, previewBase64] = await Promise.all([fileToBase64(file), renderPdfPreview(file)]);
           const data = await post("/file", { filename: file.name, text: hasText ? extracted.text : undefined, originalBase64, previewBase64, contentType: "application/pdf" });
-          if (data) notify(data.duplicateOf ? "이미 저장된 자료와 연결했습니다." : hasText ? `${file.name}의 텍스트와 작은 미리보기를 보존했습니다. (${extracted.pageCount}쪽)` : `${file.name}은 텍스트가 없는 PDF입니다. 작은 미리보기만 보존했습니다.`);
+          if (data) notify(data.duplicateOf ? "이미 저장된 자료와 연결했습니다." : hasText ? `${file.name}의 텍스트·작은 미리보기·비공개 원본 PDF를 보존했습니다. (${extracted.pageCount}쪽)` : `${file.name}은 텍스트가 없는 PDF입니다. 작은 미리보기와 비공개 원본 PDF를 보존했습니다.`);
         } else {
           setMsg(`${file.name}: 지원하지 않는 파일 형식입니다.`);
         }

@@ -1,12 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const enqueueResearchJob = vi.fn();
+const findVisualExtractionJobByRun = vi.fn();
 const createOrResumeRun = vi.fn();
 const recordUnit = vi.fn();
 const cancelRun = vi.fn();
 
 vi.mock("../../../worker/src/jobs/enqueue", () => ({
   enqueueResearchJob,
+}));
+
+vi.mock("../../../worker/src/jobs/store", () => ({
+  findVisualExtractionJobByRun,
 }));
 
 vi.mock("../../../worker/src/visual/extraction/store", () => ({
@@ -57,6 +62,7 @@ function createVisualExtractionDb(options: {
   sourceId?: string;
   activeVersionId?: string;
   inputFormat?: string;
+  originalR2Key?: string | null;
   runId?: string;
   uploadedPages?: number[];
   totalUnits?: number;
@@ -64,6 +70,7 @@ function createVisualExtractionDb(options: {
   const sourceId = options.sourceId ?? "source-1";
   const activeVersionId = options.activeVersionId ?? "version-active";
   const inputFormat = options.inputFormat ?? "PDF_TEXT";
+  const originalR2Key = options.originalR2Key === undefined ? "originals/source-1/v1-paper.pdf" : options.originalR2Key;
   const runId = options.runId ?? "run-1";
   const uploadedPages = options.uploadedPages ?? [];
   const totalUnits = options.totalUnits ?? 85;
@@ -79,6 +86,7 @@ function createVisualExtractionDb(options: {
                   source_id: sourceId,
                   input_format: inputFormat,
                   active_version_id: activeVersionId,
+                  r2_key: originalR2Key,
                 } as T;
               }
               if (sql.includes("FROM visual_extraction_runs")) {
@@ -145,7 +153,8 @@ function createOriginalsBucket() {
   const get = vi.fn(async () => ({
     body: new Response("%PDF-1.7 active").body,
   }));
-  return { get, put, delete: deleteObject };
+  const head = vi.fn(async () => ({ size: 1 }));
+  return { get, head, put, delete: deleteObject };
 }
 
 describe("reservoir active PDF original", () => {
@@ -187,9 +196,29 @@ describe("visual extraction pdf route", () => {
   beforeEach(() => {
     vi.resetModules();
     enqueueResearchJob.mockReset();
+    findVisualExtractionJobByRun.mockReset();
     createOrResumeRun.mockReset();
     recordUnit.mockReset();
     cancelRun.mockReset();
+  });
+
+  it("blocks run creation when the active PDF original is not preserved", async () => {
+    const { default: visualExtraction } = await import("../../../worker/src/routes/visualExtraction");
+    const originals = createOriginalsBucket();
+    originals.head.mockResolvedValueOnce(null);
+
+    const response = await visualExtraction.request("/pdf/runs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sourceId: "source-1", versionId: "version-active", pageCount: 3 }),
+    }, {
+      DB: createVisualExtractionDb({ originalR2Key: null }),
+      ORIGINALS: originals,
+    } as Env);
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "pdf_original_not_preserved" });
+    expect(createOrResumeRun).not.toHaveBeenCalled();
   });
 
   it("creates a resumable run with uploaded-page checkpoint state", async () => {
@@ -304,6 +333,67 @@ describe("visual extraction pdf route", () => {
         nextPageNumber: 1,
       },
     });
+    expect(enqueueResearchJob).not.toHaveBeenCalled();
+  });
+
+  it("reuses the existing visual extraction job when finalize is submitted again", async () => {
+    createOrResumeRun.mockResolvedValue({
+      id: "run-1",
+      parentSourceId: "source-1",
+      parentVersionId: "version-active",
+      originKind: "PDF_PAGE_CROP",
+      status: "QUEUED",
+      totalUnits: 3,
+      uploadedUnits: 3,
+      processedUnits: 0,
+      selectedCount: 0,
+      reviewCount: 0,
+      filteredCount: 0,
+      unavailableCount: 0,
+      errorCode: null,
+      error: null,
+      createdAt: "2026-08-25T09:00:00.000Z",
+      updatedAt: "2026-08-25T09:00:00.000Z",
+      finishedAt: null,
+    });
+    findVisualExtractionJobByRun.mockResolvedValueOnce({ id: "visual-job-existing", status: "SUCCEEDED" });
+    const { default: visualExtraction } = await import("../../../worker/src/routes/visualExtraction");
+    const response = await visualExtraction.request("/pdf/runs/run-1/finalize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sourceId: "source-1", versionId: "version-active" }),
+    }, {
+      DB: createVisualExtractionDb({ uploadedPages: [1, 2, 3], totalUnits: 3 }),
+      ORIGINALS: createOriginalsBucket(),
+    } as Env);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual(expect.objectContaining({
+      queued: false,
+      reused: true,
+      job: { id: "visual-job-existing", status: "SUCCEEDED" },
+    }));
+    expect(enqueueResearchJob).not.toHaveBeenCalled();
+  });
+
+  it("keeps an incomplete checkpoint resumable without creating an AI job", async () => {
+    const { default: visualExtraction } = await import("../../../worker/src/routes/visualExtraction");
+    const response = await visualExtraction.request("/pdf/runs/run-1/finalize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sourceId: "source-1", versionId: "version-active" }),
+    }, {
+      DB: createVisualExtractionDb({ uploadedPages: [1], totalUnits: 3 }),
+      ORIGINALS: createOriginalsBucket(),
+    } as Env);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual(expect.objectContaining({
+      queued: false,
+      resumable: true,
+      checkpoint: expect.objectContaining({ remainingPages: 2 }),
+    }));
+    expect(findVisualExtractionJobByRun).not.toHaveBeenCalled();
     expect(enqueueResearchJob).not.toHaveBeenCalled();
   });
 
@@ -579,5 +669,61 @@ describe("startOrResumePdfVisualExtraction", () => {
 
     expect(result).toMatchObject({ status: "QUEUED", totalPages: 41, uploadedPages: 41, remainingPages: 0 });
     expect(uploadedPages).toEqual(Array.from({ length: 41 }, (_, index) => index + 1));
+  });
+
+  it("retries a transient page upload twice before pausing on a persistent failure", async () => {
+    const uploadedPages: number[] = [];
+    const runPayload = () => ({
+      run: { id: "run-retry", status: "UPLOADING", totalUnits: 1 },
+      checkpoint: {
+        uploadedPages: [...uploadedPages],
+        totalPages: 1,
+        remainingPages: uploadedPages.length === 0 ? 1 : 0,
+        nextPageNumber: uploadedPages.length === 0 ? 1 : null,
+      },
+    });
+    const render = vi.fn(async () => ({ promise: Promise.resolve() }));
+    vi.doMock("pdfjs-dist", () => ({
+      GlobalWorkerOptions: { workerSrc: "" },
+      getDocument: () => ({
+        promise: Promise.resolve({
+          numPages: 1,
+          getPage: async () => ({
+            getViewport: ({ scale }: { scale: number }) => ({ width: 100 * scale, height: 100 * scale }),
+            render,
+          }),
+          destroy: async () => undefined,
+        }),
+      }),
+    }));
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    vi.spyOn(HTMLCanvasElement.prototype, "toBlob").mockImplementation((callback) => {
+      callback(new Blob(["RIFF0000WEBP"], { type: "image/webp" }));
+    });
+    let pageAttempts = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/pdf/original") return new Response(new Blob(["pdf"], { type: "application/pdf" }));
+      if (url === "/api/visual-extraction/pdf/runs") return Response.json(runPayload());
+      if (url.includes("/pages/")) {
+        pageAttempts += 1;
+        if (pageAttempts < 3) return new Response("temporary failure", { status: 503 });
+        uploadedPages.push(1);
+        return Response.json(runPayload());
+      }
+      if (url.endsWith("/finalize")) return Response.json({ ...runPayload(), run: { ...runPayload().run, status: "QUEUED" } });
+      throw new Error(`unexpected_fetch:${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { startOrResumePdfVisualExtraction } = await import("./pdfVisualExtraction");
+    const result = await startOrResumePdfVisualExtraction({
+      sourceId: "source-retry",
+      versionId: "version-retry",
+      originalUrl: "/pdf/original",
+    });
+
+    expect(pageAttempts).toBe(3);
+    expect(result).toMatchObject({ status: "QUEUED", totalPages: 1, uploadedPages: 1, remainingPages: 0 });
   });
 });

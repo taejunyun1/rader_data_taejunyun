@@ -22,6 +22,10 @@
 .source-detail-extra p { margin: 0; color: var(--color-muted); font-size: 11px; line-height: 1.6; }
 .source-detail-extra__heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .reservoir-message { margin: 8px 0; color: var(--color-positive); font-size: 12px; }
+.pdf-original-recovery { display: grid; gap: 8px; margin: 18px 0; padding: 14px 16px; border: 1px solid var(--color-line); border-left: 3px solid var(--color-warning); background: var(--color-soft); }
+.pdf-original-recovery strong { font-size: 13px; }
+.pdf-original-recovery p { margin: 0; color: var(--color-muted); font-size: 11px; line-height: 1.6; }
+.pdf-original-recovery__message { color: var(--color-positive) !important; }
 .table-note { color: var(--color-muted); font-size: 11px; }
 .pill { display: inline-flex; width: fit-content; border-radius: 999px; padding: 3px 7px; background: var(--color-soft); color: var(--color-muted); font-size: 9px; }
 .inline-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }

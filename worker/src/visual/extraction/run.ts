@@ -65,6 +65,7 @@ export interface RunVisualExtractionInput {
   sourceVersionId: string;
   extractionRunId?: string;
   researchJobId?: string;
+  onProgress?: (progress: number, message: string) => Promise<void>;
   visionGate?: VisualExtractionVisionGate;
   visionBudget?: {
     budgetReserved: boolean;
@@ -72,6 +73,22 @@ export interface RunVisualExtractionInput {
     reservationId?: string | null;
     researchJobId?: string | null;
   };
+}
+
+async function reportExtractionProgress(input: RunVisualExtractionInput, progress: number, message: string): Promise<void> {
+  if (!input.onProgress) return;
+  try {
+    await input.onProgress(progress, message);
+  } catch (error) {
+    console.warn(JSON.stringify({
+      level: "warn",
+      stage: "progress-update",
+      sourceId: input.sourceId,
+      versionId: input.sourceVersionId,
+      errorCode: "visual_extraction_progress_update_failed",
+      error: error instanceof Error ? error.message : String(error),
+    }));
+  }
 }
 
 export interface LoadedSourceForExtraction {
@@ -327,6 +344,7 @@ async function runHtmlVisualExtraction(env: Env, input: RunVisualExtractionInput
     });
   await markRunRunning(env.DB, run.id);
   await initializeExtractionVisionGate(env, input, run.id);
+  await reportExtractionProgress(input, 35, "시각 후보 판독 중");
 
   const diagnostics: VisualExtractionDiagnostics = {
     sourceKind: "HTML",
@@ -370,6 +388,7 @@ async function runHtmlVisualExtraction(env: Env, input: RunVisualExtractionInput
   }
   const existingAssets = await loadExistingFingerprints(env.DB, source.sourceVersionId);
   let failedUnits = 0;
+  let filterProgressReported = false;
 
   const retryCandidateByKey = new Map(retryCandidates.map((candidate) => [candidate.candidateKey, candidate]));
   const queued = input.extractionRunId
@@ -418,6 +437,10 @@ async function runHtmlVisualExtraction(env: Env, input: RunVisualExtractionInput
         signals: candidate.signals,
         existingAssets,
       });
+      if (!filterProgressReported) {
+        filterProgressReported = true;
+        await reportExtractionProgress(input, 60, "중복·장식 필터 중");
+      }
       applyDecisionCount(counts, decision.selectionStatus);
       applyOutcomeCount(outcomeCounts, decision);
       outcomeCounts.rightsGated += 1;
@@ -465,6 +488,7 @@ async function runHtmlVisualExtraction(env: Env, input: RunVisualExtractionInput
   }
 
   const status = failedUnits > 0 ? "PARTIAL" : "SUCCEEDED";
+  await reportExtractionProgress(input, 80, "도판 Capsule 정리 중");
   diagnostics.vision = await extractionVisionGate(input).refresh();
   await reconcileCumulativeExtractionState(env.DB, run.id, source, counts, outcomeCounts, diagnostics);
   await ExtractionStore.finishRun(env.DB, { runId: run.id, counts, status });
@@ -494,6 +518,7 @@ async function runPdfVisualExtraction(env: Env, input: RunVisualExtractionInput,
     });
   await markRunRunning(env.DB, run.id);
   await initializeExtractionVisionGate(env, input, run.id);
+  await reportExtractionProgress(input, 35, "시각 후보 판독 중");
 
   const diagnostics: VisualExtractionDiagnostics = {
     sourceKind: "PDF",
@@ -511,8 +536,13 @@ async function runPdfVisualExtraction(env: Env, input: RunVisualExtractionInput,
   const rightsBasis = rights.rightsBasis;
   const existingAssets = await loadExistingFingerprints(env.DB, source.sourceVersionId);
   let failedUnits = 0;
+  let filterProgressReported = false;
 
-  for (const unit of queuedUnits) {
+  for (const [unitIndex, unit] of queuedUnits.entries()) {
+    if (unitIndex === 0 || unitIndex === queuedUnits.length - 1 || unitIndex % 5 === 0) {
+      const progress = 35 + Math.round((unitIndex / Math.max(queuedUnits.length, 1)) * 20);
+      await reportExtractionProgress(input, progress, `시각 후보 판독 중 · ${unit.unitNumber}/${units.length}쪽`);
+    }
     await ExtractionStore.markUnitProcessed(env.DB, {
       runId: run.id,
       unitNumber: unit.unitNumber,
@@ -532,6 +562,10 @@ async function runPdfVisualExtraction(env: Env, input: RunVisualExtractionInput,
       const rawCandidates = await detectPdfPageCandidates(env, pageBytes, source, unit, extractionVisionGate(input), input.researchJobId);
       const parsed = parsePdfPageCandidates(rawCandidates);
       counts.filtered += parsed.rejected.length;
+      if (!filterProgressReported) {
+        filterProgressReported = true;
+        await reportExtractionProgress(input, 60, "중복·장식 필터 중");
+      }
 
       for (const [index, candidate] of parsed.accepted.entries()) {
         try {
@@ -669,6 +703,7 @@ async function runPdfVisualExtraction(env: Env, input: RunVisualExtractionInput,
   }
 
   const status = failedUnits > 0 ? "PARTIAL" : "SUCCEEDED";
+  await reportExtractionProgress(input, 80, "도판 Capsule 정리 중");
   diagnostics.vision = await extractionVisionGate(input).refresh();
   await reconcileCumulativeExtractionState(env.DB, run.id, source, counts, outcomeCounts, diagnostics);
   await ExtractionStore.finishRun(env.DB, { runId: run.id, counts, status });

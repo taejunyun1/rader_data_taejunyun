@@ -167,6 +167,50 @@ describe("ingestion normalization", () => {
     expect(env.sourceVersionInsert?.params[13]).toBe("MANUAL_TEXT");
   });
 
+  it("rejects a PDF upload before staging bytes when the file signature is invalid", async () => {
+    const env = createCreateSourceEnv();
+    const invalidPdf = new TextEncoder().encode("not a pdf").buffer;
+
+    await expect(createSource(env, {
+      kind: "PAPER_ACADEMIC",
+      title: "Invalid PDF",
+      origin: "upload:pdf",
+      original: invalidPdf,
+      extractedText: "추출된 본문",
+      filename: "invalid.pdf",
+      inputFormat: "PDF_TEXT",
+      extractionMethod: "BROWSER_PDFJS",
+    })).rejects.toThrow("PDF_SIGNATURE_INVALID");
+
+    expect(env.r2Puts).toHaveLength(0);
+  });
+
+  it("keeps a valid PDF source version and original metadata in R2", async () => {
+    const env = createCreateSourceEnv();
+    const original = new TextEncoder().encode("%PDF-1.7\nvalid test pdf bytes").buffer;
+
+    await createSource(env, {
+      kind: "PAPER_ACADEMIC",
+      title: "Valid PDF",
+      origin: "upload:pdf",
+      original,
+      extractedText: "추출된 PDF 본문입니다. 충분히 읽을 수 있는 원문입니다.",
+      filename: "valid.pdf",
+      inputFormat: "PDF_TEXT",
+      extractionMethod: "BROWSER_PDFJS",
+      contentType: "application/pdf",
+    });
+
+    const finalOriginal = env.r2Puts.find((put) => put.key.startsWith("originals/") && !put.key.includes("/_intake/"));
+    expect(finalOriginal?.key).toMatch(/^originals\/.+\/v1-valid\.pdf$/);
+    expect(finalOriginal?.options?.customMetadata).toEqual(expect.objectContaining({
+      mimeType: "application/pdf",
+      filename: "valid.pdf",
+      sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    }));
+    expect(env.sourceVersionInsert?.params[2]).toBe(finalOriginal?.key);
+  });
+
   it("exports an acquisition version writer", async () => {
     const mod = await import("../../../worker/src/ingestion/versioning");
 

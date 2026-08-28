@@ -14,6 +14,7 @@ afterEach(() => {
   vi.doUnmock("../../../worker/src/analysis/deepAnalyze");
   vi.doUnmock("../../../worker/src/ingestion/extractUrl");
   vi.doUnmock("../../../worker/src/ingestion/versioning");
+  vi.doUnmock("../../../worker/src/ingestion/store");
   vi.resetModules();
 });
 
@@ -699,6 +700,121 @@ describe("visual extraction workflow", () => {
 });
 
 describe("inbox retry separation", () => {
+  it("preserves the uploaded PDF original and explicit PDF provenance", async () => {
+    const createSource = vi.fn().mockResolvedValue({
+      sourceId: "source-pdf",
+      duplicateOf: null,
+      title: "paper",
+      qualityStatus: "READY",
+    });
+    const analyzeSource = vi.fn().mockResolvedValue({ status: "analyzed" });
+    vi.doMock("../../../worker/src/ingestion/store", () => ({ createSource }));
+    vi.doMock("../../../worker/src/analysis/analyze", () => ({ analyzeSource }));
+    const env = { DB: {} as D1Database } as Env;
+    const { default: inbox } = await import("../../../worker/src/routes/inbox");
+    const originalBase64 = btoa("%PDF-1.7\nvalid test pdf bytes");
+
+    const response = await inbox.request("/file", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        filename: "paper.pdf",
+        originalBase64,
+        text: "추출된 PDF 본문입니다. 충분히 읽을 수 있는 원문입니다.",
+        contentType: "application/pdf",
+      }),
+    }, env);
+
+    expect(response.status).toBe(200);
+    expect(createSource).toHaveBeenCalledWith(env, expect.objectContaining({
+      origin: "upload:pdf",
+      inputFormat: "PDF_TEXT",
+      extractionMethod: "BROWSER_PDFJS",
+      contentType: "application/pdf",
+      original: expect.any(ArrayBuffer),
+    }));
+    expect(createSource.mock.calls[0]?.[1]).not.toHaveProperty("storedOriginal", null);
+    expect(analyzeSource).toHaveBeenCalledWith(env, "source-pdf");
+  });
+
+  it("returns a stable client error when the uploaded PDF signature is invalid", async () => {
+    const createSource = vi.fn().mockRejectedValue(new Error("PDF_SIGNATURE_INVALID"));
+    vi.doMock("../../../worker/src/ingestion/store", () => ({ createSource }));
+    vi.doMock("../../../worker/src/analysis/analyze", () => ({ analyzeSource: vi.fn() }));
+    const { default: inbox } = await import("../../../worker/src/routes/inbox");
+
+    const response = await inbox.request("/file", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "bad.pdf", originalBase64: btoa("not pdf") }),
+    }, { DB: {} as D1Database } as Env);
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "PDF_SIGNATURE_INVALID" });
+  });
+
+  it("recovers a missing PDF original as a new active version", async () => {
+    const appendAcquisitionVersion = vi.fn().mockResolvedValue({ versionId: "version-recovered", version: 2, qualityStatus: "READY" });
+    const getActiveVersion = vi.fn().mockResolvedValue({ id: "version-old", version_origin: "INITIAL_INGEST" });
+    const activateVersion = vi.fn().mockResolvedValue(undefined);
+    const analyzeSource = vi.fn().mockResolvedValue({ status: "analyzed" });
+    vi.doMock("../../../worker/src/ingestion/versioning", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../../worker/src/ingestion/versioning")>(),
+      appendAcquisitionVersion,
+      getActiveVersion,
+      activateVersion,
+    }));
+    vi.doMock("../../../worker/src/analysis/analyze", () => ({ analyzeSource }));
+    const put = vi.fn().mockResolvedValue(undefined);
+    const env = {
+      DB: {
+        prepare(sql: string) {
+          return {
+            bind() { return this; },
+            async first() {
+              if (sql.includes("SELECT id, title, input_format, canonical_url, r2_key")) {
+                return { id: "source-pdf", title: "복구할 PDF", input_format: "PDF_TEXT", canonical_url: null, r2_key: null };
+              }
+              return null;
+            },
+          };
+        },
+      } as D1Database,
+      ORIGINALS: { put },
+    } as Env;
+    const { default: inbox } = await import("../../../worker/src/routes/inbox");
+    const originalBase64 = btoa("%PDF-1.7\nrecovered pdf bytes");
+    const extractedText = "복구된 PDF 본문입니다. ".repeat(80);
+
+    const response = await inbox.request("/source-pdf/pdf-original", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: "recovered.pdf", originalBase64, extractedText, contentType: "application/pdf" }),
+    }, env);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ ok: true, sourceId: "source-pdf", versionId: "version-recovered", version: 2 });
+    expect(put).toHaveBeenCalledWith(
+      expect.stringMatching(/^originals\/source-pdf\/acq-/),
+      expect.any(ArrayBuffer),
+      expect.objectContaining({
+        httpMetadata: { contentType: "application/pdf" },
+        customMetadata: expect.objectContaining({ sourceId: "source-pdf", mimeType: "application/pdf", filename: "recovered.pdf", sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }),
+      }),
+    );
+    expect(appendAcquisitionVersion).toHaveBeenCalledWith(env.DB, expect.objectContaining({
+      sourceId: "source-pdf",
+      versionId: expect.any(String),
+      inputFormat: "PDF_TEXT",
+      extractionMethod: "BROWSER_PDFJS",
+      versionOrigin: "REEXTRACT",
+      parentVersionId: "version-old",
+      rawContentHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+    }));
+    expect(activateVersion).toHaveBeenCalledWith(env.DB, "source-pdf", "version-recovered", "READY");
+    expect(analyzeSource).toHaveBeenCalledWith(env, "source-pdf");
+  });
+
   it("reanalyzes the current active version for analyze=1 without remote fetch", async () => {
     const enqueueResearchJob = vi.fn();
     const analyzeSource = vi.fn().mockResolvedValue({ status: "analyzed", sourceId: "source-1" });

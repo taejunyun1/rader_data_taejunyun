@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { enqueueResearchJob } from "../jobs/enqueue";
+import { findVisualExtractionJobByRun } from "../jobs/store";
 import { ExtractionStore } from "../visual/extraction/store";
 import type { VisualExtractionRunSummary } from "@radar/shared";
 import type { InputFormat } from "@radar/shared/ingestion";
@@ -13,6 +14,7 @@ interface PdfSourceRow {
   source_id: string;
   input_format: InputFormat | null;
   active_version_id: string | null;
+  r2_key: string | null;
 }
 
 interface PdfOriginalRow extends PdfSourceRow {
@@ -71,8 +73,9 @@ async function loadPdfSourceVersion(db: D1Database, sourceId: string, versionId:
   const row = await db.prepare(
     `SELECT s.id AS source_id,
             s.input_format AS input_format,
-            s.active_version_id AS active_version_id
-     FROM sources s
+            s.active_version_id AS active_version_id,
+            v.r2_key AS r2_key
+     FROM sources s LEFT JOIN source_versions v ON v.id = s.active_version_id
      WHERE s.id = ? AND s.active_version_id = ?`
   ).bind(sourceId, versionId).first<PdfSourceRow>();
   if (!row || !isPdfFormat(row.input_format)) return null;
@@ -160,6 +163,8 @@ visualExtraction.post("/pdf/runs", async (c) => {
 
   const source = await loadPdfSourceVersion(c.env.DB, sourceId, versionId);
   if (!source) return c.json({ error: "pdf_active_version_not_found" }, 404);
+  if (!source.r2_key) return c.json({ error: "pdf_original_not_preserved" }, 409);
+  if (!(await c.env.ORIGINALS.head(source.r2_key))) return c.json({ error: "pdf_original_object_missing" }, 409);
 
   const run = await ExtractionStore.createOrResumeRun(c.env.DB, {
     parentSourceId: sourceId,
@@ -257,6 +262,16 @@ visualExtraction.post("/pdf/runs/:runId/finalize", async (c) => {
   if (!payload) return c.json({ error: "visual_extraction_run_not_found" }, 404);
   if (payload.checkpoint.uploadedPages.length === 0) return c.json({ queued: false, ...payload });
 
+  if (payload.checkpoint.remainingPages > 0) {
+    return c.json({ resumable: true, queued: false, ...payload });
+  }
+
+  const existingJob = await findVisualExtractionJobByRun(c.env.DB, runId);
+  if (existingJob) {
+    const active = existingJob.status === "QUEUED" || existingJob.status === "RUNNING";
+    return c.json({ queued: active, reused: true, job: existingJob, ...payload });
+  }
+
   await updateRunTotals(c.env.DB, runId, payload.checkpoint.totalPages, "QUEUED");
   const requestedBy = verifiedRequester(c);
   const enqueued = await enqueueResearchJob(
@@ -294,7 +309,7 @@ export async function loadReservoirPdfOriginal(db: D1Database, sourceId: string,
      FROM sources s LEFT JOIN source_versions v ON v.id = s.active_version_id
      WHERE s.id = ? AND s.active_version_id = ?`
   ).bind(sourceId, versionId).first<PdfOriginalRow>();
-  if (!row || !isPdfFormat(row.input_format) || !row.active_r2_key) return null;
+  if (!row || !isPdfFormat(row.input_format)) return null;
   return row;
 }
 

@@ -236,9 +236,11 @@ inbox.post("/file", async (c) => {
       title: filename.replace(/\.[^.]+$/, ""),
       origin: isPdf ? "upload:pdf" : isTextFile ? "upload:md" : "upload:file",
       original,
-      storedOriginal: isPdf ? null : undefined,
       extractedText: text,
       filename,
+      inputFormat: isPdf ? (isScannedPdf ? "PDF_SCAN" : "PDF_TEXT") : undefined,
+      extractionMethod: isPdf ? "BROWSER_PDFJS" : undefined,
+      contentType: isPdf ? "application/pdf" : body?.contentType,
       metadata: {
         contentType: body?.contentType,
         pdfPages: textStr ? (textStr.match(/\[page \d+\]/g) ?? []).length : undefined,
@@ -249,8 +251,77 @@ inbox.post("/file", async (c) => {
     if (!result.duplicateOf && result.qualityStatus === "READY") await analyzeSource(c.env, result.sourceId);
     return c.json({ ...result, scannedPdf: isScannedPdf || undefined });
   } catch (err) {
-    console.error(JSON.stringify({ level: "error", scope: "inbox:file", message: (err as Error).message }));
+    const message = (err as Error).message;
+    if (message === "PDF_SIGNATURE_INVALID") return c.json({ error: message }, 400);
+    console.error(JSON.stringify({ level: "error", scope: "inbox:file", message }));
     return c.json({ error: "create_failed" }, 500);
+  }
+});
+
+inbox.post("/:sourceId/pdf-original", async (c) => {
+  const sourceId = c.req.param("sourceId");
+  const body = await readJson<{ filename?: string; originalBase64?: string; extractedText?: string; previewBase64?: string; contentType?: string }>(c, 40_000_000);
+  const filename = body?.filename?.trim();
+  const originalBase64 = body?.originalBase64?.trim();
+  if (!filename || !originalBase64) return c.json({ error: "pdf_original_required" }, 400);
+  if (!/\.pdf$/i.test(filename)) return c.json({ error: "pdf_filename_required" }, 400);
+  if (originalBase64.length > 39_000_000) return c.json({ error: "file_too_large" }, 400);
+
+  const source = await loadSourceForVersion(c.env.DB, sourceId);
+  if (!source) return c.json({ error: "not_found" }, 404);
+  if (!source.input_format?.startsWith("PDF")) return c.json({ error: "not_pdf_source" }, 409);
+
+  let original: ArrayBuffer;
+  try {
+    original = b64ToBuffer(originalBase64);
+  } catch {
+    return c.json({ error: "invalid_base64" }, 400);
+  }
+  if (!hasPdfSignature(original)) return c.json({ error: "PDF_SIGNATURE_INVALID" }, 400);
+
+  const extractedText = body?.extractedText?.trim() ?? "";
+  if (extractedText.length > 1_000_000) return c.json({ error: "text_too_large" }, 400);
+  const isScannedPdf = extractedText.replace(/\[page \d+\]|\s/g, "").length < 20;
+  const inputFormat: InputFormat = isScannedPdf ? "PDF_SCAN" : "PDF_TEXT";
+  const acquisition = classifyAcquiredText(extractedText, inputFormat, "BROWSER_PDFJS");
+  const active = await getActiveVersion(c.env.DB, sourceId);
+  const versionId = uuid();
+  const rawContentHash = await sha256Hex(original);
+  const r2Key = buildAcquisitionKey(sourceId, versionId, source.title);
+
+  try {
+    await c.env.ORIGINALS.put(r2Key, original, {
+      httpMetadata: { contentType: body?.contentType?.trim() || "application/pdf" },
+      customMetadata: {
+        sourceId,
+        versionId,
+        origin: "PDF_ORIGINAL_RECOVERY",
+        sha256: rawContentHash,
+        mimeType: "application/pdf",
+        filename: filename.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 120),
+      },
+    });
+    const result = await appendAcquisitionVersion(c.env.DB, {
+      versionId,
+      sourceId,
+      r2Key,
+      extractedText,
+      inputFormat,
+      textScope: acquisition.textScope,
+      extractionMethod: "BROWSER_PDFJS",
+      contentType: "application/pdf",
+      versionOrigin: "REEXTRACT",
+      parentVersionId: active?.id ?? null,
+      rawContentHash,
+      extractionError: acquisition.textScope === "EMPTY" ? "pdf_text_empty" : null,
+    });
+    await activateVersion(c.env.DB, sourceId, result.versionId, result.qualityStatus);
+    if (result.qualityStatus === "READY") await analyzeSource(c.env, sourceId);
+    return c.json({ ok: true, sourceId, versionId: result.versionId, version: result.version, status: "ACTIVE", qualityStatus: result.qualityStatus });
+  } catch (error) {
+    try { await c.env.ORIGINALS.delete(r2Key); } catch { /* best effort orphan cleanup */ }
+    const message = (error as Error).message.slice(0, 200);
+    return c.json({ error: message || "pdf_original_recovery_failed" }, 500);
   }
 });
 
@@ -684,6 +755,10 @@ function b64ToBuffer(b64: string): ArrayBuffer {
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   return bytes.buffer;
+}
+
+function hasPdfSignature(value: ArrayBuffer): boolean {
+  return new TextDecoder().decode(value.slice(0, 1024)).startsWith("%PDF-");
 }
 
 export default inbox;

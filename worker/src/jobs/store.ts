@@ -64,6 +64,19 @@ export async function findActiveJobByDedupeKey(db: D1Database, dedupeKey: string
   return row ? mapJob(row) : null;
 }
 
+export async function findVisualExtractionJobByRun(db: D1Database, extractionRunId: string): Promise<ResearchJob | null> {
+  const row = await db.prepare(
+    `${SELECT}
+     WHERE kind = 'VISUAL_EXTRACTION'
+       AND json_extract(input_json, '$.extractionRunId') = ?
+       AND status IN ('QUEUED', 'RUNNING', 'SUCCEEDED', 'BLOCKED')
+       AND dismissed_at IS NULL
+     ORDER BY created_at DESC
+     LIMIT 1`
+  ).bind(extractionRunId).first<JobRow>();
+  return row ? mapJob(row) : null;
+}
+
 export async function getResearchJob(db: D1Database, id: string): Promise<ResearchJob | null> {
   const row = await db.prepare(`${SELECT} WHERE id = ?`).bind(id).first<JobRow>();
   return row ? mapJob(row) : null;

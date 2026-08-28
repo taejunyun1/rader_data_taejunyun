@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import reservoir from "../../../worker/src/routes/reservoir";
+import type { PdfVisualExtractionCapability } from "@radar/shared";
 
 interface AcquisitionRow {
   acquisitionTextScope: string | null;
@@ -7,12 +8,13 @@ interface AcquisitionRow {
   acquisitionQualityStatus: string | null;
   acquisitionCharCount: number | null;
   acquisitionError: string | null;
+  acquisitionOriginalR2Key?: string | null;
   normalizedText: string | null;
   extractedText: string | null;
 }
 
 function detailDb(acquisition: AcquisitionRow): D1Database {
-  const { normalizedText, extractedText, ...acquisitionColumns } = acquisition;
+  const { normalizedText, extractedText, acquisitionOriginalR2Key, ...acquisitionColumns } = acquisition;
   const source = {
     id: "source-1",
     kind: "WEB",
@@ -29,6 +31,9 @@ function detailDb(acquisition: AcquisitionRow): D1Database {
     r2Key: null,
     topics: "[]",
     metadata: "{}",
+    inputFormat: "PDF_TEXT",
+    activeVersionId: "version-active",
+    originalR2Key: acquisitionOriginalR2Key ?? null,
     createdAt: "2026-08-24T00:00:00.000Z",
     updatedAt: "2026-08-24T00:00:00.000Z",
     markedForNextResearch: 0,
@@ -81,6 +86,74 @@ function originalTextDb(text: { normalized: string | null; extracted: string | n
 }
 
 describe("Reservoir acquisition detail", () => {
+  it("distinguishes a missing PDF key from a missing PDF object", async () => {
+    const missingKeyResponse = await reservoir.request("/source-1/original?version=version-active", undefined, {
+      DB: {
+        prepare() {
+          return { bind() { return this; }, async first() { return { source_id: "source-1", input_format: "PDF_TEXT", active_version_id: "version-active", active_r2_key: null, title: "자료" }; } };
+        },
+      },
+      ORIGINALS: { get: async () => null },
+    } as Env);
+    expect(missingKeyResponse.status).toBe(404);
+    await expect(missingKeyResponse.json()).resolves.toEqual({ error: "pdf_original_not_preserved" });
+
+    const missingObjectResponse = await reservoir.request("/source-1/original?version=version-active", undefined, {
+      DB: {
+        prepare() {
+          return { bind() { return this; }, async first() { return { source_id: "source-1", input_format: "PDF_TEXT", active_version_id: "version-active", active_r2_key: "originals/source-1/v1.pdf", title: "자료" }; } };
+        },
+      },
+      ORIGINALS: { get: async () => null },
+    } as Env);
+    expect(missingObjectResponse.status).toBe(404);
+    await expect(missingObjectResponse.json()).resolves.toEqual({ error: "pdf_original_object_missing" });
+  });
+
+  it("blocks visual extraction when the active PDF has no preserved original", async () => {
+    const response = await reservoir.request("/source-1", undefined, {
+      DB: detailDb({
+        acquisitionTextScope: "FULLTEXT",
+        acquisitionExtractionMethod: "BROWSER_PDFJS",
+        acquisitionQualityStatus: "READY",
+        acquisitionCharCount: 33_838,
+        acquisitionError: null,
+        acquisitionOriginalR2Key: null,
+        normalizedText: "정제된 원문",
+        extractedText: "추출 원문",
+      }),
+    } as Env);
+
+    const body = await response.json() as Record<string, unknown>;
+    expect(body.visualExtractionCapability).toEqual({
+      state: "ORIGINAL_MISSING",
+      canStart: false,
+      sourceId: "source-1",
+      sourceVersionId: "version-active",
+      originalUrl: null,
+      reasonCode: "pdf_original_not_preserved",
+    });
+  });
+
+  it("reports a missing R2 object before the user starts PDF extraction", async () => {
+    const response = await reservoir.request("/source-1", undefined, {
+      DB: detailDb({
+        acquisitionTextScope: "FULLTEXT",
+        acquisitionExtractionMethod: "BROWSER_PDFJS",
+        acquisitionQualityStatus: "READY",
+        acquisitionCharCount: 33_838,
+        acquisitionOriginalR2Key: "originals/source-1/v1.pdf",
+        normalizedText: "정제된 원문",
+        extractedText: "추출 원문",
+      }),
+      ORIGINALS: { head: async () => null },
+    } as Env);
+
+    const body = await response.json() as { visualExtractionCapability: PdfVisualExtractionCapability };
+    expect(body.visualExtractionCapability.state).toBe("ORIGINAL_OBJECT_MISSING");
+    expect(body.visualExtractionCapability.canStart).toBe(false);
+  });
+
   it("returns stable active full-text provenance without exposing the text in detail JSON", async () => {
     const response = await reservoir.request("/source-1", undefined, {
       DB: detailDb({

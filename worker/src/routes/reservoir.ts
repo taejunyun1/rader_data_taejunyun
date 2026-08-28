@@ -8,6 +8,7 @@ import { listVisualAssets } from "../visual/store";
 import { loadReservoirPdfOriginal } from "./visualExtraction";
 import { verifiedRequester } from "../lib/httpErrors";
 import { readJson } from "../lib/requestBody";
+import type { PdfVisualExtractionCapability } from "@radar/shared";
 import {
   getReservoirRefreshRun,
   listDuplicateCandidates,
@@ -92,6 +93,33 @@ function sourceAcquisitionView(sourceId: string, row: AcquisitionColumns) {
     canDeepAnalyze: readiness.ok,
     originalTextUrl: hasNormalizedText ? `/api/reservoir/${sourceId}/original-text` : null,
     ...(row.acquisitionError ? { acquisitionError: row.acquisitionError } : {}),
+  };
+}
+
+async function pdfVisualExtractionCapability(sourceId: string, source: Record<string, unknown>, originals?: R2Bucket): Promise<PdfVisualExtractionCapability> {
+  const inputFormat = source.inputFormat === "PDF_TEXT" || source.inputFormat === "PDF_SCAN" ? source.inputFormat : null;
+  const sourceVersionId = typeof source.activeVersionId === "string" && source.activeVersionId.trim()
+    ? source.activeVersionId
+    : null;
+  const r2Key = typeof source.originalR2Key === "string" && source.originalR2Key.trim()
+    ? source.originalR2Key
+    : null;
+  if (!inputFormat || !sourceVersionId) {
+    return { state: "UNSUPPORTED", canStart: false, sourceId, sourceVersionId, originalUrl: null, reasonCode: "pdf_visual_source_unsupported" };
+  }
+  if (!r2Key) {
+    return { state: "ORIGINAL_MISSING", canStart: false, sourceId, sourceVersionId, originalUrl: null, reasonCode: "pdf_original_not_preserved" };
+  }
+  if (originals && !(await originals.head(r2Key))) {
+    return { state: "ORIGINAL_OBJECT_MISSING", canStart: false, sourceId, sourceVersionId, originalUrl: null, reasonCode: "pdf_original_object_missing" };
+  }
+  return {
+    state: "READY",
+    canStart: true,
+    sourceId,
+    sourceVersionId,
+    originalUrl: `/api/reservoir/${sourceId}/original?version=${encodeURIComponent(sourceVersionId)}`,
+    reasonCode: null,
   };
 }
 
@@ -381,8 +409,9 @@ reservoir.get("/:sourceId/original", async (c) => {
   if (!versionId) return c.json({ error: "version_required" }, 400);
   const row = await loadReservoirPdfOriginal(c.env.DB, c.req.param("sourceId"), versionId);
   if (!row) return c.json({ error: "original_not_available" }, 404);
+  if (!row.active_r2_key) return c.json({ error: "pdf_original_not_preserved" }, 404);
   const object = await c.env.ORIGINALS.get(row.active_r2_key!);
-  if (!object?.body) return c.json({ error: "original_not_available" }, 404);
+  if (!object?.body) return c.json({ error: "pdf_original_object_missing" }, 404);
   return new Response(object.body, {
     headers: {
       "Content-Type": "application/pdf",
@@ -409,6 +438,7 @@ reservoir.get("/:sourceId", async (c) => {
               sources.quality_status AS acquisitionQualityStatus,
               active.char_count AS acquisitionCharCount,
               active.extraction_error AS acquisitionError,
+              active.r2_key AS originalR2Key,
               CASE WHEN LENGTH(TRIM(COALESCE(active.normalized_text, ''))) > 0 THEN 1 ELSE 0 END AS acquisitionHasNormalizedText,
               CASE WHEN (SELECT us.action FROM user_signals us
                          WHERE us.source_id = sources.id AND us.action IN ('keep','develop','watch','ignore') AND us.created_at > ?
@@ -430,6 +460,7 @@ reservoir.get("/:sourceId", async (c) => {
     acquisitionCharCount,
     acquisitionError,
     acquisitionHasNormalizedText,
+    originalR2Key,
     ...source
   } = src;
   const acquisition = sourceAcquisitionView(id, {
@@ -440,6 +471,7 @@ reservoir.get("/:sourceId", async (c) => {
     acquisitionError,
     acquisitionHasNormalizedText,
   });
+  const visualExtractionCapability = await pdfVisualExtractionCapability(id, { ...source, originalR2Key }, c.env.ORIGINALS);
   const pdfExtraction = await activePdfExtraction(c.env.DB, typeof source.activeVersionId === "string" ? source.activeVersionId : null);
   const visualExtractionRun = await latestVisualExtractionRun(
     c.env.DB,
@@ -495,6 +527,7 @@ reservoir.get("/:sourceId", async (c) => {
   return c.json({
     source,
     acquisition,
+    visualExtractionCapability,
     pdfExtraction,
     visualExtractionRun,
     analysis: analysisPayload,
