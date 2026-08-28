@@ -93,4 +93,30 @@ describe("reservoir refresh routes", () => {
       "0000c-separate-right",
     ]));
   });
+
+  it("manually merges a pending review candidate without deleting either source", async () => {
+    await insertSource({ id: "0000d-merge-left", title: "Manual review title" });
+    await insertSource({ id: "0000d-merge-right", title: "Manual review title" });
+    await post("/api/reservoir/refresh", { mode: "PREVIEW" });
+    const candidate = await env.DB.prepare(
+      `SELECT id FROM source_duplicate_candidates
+       WHERE left_source_id = ? AND right_source_id = ?`,
+    ).bind("0000d-merge-left", "0000d-merge-right").first<{ id: string }>();
+
+    const response = await post(`/api/reservoir/duplicates/${candidate!.id}`, { action: "MERGE" });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ id: candidate!.id, status: "MERGED" });
+    expect(await activeMergeCount("0000d-merge-left", "0000d-merge-right")).toBe(1);
+    const group = await env.DB.prepare(
+      `SELECT mode FROM source_merge_groups g
+       JOIN source_merge_members m ON m.group_id = g.id
+       WHERE m.source_id = ? AND g.reversed_at IS NULL`,
+    ).bind("0000d-merge-left").first<{ mode: string }>();
+    expect(group?.mode).toBe("MANUAL");
+    const retained = await env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM sources WHERE id IN (?, ?)",
+    ).bind("0000d-merge-left", "0000d-merge-right").first<{ count: number }>();
+    expect(Number(retained?.count ?? 0)).toBe(2);
+  });
 });

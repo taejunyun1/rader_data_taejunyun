@@ -7,6 +7,11 @@ export type DuplicateCandidateStatus = "PENDING" | "MERGED" | "SEPARATE";
 export type DuplicateReviewAction = "MERGE" | "SEPARATE";
 
 const REFRESH_BATCH_SIZE = 50;
+const MAX_FINGERPRINTS_PER_STATEMENT = 20;
+const MAX_CANDIDATES_PER_STATEMENT = 8;
+const MAX_STATEMENTS_PER_BATCH = 50;
+const MAX_CANDIDATE_LOOKUP_PAIRS = 40;
+const MAX_PERSISTED_FINGERPRINT_PAIRS = 200;
 
 interface RefreshSource extends SourceMatchInput {
   id: string;
@@ -21,6 +26,7 @@ export interface ReservoirRefreshRun {
   mode: ReservoirRefreshMode;
   status: "PENDING" | "RUNNING" | "COMPLETED" | "FAILED";
   cursorSourceId: string | null;
+  hasMore: boolean;
   scannedCount: number;
   autoMergeCount: number;
   reviewCount: number;
@@ -57,7 +63,15 @@ interface AssessedPair {
   left: RefreshSource;
   right: RefreshSource;
   assessment: DuplicateAssessment;
+}
+
+interface StoredAssessedPair extends AssessedPair {
   candidate: StoredCandidate;
+}
+
+interface SourceBatch {
+  sources: RefreshSource[];
+  continuationCursor: string | null;
 }
 
 function refreshRun(row: Record<string, unknown>): ReservoirRefreshRun {
@@ -66,6 +80,7 @@ function refreshRun(row: Record<string, unknown>): ReservoirRefreshRun {
     mode: row.mode as ReservoirRefreshMode,
     status: row.status as ReservoirRefreshRun["status"],
     cursorSourceId: typeof row.cursor_source_id === "string" ? row.cursor_source_id : null,
+    hasMore: typeof row.cursor_source_id === "string",
     scannedCount: Number(row.scanned_count ?? 0),
     autoMergeCount: Number(row.auto_merge_count ?? 0),
     reviewCount: Number(row.review_count ?? 0),
@@ -84,7 +99,18 @@ export async function getReservoirRefreshRun(db: D1Database, runId: string): Pro
   return row ? refreshRun(row) : null;
 }
 
-async function scanSources(db: D1Database): Promise<RefreshSource[]> {
+async function latestContinuationCursor(db: D1Database, mode: ReservoirRefreshMode): Promise<string | null> {
+  const row = await db.prepare(
+    `SELECT cursor_source_id
+     FROM reservoir_refresh_runs
+     WHERE mode = ? AND status = 'COMPLETED'
+     ORDER BY rowid DESC
+     LIMIT 1`,
+  ).bind(mode).first<{ cursor_source_id: string | null }>();
+  return row?.cursor_source_id ?? null;
+}
+
+async function scanSources(db: D1Database, afterSourceId: string | null): Promise<SourceBatch> {
   const rows = await db.prepare(
     `SELECT s.id, s.title, s.authors, s.year, s.canonical_url AS canonicalUrl, s.doi, s.origin,
             s.quality_status AS qualityStatus, s.created_at AS createdAt,
@@ -98,10 +124,16 @@ async function scanSources(db: D1Database): Promise<RefreshSource[]> {
        JOIN source_merge_groups g ON g.id = m.group_id
        WHERE m.source_id = s.id AND g.reversed_at IS NULL
      )
+       AND (? IS NULL OR s.id > ?)
      ORDER BY s.id ASC
      LIMIT ?`,
-  ).bind(REFRESH_BATCH_SIZE).all<RefreshSource>();
-  return rows.results ?? [];
+  ).bind(afterSourceId, afterSourceId, REFRESH_BATCH_SIZE + 1).all<RefreshSource>();
+  const available = rows.results ?? [];
+  const sources = available.slice(0, REFRESH_BATCH_SIZE);
+  return {
+    sources,
+    continuationCursor: available.length > REFRESH_BATCH_SIZE ? sources.at(-1)?.id ?? null : null,
+  };
 }
 
 function fingerprintValues(source: RefreshSource): Array<{ kind: string; value: string }> {
@@ -115,27 +147,149 @@ function fingerprintValues(source: RefreshSource): Array<{ kind: string; value: 
   return values.flatMap(({ kind, value }) => value?.trim() ? [{ kind, value: value.trim() }] : []);
 }
 
-async function storeFingerprints(db: D1Database, sources: RefreshSource[], now: string): Promise<void> {
-  const statements = sources.flatMap((source) => fingerprintValues(source).map(({ kind, value }) => db.prepare(
-    `INSERT OR IGNORE INTO source_fingerprints (source_id, kind, value, created_at)
-     VALUES (?, ?, ?, ?)`,
-  ).bind(source.id, kind, value, now)));
-  if (statements.length) await db.batch(statements);
+function chunks<T>(items: T[], size: number): T[][] {
+  const result: T[][] = [];
+  for (let index = 0; index < items.length; index += size) result.push(items.slice(index, index + size));
+  return result;
 }
 
-async function storeCandidate(
+async function executeBatched(db: D1Database, statements: D1PreparedStatement[]): Promise<void> {
+  for (const group of chunks(statements, MAX_STATEMENTS_PER_BATCH)) await db.batch(group);
+}
+
+async function storeFingerprints(db: D1Database, sources: RefreshSource[], now: string): Promise<void> {
+  const fingerprints = sources.flatMap((source) => fingerprintValues(source).map(({ kind, value }) => ({
+    sourceId: source.id,
+    kind,
+    value,
+  })));
+  const statements = chunks(fingerprints, MAX_FINGERPRINTS_PER_STATEMENT).map((group) => db.prepare(
+    `INSERT OR IGNORE INTO source_fingerprints (source_id, kind, value, created_at)
+     VALUES ${group.map(() => "(?, ?, ?, ?)").join(", ")}`,
+  ).bind(...group.flatMap((fingerprint) => [fingerprint.sourceId, fingerprint.kind, fingerprint.value, now])));
+  if (statements.length) await executeBatched(db, statements);
+}
+
+function normalizedTitle(value: string | null | undefined): string | null {
+  const normalized = value
+    ?.normalize("NFKC")
+    .toLocaleLowerCase("en-US")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+  return normalized || null;
+}
+
+function titleBigrams(value: string): string[] {
+  if (value.length < 2) return [value];
+  const result = new Set<string>();
+  for (let index = 0; index < value.length - 1; index += 1) result.add(value.slice(index, index + 2));
+  return [...result];
+}
+
+function blockedSourcePairs(sources: RefreshSource[]): Array<[RefreshSource, RefreshSource]> {
+  const blocks = new Map<string, RefreshSource[]>();
+  const addBlock = (key: string, source: RefreshSource) => blocks.set(key, [...(blocks.get(key) ?? []), source]);
+  for (const source of sources) {
+    for (const fingerprint of fingerprintValues(source)) {
+      addBlock(`fingerprint:${fingerprint.kind}:${fingerprint.value}`, source);
+    }
+    const title = normalizedTitle(source.title);
+    if (title) {
+      for (const bigram of titleBigrams(title)) addBlock(`title:${bigram}`, source);
+    }
+  }
+
+  const pairKeys = new Set<string>();
+  const sourcesById = new Map(sources.map((source) => [source.id, source]));
+  for (const members of blocks.values()) {
+    for (let leftIndex = 0; leftIndex < members.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < members.length; rightIndex += 1) {
+        const ids = [members[leftIndex]!.id, members[rightIndex]!.id].sort();
+        if (ids[0] !== ids[1]) pairKeys.add(`${ids[0]}\u0000${ids[1]}`);
+      }
+    }
+  }
+  return [...pairKeys].sort().map((key) => {
+    const [leftId, rightId] = key.split("\u0000");
+    return [sourcesById.get(leftId!)!, sourcesById.get(rightId!)!];
+  });
+}
+
+async function persistedFingerprintPairs(
   db: D1Database,
-  left: RefreshSource,
-  right: RefreshSource,
-  assessment: DuplicateAssessment,
-  now: string,
-): Promise<StoredCandidate> {
-  const initialStatus: DuplicateCandidateStatus = assessment.decision === "SEPARATE" ? "SEPARATE" : "PENDING";
-  const initialResolvedAt = initialStatus === "SEPARATE" ? now : null;
-  const row = await db.prepare(
+  sources: RefreshSource[],
+): Promise<Array<[RefreshSource, RefreshSource]>> {
+  if (!sources.length) return [];
+  const placeholders = sources.map(() => "?").join(", ");
+  const rows = await db.prepare(
+    `SELECT DISTINCT current_fp.source_id AS currentSourceId,
+            matched_source.id, matched_source.title, matched_source.authors, matched_source.year,
+            matched_source.canonical_url AS canonicalUrl, matched_source.doi, matched_source.origin,
+            matched_source.quality_status AS qualityStatus, matched_source.created_at AS createdAt,
+            matched_version.raw_content_hash AS rawContentHash,
+            matched_version.normalized_content_hash AS normalizedTextHash,
+            matched_version.normalized_text AS normalizedText, matched_version.text_scope AS textScope
+     FROM source_fingerprints current_fp
+     JOIN source_fingerprints matched_fp
+       ON matched_fp.kind = current_fp.kind AND matched_fp.value = current_fp.value
+      AND matched_fp.source_id <> current_fp.source_id
+     JOIN sources matched_source ON matched_source.id = matched_fp.source_id
+     LEFT JOIN source_versions matched_version ON matched_version.id = matched_source.active_version_id
+     WHERE current_fp.source_id IN (${placeholders})
+       AND NOT EXISTS (
+         SELECT 1 FROM source_merge_members member
+         JOIN source_merge_groups merge_group ON merge_group.id = member.group_id
+         WHERE member.source_id = matched_source.id AND merge_group.reversed_at IS NULL
+       )
+     ORDER BY current_fp.source_id ASC, matched_source.id ASC
+     LIMIT ?`,
+  ).bind(...sources.map((source) => source.id), MAX_PERSISTED_FINGERPRINT_PAIRS).all<RefreshSource & {
+    currentSourceId: string;
+  }>();
+  const currentById = new Map(sources.map((source) => [source.id, source]));
+  return (rows.results ?? []).flatMap((row) => {
+    const current = currentById.get(row.currentSourceId);
+    if (!current) return [];
+    const { currentSourceId: _currentSourceId, ...matched } = row;
+    return current.id < matched.id ? [[current, matched]] : [[matched, current]];
+  });
+}
+
+function uniqueSourcePairs(
+  ...groups: Array<Array<[RefreshSource, RefreshSource]>>
+): Array<[RefreshSource, RefreshSource]> {
+  const result = new Map<string, [RefreshSource, RefreshSource]>();
+  for (const [left, right] of groups.flat()) result.set(`${left.id}\u0000${right.id}`, [left, right]);
+  return [...result.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([, pair]) => pair);
+}
+
+async function loadStoredCandidates(db: D1Database, pairs: AssessedPair[]): Promise<Map<string, StoredCandidate>> {
+  const result = new Map<string, StoredCandidate>();
+  for (const group of chunks(pairs, MAX_CANDIDATE_LOOKUP_PAIRS)) {
+    const rows = await db.prepare(
+      `SELECT id, left_source_id, right_source_id, status
+       FROM source_duplicate_candidates
+       WHERE ${group.map(() => "(left_source_id = ? AND right_source_id = ?)").join(" OR ")}`,
+    ).bind(...group.flatMap((pair) => [pair.left.id, pair.right.id])).all<{
+      id: string;
+      left_source_id: string;
+      right_source_id: string;
+      status: DuplicateCandidateStatus;
+    }>();
+    for (const row of rows.results ?? []) {
+      result.set(`${row.left_source_id}\u0000${row.right_source_id}`, { id: row.id, status: row.status });
+    }
+  }
+  return result;
+}
+
+async function storeCandidates(db: D1Database, pairs: AssessedPair[], now: string): Promise<StoredAssessedPair[]> {
+  const candidates = pairs.filter((pair) => pair.assessment.decision !== "SEPARATE");
+  const statements = chunks(candidates, MAX_CANDIDATES_PER_STATEMENT).map((group) => db.prepare(
     `INSERT INTO source_duplicate_candidates
      (id, left_source_id, right_source_id, decision, score, reasons_json, status, created_at, resolved_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     VALUES ${group.map(() => "(?, ?, ?, ?, ?, ?, 'PENDING', ?, NULL)").join(", ")}
      ON CONFLICT(left_source_id, right_source_id) DO UPDATE SET
        decision = excluded.decision,
        score = excluded.score,
@@ -147,21 +301,23 @@ async function storeCandidate(
        resolved_at = CASE
          WHEN source_duplicate_candidates.status IN ('MERGED', 'SEPARATE') THEN source_duplicate_candidates.resolved_at
          ELSE excluded.resolved_at
-       END
-     RETURNING id, status`,
-  ).bind(
+       END`,
+  ).bind(...group.flatMap((pair) => [
     crypto.randomUUID(),
-    left.id,
-    right.id,
-    assessment.decision,
-    assessment.confidence,
-    JSON.stringify(assessment.reasons),
-    initialStatus,
+    pair.left.id,
+    pair.right.id,
+    pair.assessment.decision,
+    pair.assessment.confidence,
+    JSON.stringify(pair.assessment.reasons),
     now,
-    initialResolvedAt,
-  ).first<StoredCandidate>();
-  if (!row) throw new Error("duplicate_candidate_not_stored");
-  return row;
+  ])));
+  if (statements.length) await executeBatched(db, statements);
+  const stored = await loadStoredCandidates(db, candidates);
+  return candidates.map((pair) => {
+    const candidate = stored.get(`${pair.left.id}\u0000${pair.right.id}`);
+    if (!candidate) throw new Error("duplicate_candidate_not_stored");
+    return { ...pair, candidate };
+  });
 }
 
 class SourceComponents {
@@ -218,7 +374,7 @@ async function selectCanonicalSourceId(db: D1Database, sourceIds: string[]): Pro
   return row.id;
 }
 
-async function applyAutomaticMerges(db: D1Database, pairs: AssessedPair[], now: string): Promise<void> {
+async function applyAutomaticMerges(db: D1Database, pairs: StoredAssessedPair[], now: string): Promise<void> {
   const eligible = pairs.filter((pair) => pair.assessment.decision === "AUTO_MERGE" && pair.candidate.status === "PENDING");
   const components = new SourceComponents();
   for (const pair of eligible) components.union(pair.left.id, pair.right.id);
@@ -244,6 +400,7 @@ async function applyAutomaticMerges(db: D1Database, pairs: AssessedPair[], now: 
 export async function runReservoirRefresh(db: D1Database, mode: ReservoirRefreshMode): Promise<ReservoirRefreshRun> {
   const runId = crypto.randomUUID();
   const startedAt = new Date().toISOString();
+  const priorCursor = await latestContinuationCursor(db, mode);
   await db.prepare(
     `INSERT INTO reservoir_refresh_runs
      (id, mode, status, created_at, updated_at, started_at)
@@ -251,29 +408,28 @@ export async function runReservoirRefresh(db: D1Database, mode: ReservoirRefresh
   ).bind(runId, mode, startedAt, startedAt, startedAt).run();
 
   try {
-    const sources = await scanSources(db);
+    const { sources, continuationCursor } = await scanSources(db, priorCursor);
     await storeFingerprints(db, sources, startedAt);
-    const pairs: AssessedPair[] = [];
     const counts = { AUTO_MERGE: 0, REVIEW: 0, SEPARATE: 0 };
-    for (let leftIndex = 0; leftIndex < sources.length; leftIndex += 1) {
-      for (let rightIndex = leftIndex + 1; rightIndex < sources.length; rightIndex += 1) {
-        const left = sources[leftIndex]!;
-        const right = sources[rightIndex]!;
-        const assessment = evaluateDuplicate(left, right);
-        counts[assessment.decision] += 1;
-        const candidate = await storeCandidate(db, left, right, assessment, startedAt);
-        pairs.push({ left, right, assessment, candidate });
-      }
-    }
+    const candidatePairs = uniqueSourcePairs(
+      blockedSourcePairs(sources),
+      await persistedFingerprintPairs(db, sources),
+    );
+    const assessedPairs = candidatePairs.map(([left, right]) => {
+      const assessment = evaluateDuplicate(left, right);
+      counts[assessment.decision] += 1;
+      return { left, right, assessment };
+    });
+    const storedPairs = await storeCandidates(db, assessedPairs, startedAt);
     const completedAt = new Date().toISOString();
-    if (mode === "APPLY") await applyAutomaticMerges(db, pairs, completedAt);
+    if (mode === "APPLY") await applyAutomaticMerges(db, storedPairs, completedAt);
     await db.prepare(
       `UPDATE reservoir_refresh_runs
        SET status = 'COMPLETED', cursor_source_id = ?, scanned_count = ?, auto_merge_count = ?,
            review_count = ?, separate_count = ?, quality_issue_count = ?, updated_at = ?, completed_at = ?
        WHERE id = ?`,
     ).bind(
-      sources.at(-1)?.id ?? null,
+      continuationCursor,
       sources.length,
       counts.AUTO_MERGE,
       counts.REVIEW,
