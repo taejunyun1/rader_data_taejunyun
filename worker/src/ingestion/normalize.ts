@@ -27,6 +27,12 @@ export function normalizeUrl(raw: string): string | null {
   }
 }
 
+export function normalizeOriginIdentity(origin: string): string | null {
+  if (!origin.startsWith("obsidian:")) return null;
+  const path = origin.slice("obsidian:".length);
+  return `obsidian:${path.replace(/^\.worktrees\/[^/]+\//, "")}`;
+}
+
 export function normalizeDoi(raw: string): string {
   let d = raw.trim().toLowerCase();
   d = d.replace(/^https?:\/\/(dx\.)?doi\.org\//, "");

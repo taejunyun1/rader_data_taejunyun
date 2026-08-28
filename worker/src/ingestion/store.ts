@@ -95,6 +95,7 @@ export async function createSource(env: Env, input: CreateSourceInput): Promise<
       title: input.title,
       authors: input.authors ?? null,
       fileHash,
+      origin: input.origin,
     });
 
     if (dup) {
@@ -225,6 +226,7 @@ export async function createSource(env: Env, input: CreateSourceInput): Promise<
       title: input.title,
       authors: input.authors ?? null,
       fileHash,
+      origin: input.origin,
     });
     if (!winner || winner.sourceId === id) throw error;
     await deleteCreatedOriginals(env, r2Key, previewKey);

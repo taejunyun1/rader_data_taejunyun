@@ -1,4 +1,4 @@
-import { firstAuthor, normalizeDoi, normalizeUrl, titleNorm } from "./normalize";
+import { firstAuthor, normalizeDoi, normalizeOriginIdentity, normalizeUrl, titleNorm } from "./normalize";
 
 export interface DedupInput {
   doi?: string | null;
@@ -6,11 +6,13 @@ export interface DedupInput {
   title?: string | null;
   authors?: string | null;
   fileHash?: string | null;
+  origin?: string | null;
+  normalizedContentHash?: string | null;
 }
 
 export interface DedupMatch {
   sourceId: string;
-  field: "doi" | "canonical_url" | "title_author" | "file_hash";
+  field: "doi" | "canonical_url" | "title_author" | "file_hash" | "origin" | "normalized_content_hash";
 }
 
 async function findIdentity(db: D1Database, kind: string, value: string): Promise<DedupMatch | null> {
@@ -21,6 +23,21 @@ async function findIdentity(db: D1Database, kind: string, value: string): Promis
   if (!row?.source_id) return null;
   const field = kind === "DOI" ? "doi" : kind === "CANONICAL_URL" ? "canonical_url" : kind === "TITLE_AUTHOR" ? "title_author" : "file_hash";
   return { sourceId: row.source_id, field };
+}
+
+async function findOriginDuplicate(db: D1Database, origin: string): Promise<DedupMatch | null> {
+  const identity = normalizeOriginIdentity(origin);
+  if (!identity) return null;
+
+  const direct = await db.prepare("SELECT id FROM sources WHERE origin = ? LIMIT 1")
+    .bind(identity)
+    .first<{ id: string }>();
+  if (direct?.id) return { sourceId: direct.id, field: "origin" };
+
+  const rows = await db.prepare("SELECT id, origin FROM sources WHERE origin LIKE 'obsidian:%'")
+    .all<{ id: string; origin: string | null }>();
+  const match = rows.results.find((row) => row.origin && normalizeOriginIdentity(row.origin) === identity);
+  return match ? { sourceId: match.id, field: "origin" } : null;
 }
 
 export async function findDuplicate(db: D1Database, input: DedupInput): Promise<DedupMatch | null> {
@@ -41,6 +58,10 @@ export async function findDuplicate(db: D1Database, input: DedupInput): Promise<
       .bind(input.canonicalUrl)
       .first<{ id: string }>();
     if (row) return { sourceId: row.id, field: "canonical_url" };
+  }
+  if (input.origin) {
+    const origin = await findOriginDuplicate(db, input.origin);
+    if (origin) return origin;
   }
   const author = firstAuthor(input.authors);
   if (input.title && author) {
