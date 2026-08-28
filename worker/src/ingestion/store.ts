@@ -86,6 +86,7 @@ export async function createSource(env: Env, input: CreateSourceInput): Promise<
   // Stage the bytes before identity lookup. This keeps the reservoir's original-first
   // invariant even when the lookup resolves to an existing logical source.
   const stagedOriginalKey = await stageIncomingOriginal(env, input, fileHash);
+  let completed = false;
 
   try {
     const dup = await findDuplicate(env.DB, {
@@ -101,19 +102,23 @@ export async function createSource(env: Env, input: CreateSourceInput): Promise<
         "SELECT id, version FROM source_versions WHERE source_id = ? AND raw_content_hash = ? LIMIT 1",
       ).bind(dup.sourceId, fileHash).first<{ id: string; version: number }>();
       if (!existingVersion) {
-        return appendReimportedVersion(env, dup.sourceId, input, fileHash, stagedOriginalKey);
+        const result = await appendReimportedVersion(env, dup.sourceId, input, fileHash, stagedOriginalKey);
+        completed = true;
+        return result;
       }
       await recordReimport(env, dup.sourceId, dup.field, input.origin);
       const row = await env.DB.prepare("SELECT title, quality_status, active_version_id FROM sources WHERE id = ?")
         .bind(dup.sourceId)
         .first<{ title: string; quality_status: QualityStatus | null; active_version_id: string | null }>();
-      return {
+      const result = {
         sourceId: dup.sourceId,
         duplicateOf: dup.sourceId,
         title: row?.title ?? input.title,
         qualityStatus: row?.quality_status ?? undefined,
         activeVersionId: row?.active_version_id ?? undefined,
       };
+      completed = true;
+      return result;
     }
 
   const id = uuid();
@@ -212,9 +217,10 @@ export async function createSource(env: Env, input: CreateSourceInput): Promise<
     ...identityStatements(env.DB, id, input, fileHash, ts),
   ]);
 
+    completed = true;
     return { sourceId: id, duplicateOf: null, title: input.title, qualityStatus, activeVersionId: versionId };
   } finally {
-    await deleteStagedOriginal(env, stagedOriginalKey);
+    if (completed) await deleteStagedOriginal(env, stagedOriginalKey);
   }
 }
 
