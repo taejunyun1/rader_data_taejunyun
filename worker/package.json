@@ -10,8 +10,8 @@
     "cf:typegen": "wrangler types",
     "typecheck": "tsc --noEmit",
     "test": "vitest --config vitest.config.ts",
-    "test:run": "vitest run --config vitest.config.ts",
-    "test:coverage": "vitest run --config vitest.config.ts --coverage"
+    "test:run": "vitest run --config vitest.config.ts && vitest run --config vitest.route.config.ts",
+    "test:coverage": "vitest run --config vitest.config.ts --coverage && vitest run --config vitest.route.config.ts --coverage"
   },
   "dependencies": {
     "@radar/shared": "workspace:*",
