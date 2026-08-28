@@ -104,6 +104,22 @@ describe("ingestion normalization", () => {
     expect(migrationSql).not.toMatch(/^\s*(?:BEGIN|COMMIT)\s*;/im);
   });
 
+  it("repairs only initial homepage-reading summaries and is idempotent", () => {
+    const result = verifyHomepageSummaryScopeMigration();
+
+    expect(result.sources).toEqual([
+      "home-acquired|READY|v-home-acquired",
+      "home-summary|REVIEW|v-home-summary",
+      "manual-source|READY|v-manual",
+    ]);
+    expect(result.versions).toEqual([
+      "v-home-acquired|home-acquired|FULLTEXT|HTML_STATIC|REEXTRACT|v-home-seed",
+      "v-home-seed|home-acquired|METADATA_ONLY|DISCOVERY_METADATA|INITIAL_INGEST|",
+      "v-home-summary|home-summary|METADATA_ONLY|DISCOVERY_METADATA|INITIAL_INGEST|",
+      "v-manual|manual-source|FULLTEXT|MANUAL_TEXT|INITIAL_INGEST|",
+    ]);
+  });
+
   it("adds the source-version integrity migration", () => {
     const migrationPath = join(process.cwd(), "../worker/migrations/0021_source_version_integrity.sql");
     const migrationSql = existsSync(migrationPath) ? readFileSync(migrationPath, "utf8") : "";
@@ -638,6 +654,65 @@ function verifySourceAcquisitionMigration(): { foreignKeyCheck: string; jobs: st
       .filter(Boolean);
 
     return { foreignKeyCheck, jobs };
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+function verifyHomepageSummaryScopeMigration(): {
+  sources: string[];
+  versions: string[];
+} {
+  const tempDir = mkdtempSync(join(tmpdir(), "radar-0024-"));
+  const dbPath = join(tempDir, "migration.sqlite");
+  const migrationPath = join(
+    process.cwd(),
+    "../worker/migrations/0024_homepage_summary_scope.sql",
+  );
+  const migrationSql = existsSync(migrationPath)
+    ? readFileSync(migrationPath, "utf8")
+    : "";
+
+  const seedSql = [
+    "CREATE TABLE sources (id TEXT PRIMARY KEY, origin TEXT, input_format TEXT, quality_status TEXT, active_version_id TEXT);",
+    "CREATE TABLE source_versions (id TEXT PRIMARY KEY, source_id TEXT, text_scope TEXT, extraction_method TEXT, version_origin TEXT, parent_version_id TEXT);",
+    "INSERT INTO sources VALUES ('home-summary', 'homepage-reading', 'HOMEPAGE_JSON', 'READY', 'v-home-summary');",
+    "INSERT INTO sources VALUES ('home-acquired', 'homepage-reading', 'HOMEPAGE_JSON', 'READY', 'v-home-acquired');",
+    "INSERT INTO sources VALUES ('manual-source', 'manual', 'PLAIN_TEXT', 'READY', 'v-manual');",
+    "INSERT INTO source_versions VALUES ('v-home-summary', 'home-summary', 'FULLTEXT', 'MANUAL_TEXT', 'INITIAL_INGEST', NULL);",
+    "INSERT INTO source_versions VALUES ('v-home-seed', 'home-acquired', 'FULLTEXT', 'MANUAL_TEXT', 'INITIAL_INGEST', NULL);",
+    "INSERT INTO source_versions VALUES ('v-home-acquired', 'home-acquired', 'FULLTEXT', 'HTML_STATIC', 'REEXTRACT', 'v-home-seed');",
+    "INSERT INTO source_versions VALUES ('v-manual', 'manual-source', 'FULLTEXT', 'MANUAL_TEXT', 'INITIAL_INGEST', NULL);",
+    migrationSql,
+    migrationSql,
+  ].join("\n");
+
+  try {
+    execFileSync("sqlite3", [dbPath], {
+      cwd: tempDir,
+      input: seedSql,
+      stdio: ["pipe", "pipe", "pipe"],
+      encoding: "utf8",
+    });
+
+    const sources = execFileSync(
+      "sqlite3",
+      [
+        dbPath,
+        "SELECT id || '|' || quality_status || '|' || active_version_id FROM sources ORDER BY id;",
+      ],
+      { encoding: "utf8" },
+    ).trim().split("\n").filter(Boolean);
+    const versions = execFileSync(
+      "sqlite3",
+      [
+        dbPath,
+        "SELECT id || '|' || source_id || '|' || text_scope || '|' || extraction_method || '|' || version_origin || '|' || COALESCE(parent_version_id, '') FROM source_versions ORDER BY id;",
+      ],
+      { encoding: "utf8" },
+    ).trim().split("\n").filter(Boolean);
+
+    return { sources, versions };
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
