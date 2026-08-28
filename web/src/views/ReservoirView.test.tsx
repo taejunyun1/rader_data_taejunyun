@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PdfVisualExtractionResult } from "../lib/pdfVisualExtraction";
 import type { VisualAssetDetail, VisualAssetSummary, VisualExtractionRunSummary } from "@radar/shared";
+import type { ResearchJob } from "@radar/shared/discovery";
 
 const pdfExtractionMocks = vi.hoisted(() => ({
   startOrResumePdfVisualExtraction: vi.fn(),
@@ -141,6 +142,30 @@ type TestSourceDetail = Omit<typeof sourceDetail, "source" | "acquisition"> & {
   };
   visualExtractionRun?: VisualExtractionRunSummary | null;
 };
+
+function deepAnalysisJob(status: ResearchJob["status"]): ResearchJob {
+  return {
+    id: "deep-job",
+    workflowInstanceId: "workflow-deep-job",
+    kind: "DEEP_ANALYSIS",
+    status,
+    progress: status === "SUCCEEDED" ? 100 : 20,
+    message: status === "SUCCEEDED" ? "완료" : "자료 본문을 읽는 중",
+    input: { sourceId: "source-1", profile: "precision" },
+    result: status === "SUCCEEDED" ? { analysisId: "analysis-new" } : null,
+    resultRef: status === "SUCCEEDED" ? { view: "RESERVOIR", sourceId: "source-1", analysisId: "analysis-new" } : null,
+    errorCode: null,
+    error: null,
+    retryOf: null,
+    requestedBy: "test-user",
+    dedupeKey: "DEEP_ANALYSIS:{sourceId:source-1,profile:precision}",
+    dismissedAt: null,
+    createdAt: "2026-08-28T12:00:00.000Z",
+    startedAt: "2026-08-28T12:00:01.000Z",
+    finishedAt: status === "SUCCEEDED" ? "2026-08-28T12:00:10.000Z" : null,
+    updatedAt: status === "SUCCEEDED" ? "2026-08-28T12:00:10.000Z" : "2026-08-28T12:00:01.000Z",
+  };
+}
 
 let currentSourceDetail: TestSourceDetail;
 let reservoirItems: Array<Record<string, unknown>>;
@@ -631,6 +656,33 @@ describe("ReservoirView", () => {
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "심층 정리 품질" }), "maximum");
     await userEvent.click(screen.getByRole("button", { name: "심층 정리하기" }));
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/reservoir/source-1/deep-analysis", expect.objectContaining({ method: "POST", body: JSON.stringify({ profile: "maximum" }) })));
+  });
+
+  it("refreshes the current detail when deep analysis finishes", async () => {
+    const { rerender } = render(<ReservoirView jobs={[]} />);
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+    await userEvent.click(screen.getByRole("button", { name: "심층 정리하기" }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/reservoir/source-1/deep-analysis", expect.objectContaining({ method: "POST" })));
+
+    currentSourceDetail = {
+      ...currentSourceDetail,
+      deepAnalysis: {
+        profile: "precision",
+        overview: "완료된 심층 정리 결과",
+        arguments: [],
+        structure: [],
+        quotes: [],
+        connections: [],
+        researchUses: [],
+        limitations: [],
+        meta: { sourceCharCount: 2400, analyzedCharCount: 2400, chunkCount: 1 },
+      },
+      deepAnalysisHistory: [{ id: "analysis-new", createdAt: "2026-08-28T12:00:10.000Z" }],
+    };
+    rerender(<ReservoirView jobs={[deepAnalysisJob("SUCCEEDED")]} />);
+
+    expect(await screen.findByText("완료된 심층 정리 결과")).toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => url === "/api/reservoir/source-1").length).toBeGreaterThan(1);
   });
 
   it("does not apply a late deep-analysis block after navigating to another source", async () => {

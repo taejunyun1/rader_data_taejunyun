@@ -20,6 +20,7 @@ import VisualAssetPanel from "../components/visual/VisualAssetPanel";
 import PdfExtractionProgress from "../components/visual/PdfExtractionProgress";
 import { startOrResumePdfVisualExtraction, type PdfVisualExtractionResult } from "../lib/pdfVisualExtraction";
 import type { DecisionAction, ReadingDocument, SourceAcquisitionView, SourceIndexItem } from "../components/reading/types";
+import type { ResearchJob } from "@radar/shared/discovery";
 
 interface ReservoirItem {
   id: string;
@@ -60,6 +61,7 @@ interface SourceDetail {
 interface DeepAnalysisResponse {
   error?: string;
   reused?: boolean;
+  job?: Pick<ResearchJob, "id">;
   textScope?: TextScope;
   qualityStatus?: QualityStatus;
   charCount?: number;
@@ -193,7 +195,15 @@ function toReadingDocument(detail: SourceDetail): ReadingDocument {
   };
 }
 
-export default function ReservoirView({ onJobCreated, focusSourceId, focusExtractionRunId, onFocusConsumed }: { onJobCreated?: () => Promise<void>; focusSourceId?: string; focusExtractionRunId?: string; onFocusConsumed?: () => void }) {
+interface ReservoirViewProps {
+  onJobCreated?: () => Promise<void>;
+  focusSourceId?: string;
+  focusExtractionRunId?: string;
+  onFocusConsumed?: () => void;
+  jobs?: ResearchJob[];
+}
+
+export default function ReservoirView({ onJobCreated, focusSourceId, focusExtractionRunId, onFocusConsumed, jobs = [] }: ReservoirViewProps) {
   const [items, setItems] = useState<ReservoirItem[]>([]);
   const [kindFilter, setKindFilter] = useState("");
   const [topicFilter, setTopicFilter] = useState("");
@@ -216,6 +226,7 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
   const [actionPending, setActionPending] = useState(false);
   const [deepProfile, setDeepProfile] = useState<"precision" | "maximum">("precision");
   const [deepPending, setDeepPending] = useState(false);
+  const [deepJobId, setDeepJobId] = useState<string | null>(null);
   const [deepBlock, setDeepBlock] = useState<DeepAnalysisBlock | null>(null);
   const [pdfExtraction, setPdfExtraction] = useState<PdfVisualExtractionResult | null>(null);
   const [pdfExtractionPending, setPdfExtractionPending] = useState(false);
@@ -224,6 +235,7 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
   const listRequest = useRef(0);
   const actionRequest = useRef(0);
   const deepAnalysisRequest = useRef(0);
+  const deepCompletionRef = useRef<string | null>(null);
   const deepHistoryRequest = useRef(0);
   const topicRequest = useRef(0);
   const selectedIdRef = useRef<string | null>(null);
@@ -318,6 +330,7 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
     deepAnalysisRequest.current += 1;
     deepHistoryRequest.current += 1;
     setDeepPending(false);
+    setDeepJobId(null);
     if (!preserveAction) {
       actionRequest.current += 1;
       setActionPending(false);
@@ -525,6 +538,7 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
     const requestId = deepAnalysisRequest.current + 1;
     deepAnalysisRequest.current = requestId;
     const isCurrent = () => interactionRequest.current === interactionRequestId && deepAnalysisRequest.current === requestId;
+    let queuedJobId: string | null = null;
     setDeepPending(true);
     setMsg("심층 정리를 시작했습니다. 완료되면 상단 작업센터에서 결과를 확인할 수 있습니다.");
     try {
@@ -537,15 +551,44 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
         return;
       }
       if (!response.ok) throw new Error(data.error ?? "심층 정리를 시작하지 못했습니다.");
+      queuedJobId = typeof data.job?.id === "string" ? data.job.id : null;
+      if (queuedJobId) setDeepJobId(queuedJobId);
       await onJobCreated?.();
       if (!isCurrent()) return;
       setMsg(data.reused ? "이미 진행 중인 심층 정리를 계속합니다." : "심층 정리를 시작했습니다. 완료되면 상단 작업센터에서 결과를 확인할 수 있습니다.");
     } catch (error) {
       if (isCurrent()) setMsg(error instanceof Error && error.message === "monthly_budget_exhausted" ? "이번 달 AI 사용량 한도에 도달했습니다." : error instanceof Error ? error.message : "심층 정리를 시작하지 못했습니다.");
     } finally {
-      if (deepAnalysisRequest.current === requestId) setDeepPending(false);
+      if (deepAnalysisRequest.current === requestId) setDeepPending(Boolean(queuedJobId));
     }
   }
+
+  useEffect(() => {
+    if (!deepJobId) return;
+    const job = jobs.find((candidate) => candidate.id === deepJobId && candidate.kind === "DEEP_ANALYSIS");
+    if (!job || job.status === "QUEUED" || job.status === "RUNNING") return;
+    const sourceId = selectedIdRef.current;
+    const input = job.input && typeof job.input === "object" ? job.input as { sourceId?: unknown } : null;
+    if (!sourceId || input?.sourceId !== sourceId) {
+      setDeepJobId(null);
+      return;
+    }
+    const completionKey = `${job.id}:${job.status}:${job.updatedAt}`;
+    if (deepCompletionRef.current === completionKey) return;
+    deepCompletionRef.current = completionKey;
+    if (job.status !== "SUCCEEDED") {
+      setDeepPending(false);
+      setDeepJobId(null);
+      setMsg(job.error ? `심층 정리를 완료하지 못했습니다: ${job.error}` : "심층 정리를 완료하지 못했습니다. 작업센터에서 다시 시도해 주세요.");
+      return;
+    }
+    void openDetail(sourceId, { preserveAction: true }).then((requestId) => {
+      if (selectedIdRef.current !== sourceId || interactionRequest.current !== requestId) return;
+      setDeepPending(false);
+      setDeepJobId(null);
+      setMsg("심층 정리가 완료되었습니다. 최신 결과를 불러왔습니다.");
+    });
+  }, [deepJobId, jobs]);
 
   async function openDeepHistory(analysisId: string) {
     if (!detail) return;

@@ -52,7 +52,7 @@ export default function App() {
       {view === "RADAR" && <RadarView onNavigate={setView} onJobCreated={refresh} focusPeriod={focus.radarPeriod} onFocusConsumed={() => consumeFocus("radarPeriod")} />}
       {view === "INBOX" && <InboxView />}
       {view === "DISTILL" && <DistillView onJobCreated={refresh} focusSessionId={focus.distillSessionId} onFocusConsumed={() => consumeFocus("distillSessionId")} />}
-      {view === "RESERVOIR" && <ReservoirView onJobCreated={refresh} focusSourceId={focus.reservoirSourceId} focusExtractionRunId={focus.reservoirExtractionRunId} onFocusConsumed={consumeReservoirFocus} />}
+      {view === "RESERVOIR" && <ReservoirView jobs={jobs} onJobCreated={refresh} focusSourceId={focus.reservoirSourceId} focusExtractionRunId={focus.reservoirExtractionRunId} onFocusConsumed={consumeReservoirFocus} />}
       {view === "DISCOVER" && <DiscoverView onNavigate={setView} onOpenReservoir={openReservoirSource} jobs={jobs} onJobCreated={refresh} />}
       {view === "USAGE" && <UsageView />}
       {view === "SETTINGS" && <SettingsView />}
