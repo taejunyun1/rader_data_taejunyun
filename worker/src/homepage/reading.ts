@@ -2,12 +2,22 @@ import { analyzeSource } from "../analysis/analyze";
 import { findDuplicate } from "../ingestion/dedup";
 import { sha256Hex, uuid } from "../ingestion/ids";
 import { normalizeUrl } from "../ingestion/normalize";
-import { createSource } from "../ingestion/store";
+import { createSource, type CreateSourceInput } from "../ingestion/store";
 
 const INPUT_KEY = "homepage-reading/latest.json";
 const FINGERPRINT_KEY = "homepage_reading_fingerprint_v1";
 const SOURCE_ORIGIN = "homepage-reading";
 const MAX_ARTICLES = 36;
+
+export function homepageReadingSourceProvenance(): Pick<
+  CreateSourceInput,
+  "textScope" | "extractionMethod"
+> {
+  return {
+    textScope: "METADATA_ONLY",
+    extractionMethod: "DISCOVERY_METADATA",
+  };
+}
 
 interface HomepageReadingArticle {
   id?: unknown;
@@ -156,6 +166,7 @@ export async function syncHomepageReading(env: Env): Promise<HomepageReadingSync
         origin: SOURCE_ORIGIN,
         original: JSON.stringify(article),
         extractedText: articleText(article),
+        ...homepageReadingSourceProvenance(),
         metadata: {
           provider: "homepage_artist",
           source: article.source,
