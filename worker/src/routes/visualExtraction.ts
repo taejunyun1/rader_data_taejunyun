@@ -3,6 +3,8 @@ import { enqueueResearchJob } from "../jobs/enqueue";
 import { ExtractionStore } from "../visual/extraction/store";
 import type { VisualExtractionRunSummary } from "@radar/shared";
 import type { InputFormat } from "@radar/shared/ingestion";
+import { verifiedRequester } from "../lib/httpErrors";
+import { readJson } from "../lib/requestBody";
 
 const visualExtraction = new Hono<{ Bindings: Env }>();
 const MAX_PDF_PAGE_UPLOAD_BYTES = 12 * 1024 * 1024;
@@ -150,7 +152,7 @@ async function ensureRunMatches(db: D1Database, runId: string, sourceId: string,
 }
 
 visualExtraction.post("/pdf/runs", async (c) => {
-  const body = await c.req.json<{ sourceId?: string; versionId?: string; pageCount?: number }>().catch(() => null);
+  const body = await readJson<{ sourceId?: string; versionId?: string; pageCount?: number }>(c);
   const sourceId = body?.sourceId?.trim();
   const versionId = body?.versionId?.trim();
   const pageCount = Number(body?.pageCount ?? 0);
@@ -179,14 +181,14 @@ visualExtraction.get("/runs/:runId", async (c) => {
 visualExtraction.put("/pdf/runs/:runId/pages/:pageNumber", async (c) => {
   const runId = c.req.param("runId");
   const pageNumber = Number(c.req.param("pageNumber"));
-  const body = await c.req.json<{
+  const body = await readJson<{
     sourceId?: string;
     versionId?: string;
     width?: number;
     height?: number;
     contentHash?: string;
     imageBase64?: string;
-  }>().catch(() => null);
+  }>(c, 20_000_000);
   const sourceId = body?.sourceId?.trim();
   const versionId = body?.versionId?.trim();
   const imageBase64 = body?.imageBase64?.trim();
@@ -241,7 +243,7 @@ visualExtraction.put("/pdf/runs/:runId/pages/:pageNumber", async (c) => {
 
 visualExtraction.post("/pdf/runs/:runId/finalize", async (c) => {
   const runId = c.req.param("runId");
-  const body = await c.req.json<{ sourceId?: string; versionId?: string }>().catch(() => null);
+  const body = await readJson<{ sourceId?: string; versionId?: string }>(c);
   const sourceId = body?.sourceId?.trim();
   const versionId = body?.versionId?.trim();
   if (!sourceId || !versionId) return c.json({ error: "invalid_pdf_finalize_request" }, 400);
@@ -256,7 +258,7 @@ visualExtraction.post("/pdf/runs/:runId/finalize", async (c) => {
   if (payload.checkpoint.uploadedPages.length === 0) return c.json({ queued: false, ...payload });
 
   await updateRunTotals(c.env.DB, runId, payload.checkpoint.totalPages, "QUEUED");
-  const requestedBy = c.req.header("CF-Access-Authenticated-User-Email") ?? "local";
+  const requestedBy = verifiedRequester(c);
   const enqueued = await enqueueResearchJob(
     c.env,
     { kind: "VISUAL_EXTRACTION", input: { sourceId, sourceVersionId: versionId, extractionRunId: runId } },

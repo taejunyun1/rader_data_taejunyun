@@ -46,7 +46,7 @@ export function isDeepAnalysisReady(input: DeepAnalysisReadinessInput): DeepAnal
   };
 }
 
-export async function analyzeDeepSource(env: Env, sourceId: string, requestedProfile: unknown): Promise<{ analysisId: string; payload: DeepAnalysisPayloadWithProvenance; model: string; costUsd: number }> {
+export async function analyzeDeepSource(env: Env, sourceId: string, requestedProfile: unknown, researchJobId?: string): Promise<{ analysisId: string; payload: DeepAnalysisPayloadWithProvenance; model: string; costUsd: number }> {
   const profile = profileFor(requestedProfile);
   const row = await env.DB.prepare(
     `SELECT s.title, s.quality_status, v.id AS version_id, v.text_scope, v.char_count,
@@ -78,6 +78,9 @@ export async function analyzeDeepSource(env: Env, sourceId: string, requestedPro
   const chunkResults = await Promise.all(chunks.map(async (chunk, index) => {
     const result = await callOpenAi(env, {
       purpose: "deep_analysis",
+      researchJobId,
+      workflowStep: `deep-chunk-${index}`,
+      promptVersion: "deep-v1",
       model: modelTierForDeepStage("chunk"),
       jsonMode: true,
       maxOutputTokens: 2600,
@@ -94,6 +97,9 @@ export async function analyzeDeepSource(env: Env, sourceId: string, requestedPro
   const analyzedCharCount = chunks.join("\n").length;
   const synthesis = await callOpenAi(env, {
     purpose: "deep_analysis",
+    researchJobId,
+    workflowStep: "deep-synthesis",
+    promptVersion: "deep-v1",
     model: modelTierForDeepStage("synthesis"),
     jsonMode: true,
     maxOutputTokens: 4200,

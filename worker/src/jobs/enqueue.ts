@@ -1,5 +1,5 @@
 import type { DiscoveryProfile, ResearchJob, ResearchJobKind } from "@radar/shared/discovery";
-import { createResearchJob, findActiveJobByDedupeKey, failResearchJob, setWorkflowInstanceId } from "./store";
+import { createResearchJob, findActiveJobByDedupeKey, markDispatchPending, setWorkflowInstanceId } from "./store";
 
 export type ResearchJobRequest =
   | { kind: "DISCOVERY_RUN"; input: { divergence: number; profile: DiscoveryProfile } }
@@ -24,19 +24,26 @@ export async function enqueueResearchJob(env: Env, request: ResearchJobRequest, 
   const active = await findActiveJobByDedupeKey(env.DB, dedupeKey);
   if (active) return { job: active, reused: true };
 
-  const job = await createResearchJob(env.DB, {
-    kind: request.kind as ResearchJobKind,
-    input: request.input,
-    dedupeKey,
-    requestedBy,
-    retryOf,
-  });
+  let job: ResearchJob;
+  try {
+    job = await createResearchJob(env.DB, {
+      kind: request.kind as ResearchJobKind,
+      input: request.input,
+      dedupeKey,
+      requestedBy,
+      retryOf,
+    });
+  } catch (error) {
+    const winner = await findActiveJobByDedupeKey(env.DB, dedupeKey);
+    if (winner) return { job: winner, reused: true };
+    throw error;
+  }
   try {
     const instance = await env.RESEARCH_JOBS_WORKFLOW.create({ id: job.id, params: { jobId: job.id } });
     await setWorkflowInstanceId(env.DB, job.id, instance.id);
     return { job: (await findActiveJobByDedupeKey(env.DB, dedupeKey)) ?? job, reused: false };
   } catch (error) {
-    await failResearchJob(env.DB, job.id, "workflow_create_failed", error instanceof Error ? error.message : "workflow_create_failed");
-    throw error;
+    await markDispatchPending(env.DB, job.id, error instanceof Error ? error.message : "workflow_create_failed");
+    return { job: (await findActiveJobByDedupeKey(env.DB, dedupeKey)) ?? job, reused: false };
   }
 }

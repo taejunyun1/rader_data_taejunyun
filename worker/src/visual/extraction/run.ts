@@ -10,6 +10,7 @@ import { fetchRemoteImage, RemoteImageFetchError } from "./fetchImage";
 import { buildLinkOnlyVisualDraft, filterVisualCandidate, unavailableVisualDecision, type ExistingVisualFingerprint } from "./filter";
 import { createVisualExtractionVisionPersistence, ExtractionStore } from "./store";
 import { buildPdfVisionPrompt, parsePdfPageCandidates, type PdfPageCandidate } from "./pdf";
+import { withAiCallLedger } from "../../lib/aiCallLedger";
 import {
   createVisualExtractionVisionGate,
   isVisualExtractionVisionBlocked,
@@ -63,6 +64,7 @@ export interface RunVisualExtractionInput {
   sourceId: string;
   sourceVersionId: string;
   extractionRunId?: string;
+  researchJobId?: string;
   visionGate?: VisualExtractionVisionGate;
   visionBudget?: {
     budgetReserved: boolean;
@@ -423,6 +425,7 @@ async function runHtmlVisualExtraction(env: Env, input: RunVisualExtractionInput
         candidate,
         fetched,
         decision,
+        researchJobId: input.researchJobId,
       }, extractionVisionGate(input));
       if (visionFallback) adjustDecisionCountToReview(counts, decision.selectionStatus);
       existingAssets.push({ assetId: `${candidate.candidateKey}:${fetched.contentHash}`, contentHash: fetched.contentHash, perceptualHash: null });
@@ -526,7 +529,7 @@ async function runPdfVisualExtraction(env: Env, input: RunVisualExtractionInput,
       const object = await env.ORIGINALS.get(unit.tempR2Key);
       if (!object) throw new Error("visual_page_bytes_missing");
       const pageBytes = await object.arrayBuffer();
-      const rawCandidates = await detectPdfPageCandidates(env, pageBytes, source, unit, extractionVisionGate(input));
+      const rawCandidates = await detectPdfPageCandidates(env, pageBytes, source, unit, extractionVisionGate(input), input.researchJobId);
       const parsed = parsePdfPageCandidates(rawCandidates);
       counts.filtered += parsed.rejected.length;
 
@@ -561,6 +564,7 @@ async function runPdfVisualExtraction(env: Env, input: RunVisualExtractionInput,
               contentHash,
               perceptualHash,
               extractionVisionGate(input),
+              input.researchJobId,
             );
             persisted = linkOnly;
             if (linkOnly.visionFallback) adjustDecisionCountToReview(counts, decision.selectionStatus);
@@ -920,6 +924,7 @@ async function persistHtmlLinkOnlyVisual(
     candidate: HtmlExtractionCandidate;
     fetched: Awaited<ReturnType<typeof fetchRemoteImage>>;
     decision: ReturnType<typeof filterVisualCandidate>;
+    researchJobId?: string;
   },
   visionGate: VisualExtractionVisionGate,
 ): Promise<VisualExtractionVisionBlockReason | null> {
@@ -957,6 +962,7 @@ async function persistHtmlLinkOnlyVisual(
       caption: input.candidate.caption,
       storageState: "LINK_ONLY",
       visionGate,
+      researchJobId: input.researchJobId,
     });
     return null;
   } catch (error) {
@@ -979,6 +985,7 @@ async function persistPdfLinkOnlyVisual(
   contentHash: string,
   perceptualHash: string,
   visionGate: VisualExtractionVisionGate,
+  researchJobId?: string,
 ): Promise<{ assetId: string; visionFallback: VisualExtractionVisionBlockReason | null }> {
   const candidateKey = buildPdfCandidateKey(unit.unitNumber, candidate, index);
   const existing = await findExistingCandidate(env.DB, source.sourceVersionId, "PDF_PAGE_CROP", candidateKey);
@@ -1019,6 +1026,7 @@ async function persistPdfLinkOnlyVisual(
       caption: candidate.caption,
       storageState: "LINK_ONLY",
       visionGate,
+      researchJobId,
     });
     return { assetId: persisted.assetId, visionFallback: null };
   } catch (error) {
@@ -1325,6 +1333,7 @@ async function detectPdfPageCandidates(
   source: LoadedSourceForExtraction,
   unit: ExtractionUnitRow,
   visionGate: VisualExtractionVisionGate,
+  researchJobId?: string,
 ): Promise<PdfPageCandidate[]> {
   if (!env.AI?.run || !env.MODEL_VISION) {
     return [fallbackPdfCandidate(unit)];
@@ -1337,7 +1346,7 @@ async function detectPdfPageCandidates(
       figureContext: extractPdfFigureContext(source.extractedText, unit.unitNumber),
     });
     const image = `data:image/webp;base64,${base64(pageBytes)}`;
-    const result = await visionGate.execute(() => env.AI.run(env.MODEL_VISION, {
+    const modelCall = () => visionGate.execute(() => env.AI.run(env.MODEL_VISION, {
         messages: [
           { role: "system", content: "You are a careful PDF-page visual extraction assistant. Output only valid JSON." },
           { role: "user", content: prompt },
@@ -1345,6 +1354,21 @@ async function detectPdfPageCandidates(
         image,
         max_tokens: 1800,
       } as unknown as Record<string, unknown>));
+    const result = researchJobId
+      ? await withAiCallLedger(
+        env.DB,
+        {
+          researchJobId,
+          idempotencyKey: `${researchJobId}:visual_extraction:pdf-page-${unit.unitNumber}:visual-v1`,
+          purpose: "visual_extraction",
+          model: env.MODEL_VISION,
+          reservedUsd: 0.01,
+          budgetUsd: Number(env.MONTHLY_BUDGET_USD ?? 10),
+        },
+        modelCall,
+        (value) => responseText(value),
+      )
+      : await modelCall();
     const parsed = parsePdfCandidateResponse(responseText(result));
     return parsed.length ? parsed : [fallbackPdfCandidate(unit)];
   } catch (error) {

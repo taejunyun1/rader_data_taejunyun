@@ -140,8 +140,10 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
       if (job.kind === "DEEP_ANALYSIS" || job.kind === "VISUAL_ANALYSIS" || job.kind === "VISUAL_EXTRACTION") {
         await this.releaseBudgetAfterFailure(job.id, job.kind, error);
       }
-      if (error instanceof JobBlockedError) {
-        await blockResearchJob(this.env.DB, job.id, error.code, error.message);
+      if (error instanceof JobBlockedError || (error instanceof Error && error.message === "usage_settlement_required")) {
+        const code = error instanceof JobBlockedError ? error.code : "usage_settlement_required";
+        const message = error instanceof Error ? error.message : String(error);
+        await blockResearchJob(this.env.DB, job.id, code, message);
       } else {
         await failResearchJob(this.env.DB, job.id, "workflow_runtime_failed", error instanceof Error ? error.message : "workflow_runtime_failed");
       }
@@ -179,7 +181,7 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
       await updateJobProgress(this.env.DB, job.id, 20, "읽기 맥락을 정리하는 중");
       const input = job.input as { includeCounter?: boolean; redistillOf?: string; keepElements?: string[] };
       const params = await loadParams(this.env.DB);
-      const result = await runDistill(this.env, params, input);
+      const result = await runDistill(this.env, params, { ...input, researchJobId: job.id });
       if (!result.ok) {
         if (result.error.includes("monthly_budget_exhausted")) throw new JobBlockedError("monthly_budget_exhausted", result.error);
         throw new Error(result.error);
@@ -192,7 +194,7 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
     if (job.kind === "RADAR_SYNTHESIS") {
       await updateJobProgress(this.env.DB, job.id, 25, "레이더 서사를 만드는 중");
       const input = job.input as { period: RadarPeriod };
-      const result = await runRadarSynthesis(this.env, input.period);
+      const result = await runRadarSynthesis(this.env, input.period, job.id);
       return { result: { snapshotId: result.snapshotId }, resultRef: { view: "RADAR", period: input.period, snapshotId: result.snapshotId } };
     }
 
@@ -234,7 +236,7 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
             resultRef: { view: "VISUAL", visualAssetId: input.visualAssetId },
           };
         }
-        const analyzed = await analyzeVisualAsset(this.env, input.visualAssetId, input.versionId);
+        const analyzed = await analyzeVisualAsset(this.env, input.visualAssetId, input.versionId, job.id);
         return {
           result: { visualAssetId: analyzed.visualAssetId, analysisId: analyzed.analysisId, model: analyzed.model },
           resultRef: { view: "VISUAL", visualAssetId: analyzed.visualAssetId },
@@ -243,7 +245,7 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
       await updateJobProgress(this.env.DB, job.id, 30, "시각 후보를 정리하는 중");
       const input = job.input as { sourceId: string; sourceVersionId: string; extractionRunId?: string };
       if (!extractionBudget) throw new Error("visual_extraction_budget_missing");
-      const extracted = await runVisualExtraction(this.env, { ...input, visionBudget: extractionBudget });
+      const extracted = await runVisualExtraction(this.env, { ...input, visionBudget: extractionBudget, researchJobId: job.id });
       return {
         result: {
           sourceId: extracted.sourceId,
@@ -264,7 +266,7 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
     const input = job.input as { sourceId: string; profile: "precision" | "maximum" };
     const reservation = await reserveDeepAnalysisBudget(this.env, { researchJobId: job.id, profile: input.profile });
     if (!reservation.ok) throw new JobBlockedError("monthly_budget_exhausted", "monthly_budget_exhausted");
-    const result = await analyzeDeepSource(this.env, input.sourceId, input.profile);
+    const result = await analyzeDeepSource(this.env, input.sourceId, input.profile, job.id);
     return { result: { analysisId: result.analysisId, model: result.model, costUsd: result.costUsd }, resultRef: { view: "RESERVOIR", sourceId: input.sourceId, analysisId: result.analysisId } };
   }
 

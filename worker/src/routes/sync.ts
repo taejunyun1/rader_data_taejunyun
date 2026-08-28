@@ -4,6 +4,7 @@ import { analyzeSource } from "../analysis/analyze";
 import { sha256Hex, uuid } from "../ingestion/ids";
 import { createSource } from "../ingestion/store";
 import { activateVersion, decideIncomingVersion, getActiveVersion } from "../ingestion/versioning";
+import { readJson } from "../lib/requestBody";
 
 function asciiOnly(meta: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
@@ -16,7 +17,7 @@ function asciiOnly(meta: Record<string, string>): Record<string, string> {
 const sync = new Hono<{ Bindings: Env }>();
 
 sync.post("/obsidian", async (c) => {
-  const body = (await c.req.json<{ path?: string; filename?: string; text?: string; mtime?: number }>().catch(() => null)) as {
+  const body = await readJson<{ path?: string; filename?: string; text?: string; mtime?: number }>(c) as {
     path?: string;
     filename?: string;
     text?: string;

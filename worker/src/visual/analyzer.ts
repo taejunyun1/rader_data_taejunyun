@@ -5,6 +5,7 @@ import type { VisualStorageState } from "@radar/shared";
 import { getVisualAsset, getVisualVersionForAnalysis, markVisualProcessingError } from "./store";
 import { validateVisualAnalysis, visualAnalysisPrompt, visualAnalysisText, type VisualAnalysisPayload } from "./analysisSchema";
 import type { VisualExtractionVisionGate } from "./extraction/visionBudget";
+import { withAiCallLedger } from "../lib/aiCallLedger";
 
 interface VisualAnalysisResult {
   visualAssetId: string;
@@ -47,9 +48,10 @@ interface AnalyzeVisualBytesInput {
   caption: string | null;
   storageState: VisualStorageState;
   visionGate?: VisualExtractionVisionGate;
+  researchJobId?: string;
 }
 
-export async function analyzeVisualAsset(env: Env, visualAssetId: string, requestedVersionId?: string): Promise<VisualAnalysisResult> {
+export async function analyzeVisualAsset(env: Env, visualAssetId: string, requestedVersionId?: string, researchJobId?: string): Promise<VisualAnalysisResult> {
   const asset = await getVisualAsset(env.DB, visualAssetId);
   if (!asset) throw new Error("visual_asset_not_found");
   const version = requestedVersionId
@@ -97,6 +99,7 @@ export async function analyzeVisualAsset(env: Env, visualAssetId: string, reques
       height: version.height,
       caption: asset.caption,
       storageState: asset.storageState,
+      researchJobId,
     });
   } catch (error) {
     await markVisualProcessingError(env.DB, visualAssetId, error instanceof Error ? error.message : "visual_analysis_failed");
@@ -157,9 +160,22 @@ async function runVisualModel(env: Env, input: AnalyzeVisualBytesInput): Promise
     image,
     max_tokens: 1800,
   } as unknown as Record<string, unknown>);
-  const aiResult = input.visionGate
-    ? await input.visionGate.execute(invokeModel)
-    : await invokeModel();
+  const modelCall = input.visionGate ? () => input.visionGate!.execute(invokeModel) : invokeModel;
+  const aiResult = input.researchJobId
+    ? await withAiCallLedger(
+      env.DB,
+      {
+        researchJobId: input.researchJobId,
+        idempotencyKey: `${input.researchJobId}:visual_analysis:${input.visualAssetId}:${input.visualVersionId}:visual-v1`,
+        purpose: "visual_analysis",
+        model: env.MODEL_VISION,
+        reservedUsd: 0.01,
+        budgetUsd: Number(env.MONTHLY_BUDGET_USD ?? 10),
+      },
+      modelCall,
+      (result) => responseText(result),
+    )
+    : await modelCall();
   const payload = validateVisualAnalysis(extractJson(responseText(aiResult)));
   if (!payload) throw new Error("visual_analysis_invalid_output");
   return payload;

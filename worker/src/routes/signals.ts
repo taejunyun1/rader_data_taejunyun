@@ -1,13 +1,14 @@
 import { Hono } from "hono";
 import type { UserAction } from "@radar/shared";
 import { uuid } from "../ingestion/ids";
+import { readJson } from "../lib/requestBody";
 
 const VALID_ACTIONS = new Set<string>(["select", "keep", "watch", "develop", "ignore", "view"]);
 
 const signals = new Hono<{ Bindings: Env }>();
 
 signals.post("/", async (c) => {
-  const body = await c.req.json<{ sourceId?: string; action?: string }>().catch(() => null);
+  const body = await readJson<{ sourceId?: string; action?: string }>(c);
   const sourceId = body?.sourceId;
   const action = body?.action as UserAction | undefined;
 

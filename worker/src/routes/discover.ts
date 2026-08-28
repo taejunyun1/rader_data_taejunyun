@@ -8,6 +8,8 @@ import { DISCOVERY_MIN_SCORE } from "@radar/shared/discovery";
 import { loadDiscoveryProfile, saveDiscoveryProfile } from "../discovery/profile";
 import { buildDiscoveryRecommendations } from "../discovery/recommendations";
 import { enqueueResearchJob } from "../jobs/enqueue";
+import { verifiedRequester } from "../lib/httpErrors";
+import { readJson } from "../lib/requestBody";
 
 const discover = new Hono<{ Bindings: Env }>();
 const FIELD_SIGNAL_STATUSES = new Set(["NEW", "SAVED", "DISMISSED"]);
@@ -104,7 +106,7 @@ discover.get("/candidates", async (c) => {
 discover.get("/profile", async (c) => c.json({ profile: await loadDiscoveryProfile(c.env.DB) }));
 
 discover.put("/profile", async (c) => {
-  const body = await c.req.json<{ profile?: unknown }>().catch(() => null);
+  const body = await readJson<{ profile?: unknown }>(c);
   const value = body && typeof body === "object" && "profile" in body ? body.profile : body;
   if (!value) return c.json({ error: "profile_required" }, 400);
   return c.json({ profile: await saveDiscoveryProfile(c.env.DB, value) });
@@ -118,7 +120,7 @@ discover.get("/recommendations", async (c) => {
 discover.post("/run", async (c) => {
   const params = await loadParams(c.env.DB);
   const profile = await loadDiscoveryProfile(c.env.DB);
-  const requestedBy = c.req.header("CF-Access-Authenticated-User-Email") ?? "local";
+  const requestedBy = verifiedRequester(c);
   try {
     const result = await enqueueResearchJob(c.env, { kind: "DISCOVERY_RUN", input: { divergence: params.divergence, profile } }, requestedBy);
     return c.json(result, 202);
@@ -164,7 +166,7 @@ discover.post("/candidates/:id/:action", async (c) => {
 
     const { acquisitionUrl } = await resolveCandidateAcquisition(cand);
     if (!acquisitionUrl) return c.json({ ok: true, status: newStatus, sourceId: cand.source_id, acquisitionStatus: "LINK_ONLY" as const });
-    const requestedBy = c.req.header("CF-Access-Authenticated-User-Email") ?? "local";
+    const requestedBy = verifiedRequester(c);
     const queued = await enqueueResearchJob(c.env, { kind: "SOURCE_ACQUISITION", input: { sourceId: cand.source_id, url: acquisitionUrl } }, requestedBy);
     return c.json({ ok: true, status: newStatus, sourceId: cand.source_id, jobId: queued.job.id, acquisitionStatus: "QUEUED" as const });
   }
@@ -192,7 +194,7 @@ discover.post("/candidates/:id/:action", async (c) => {
     sourceId = r.sourceId;
     await c.env.DB.prepare("UPDATE discovery_candidates SET source_id = ? WHERE id = ? AND source_id IS NULL").bind(sourceId, id).run();
     if (acquisitionUrl) {
-      const requestedBy = c.req.header("CF-Access-Authenticated-User-Email") ?? "local";
+      const requestedBy = verifiedRequester(c);
       const queued = await enqueueResearchJob(c.env, { kind: "SOURCE_ACQUISITION", input: { sourceId, url: acquisitionUrl } }, requestedBy);
       jobId = queued.job.id;
       acquisitionStatus = "QUEUED";
@@ -248,7 +250,7 @@ discover.get("/feeds", async (c) => {
 });
 
 discover.put("/feeds", async (c) => {
-  const body = (await c.req.json<{ feeds?: string[] }>().catch(() => null)) as { feeds?: string[] } | null;
+  const body = await readJson<{ feeds?: string[] }>(c);
   if (!body?.feeds || !Array.isArray(body.feeds)) return c.json({ error: "feeds_required" }, 400);
   await setCustomFeeds(c.env.DB, body.feeds);
   return c.json({ feeds: await customFeeds(c.env.DB) });
@@ -259,7 +261,7 @@ discover.get("/queries", async (c) => {
 });
 
 discover.put("/queries", async (c) => {
-  const body = (await c.req.json<{ queries?: string[] }>().catch(() => null)) as { queries?: string[] } | null;
+  const body = await readJson<{ queries?: string[] }>(c);
   if (!body?.queries || !Array.isArray(body.queries)) return c.json({ error: "queries_required" }, 400);
   const clean = body.queries.map((q) => String(q).trim()).filter(Boolean).slice(0, 4);
   await setCustomQueries(c.env.DB, clean);

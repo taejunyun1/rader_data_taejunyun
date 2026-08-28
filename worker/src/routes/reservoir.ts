@@ -6,6 +6,8 @@ import { monthSpendUsd } from "../lib/openai";
 import { enqueueResearchJob } from "../jobs/enqueue";
 import { listVisualAssets } from "../visual/store";
 import { loadReservoirPdfOriginal } from "./visualExtraction";
+import { verifiedRequester } from "../lib/httpErrors";
+import { readJson } from "../lib/requestBody";
 
 const reservoir = new Hono<{ Bindings: Env }>();
 const MAX_SOURCE_TEXT_CHARS = 500_000;
@@ -256,7 +258,7 @@ reservoir.post("/retag-all", async (c) => {
 
 reservoir.post("/:sourceId/deep-analysis", async (c) => {
   const sourceId = c.req.param("sourceId");
-  const body: { profile?: unknown } = await c.req.json<{ profile?: unknown }>().catch(() => ({} as { profile?: unknown }));
+  const body: { profile?: unknown } = (await readJson<{ profile?: unknown }>(c)) ?? {};
   const profile = parseDeepProfile(body.profile);
   const active = await c.env.DB.prepare(
     `SELECT s.id AS source_id, s.quality_status, v.text_scope, v.char_count, v.normalized_text
@@ -281,7 +283,7 @@ reservoir.post("/:sourceId/deep-analysis", async (c) => {
   // Fast UX guard only; the workflow's D1 reservation is the race-safe final budget check.
   if ((await monthSpendUsd(c.env)) >= budget) return c.json({ error: "monthly_budget_exhausted" }, 429);
   try {
-    const requestedBy = c.req.header("CF-Access-Authenticated-User-Email") ?? "local";
+    const requestedBy = verifiedRequester(c);
     const result = await enqueueResearchJob(c.env, { kind: "DEEP_ANALYSIS", input: { sourceId, profile } }, requestedBy);
     return c.json(result, 202);
   } catch (err) {

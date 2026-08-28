@@ -43,7 +43,7 @@ function asValidated(raw: unknown, kind: string): unknown {
 export async function runDistill(
   env: Env,
   params: RadarParams,
-  opts: { redistillOf?: string; keepElements?: string[]; promptVariant?: PromptVariant; includeCounter?: boolean } = {}
+  opts: { redistillOf?: string; keepElements?: string[]; promptVariant?: PromptVariant; includeCounter?: boolean; researchJobId?: string } = {}
 ): Promise<DistillRunResult> {
   const budgetUsedPct = await budgetPct(env);
   if (budgetUsedPct >= 100) {
@@ -81,6 +81,9 @@ export async function runDistill(
 
   const distillRes = await callOpenAi(env, {
     purpose: "distill",
+    researchJobId: opts.researchJobId,
+    workflowStep: "distill-primary",
+    promptVersion: variant,
     model: "high",
     jsonMode: true,
     maxOutputTokens: 4000,
@@ -94,6 +97,9 @@ export async function runDistill(
 
   const criticRes = await callOpenAi(env, {
       purpose: "critic",
+      researchJobId: opts.researchJobId,
+      workflowStep: "distill-critic",
+      promptVersion: variant,
       model: "deep",
       jsonMode: true,
       maxOutputTokens: 3000,
@@ -104,7 +110,7 @@ export async function runDistill(
     });
 
   const critic = asValidated(extractJsonLoose(criticRes.text), "critic") ?? { warnings: [], overall: "critic_parse_failed" };
-  const counterRun = includeCounter ? await runCounter(env, distill, critic, ctx, params.counterStrength) : null;
+  const counterRun = includeCounter ? await runCounter(env, distill, critic, ctx, params.counterStrength, opts.researchJobId) : null;
   const counter = counterRun?.output ?? null;
 
   const totalCost = distillRes.costUsd + criticRes.costUsd + (counterRun?.costUsd ?? 0);
@@ -148,11 +154,15 @@ async function runCounter(
   critic: CriticOutput,
   ctx: DistillContext,
   counterStrength: number,
+  researchJobId?: string,
 ): Promise<{ output: CounterOutput; costUsd: number }> {
   const distillJson = JSON.stringify(distill, null, 1);
   const sourceEvidence = [`CRITIC REVIEW:\n${JSON.stringify(critic)}`, ...ctx.sources.map((source) => `${source.title}\n${source.summary ?? ""}\n${source.fragments.map((f) => `- ${f}`).join("\n")}`)].join("\n\n").slice(0, 12_000);
   const generated = await callOpenAi(env, {
     purpose: "counter",
+    researchJobId,
+    workflowStep: "distill-counter",
+    promptVersion: "counter-v1",
     model: "high",
     jsonMode: true,
     maxOutputTokens: 3200,
@@ -164,12 +174,15 @@ async function runCounter(
   let output = asValidated(extractJsonLoose(generated.text), "counter");
   if (!output) return { output: { axes: [], suggestions: [], validation: { status: "unverified", issues: ["Counter JSON을 해석하지 못했습니다."] } }, costUsd: generated.costUsd };
 
-  const validation = await validateCounter(env, distillJson, output, sourceEvidence);
+  const validation = await validateCounter(env, distillJson, output, sourceEvidence, researchJobId, "distill-counter-validation");
   let totalCost = generated.costUsd + validation.costUsd;
   if (validation.status === "verified") return { output: { ...output, validation: validation.result }, costUsd: totalCost };
 
   const repaired = await callOpenAi(env, {
     purpose: "counter",
+    researchJobId,
+    workflowStep: "distill-counter-repair",
+    promptVersion: "counter-v1",
     model: "deep",
     jsonMode: true,
     maxOutputTokens: 3200,
@@ -180,7 +193,7 @@ async function runCounter(
   });
   totalCost += repaired.costUsd;
   output = asValidated(extractJsonLoose(repaired.text), "counter") ?? output;
-  const repairedValidation = await validateCounter(env, distillJson, output, sourceEvidence);
+  const repairedValidation = await validateCounter(env, distillJson, output, sourceEvidence, researchJobId, "distill-counter-validation-repair");
   totalCost += repairedValidation.costUsd;
   return {
     output: {
@@ -194,9 +207,12 @@ async function runCounter(
   };
 }
 
-async function validateCounter(env: Env, distillJson: string, counter: CounterOutput, sourceEvidence: string): Promise<{ status: "verified" | "unverified"; result: NonNullable<CounterOutput["validation"]>; costUsd: number }> {
+async function validateCounter(env: Env, distillJson: string, counter: CounterOutput, sourceEvidence: string, researchJobId?: string, workflowStep = "distill-counter-validation"): Promise<{ status: "verified" | "unverified"; result: NonNullable<CounterOutput["validation"]>; costUsd: number }> {
   const response = await callOpenAi(env, {
     purpose: "counter_validation",
+    researchJobId,
+    workflowStep,
+    promptVersion: "counter-v1",
     model: "deep",
     jsonMode: true,
     maxOutputTokens: 1600,

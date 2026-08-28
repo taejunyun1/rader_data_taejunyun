@@ -18,6 +18,8 @@ import { normalizeDoi, normalizeUrl, titleNorm } from "../ingestion/normalize";
 import { createSource } from "../ingestion/store";
 import { activateVersion, appendAcquisitionVersion, decideIncomingVersion, getActiveVersion, rejectVersion } from "../ingestion/versioning";
 import { enqueueResearchJob } from "../jobs/enqueue";
+import { verifiedRequester } from "../lib/httpErrors";
+import { readJson } from "../lib/requestBody";
 
 const inbox = new Hono<{ Bindings: Env }>();
 
@@ -129,9 +131,7 @@ inbox.get("/:sourceId", async (c) => {
 });
 
 inbox.post("/text", async (c) => {
-  const body = await c.req
-    .json<{ text?: string; title?: string; authors?: string; year?: number; kind?: string; doi?: string; canonicalUrl?: string }>()
-    .catch(() => null);
+  const body = await readJson<{ text?: string; title?: string; authors?: string; year?: number; kind?: string; doi?: string; canonicalUrl?: string }>(c);
 
   const text = body?.text?.trim();
   if (!text) return c.json({ error: "text_required" }, 400);
@@ -161,7 +161,7 @@ inbox.post("/text", async (c) => {
 });
 
 inbox.post("/url", async (c) => {
-  const body = await c.req.json<{ url?: string }>().catch(() => null);
+  const body = await readJson<{ url?: string }>(c);
   const raw = body?.url?.trim();
   if (!raw) return c.json({ error: "url_required" }, 400);
 
@@ -198,9 +198,7 @@ inbox.post("/url", async (c) => {
 });
 
 inbox.post("/file", async (c) => {
-  const body = await c.req
-    .json<{ filename?: string; text?: string; originalBase64?: string; previewBase64?: string; contentType?: string }>()
-    .catch(() => null);
+  const body = await readJson<{ filename?: string; text?: string; originalBase64?: string; previewBase64?: string; contentType?: string }>(c, 40_000_000);
 
   const filename = body?.filename?.trim();
   if (!filename) return c.json({ error: "filename_required" }, 400);
@@ -266,7 +264,7 @@ inbox.post("/:sourceId/exclude", async (c) => {
 
 inbox.post("/:sourceId/versions", async (c) => {
   const sourceId = c.req.param("sourceId");
-  const body = await c.req.json<{ text?: string; title?: string }>().catch(() => null);
+  const body = await readJson<{ text?: string; title?: string }>(c);
   const text = body?.text?.trim();
   if (!text) return c.json({ error: "text_required" }, 400);
   if (text.length > 1_000_000) return c.json({ error: "text_too_large" }, 400);
@@ -294,7 +292,7 @@ inbox.post("/:sourceId/versions", async (c) => {
 
 inbox.post("/:sourceId/reextract", async (c) => {
   const sourceId = c.req.param("sourceId");
-  const body = await c.req.json<{ text?: string; pageCount?: number }>().catch(() => null);
+  const body = await readJson<{ text?: string; pageCount?: number }>(c);
   const source = await loadSourceForVersion(c.env.DB, sourceId);
   if (!source) return c.json({ error: "not_found" }, 404);
   let original: string | ArrayBuffer;
@@ -413,7 +411,7 @@ inbox.post("/:sourceId/analyze", async (c) => {
 });
 
 inbox.post("/backfill", async (c) => {
-  const body = await c.req.json<{ limit?: number }>().catch(() => null);
+  const body = await readJson<{ limit?: number }>(c);
   const limit = Math.min(Math.max(Number(body?.limit ?? 20) || 20, 1), 20);
   const sources = await c.env.DB.prepare(
     `SELECT s.id, s.input_format AS inputFormat, s.active_version_id AS activeVersionId
@@ -457,7 +455,7 @@ inbox.post("/retry/:sourceId", async (c) => {
   if (!src.canonical_url) return c.json({ error: "not_retryable" }, 400);
 
   if (c.req.query("fetch") === "1") {
-    const requestedBy = c.req.header("CF-Access-Authenticated-User-Email") ?? "local";
+    const requestedBy = verifiedRequester(c);
     const result = await enqueueResearchJob(c.env, {
       kind: "SOURCE_ACQUISITION",
       input: { sourceId, url: src.canonical_url },

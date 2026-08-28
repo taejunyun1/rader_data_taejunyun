@@ -13,7 +13,7 @@ const cloudflareWorkersShim = {
 export default defineConfig({
   plugins: [cloudflareWorkersShim],
   test: {
-    include: ["test/settingsBackfillRoute.test.ts"],
+    include: ["test/settingsBackfillRoute.test.ts", "test/requestBodyLimits.test.ts"],
     environment: "node",
     restoreMocks: true,
   },

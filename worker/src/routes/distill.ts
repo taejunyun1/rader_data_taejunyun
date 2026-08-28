@@ -2,6 +2,8 @@ import { Hono } from "hono";
 import { budgetPct, verifyQueueItems } from "../distill/run";
 import { PROMPT_VARIANTS, type DistillOutput, type PromptVariant } from "../distill/prompts";
 import { enqueueResearchJob } from "../jobs/enqueue";
+import { verifiedRequester } from "../lib/httpErrors";
+import { readJson } from "../lib/requestBody";
 
 const distill = new Hono<{ Bindings: Env }>();
 
@@ -16,17 +18,12 @@ distill.get("/budget", async (c) => {
 });
 
 distill.post("/run", async (c) => {
-  const body = (await c.req.json<{ redistillOf?: string; keepElements?: string[]; promptVariant?: string; includeCounter?: boolean }>().catch(() => ({}))) as {
-    redistillOf?: string;
-    keepElements?: string[];
-    promptVariant?: string;
-    includeCounter?: boolean;
-  };
+  const body = (await readJson<{ redistillOf?: string; keepElements?: string[]; promptVariant?: string; includeCounter?: boolean }>(c)) ?? {};
   const variant: PromptVariant | undefined = PROMPT_VARIANTS.includes(body.promptVariant as PromptVariant)
     ? (body.promptVariant as PromptVariant)
     : undefined;
   try {
-    const requestedBy = c.req.header("CF-Access-Authenticated-User-Email") ?? "local";
+    const requestedBy = verifiedRequester(c);
     const result = await enqueueResearchJob(c.env, { kind: "DISTILL_RUN", input: {
       redistillOf: body.redistillOf,
       keepElements: body.keepElements,
@@ -147,7 +144,7 @@ distill.post("/queue-import/:itemId", async (c) => {
 
 distill.post("/sessions/:id/select", async (c) => {
   const id = c.req.param("id");
-  const body = await c.req.json<{ kept?: string[]; note?: string }>().catch(() => null);
+  const body = await readJson<{ kept?: string[]; note?: string }>(c);
   if (!body?.kept) return c.json({ error: "kept_required" }, 400);
   const ts = new Date().toISOString();
   await c.env.DB

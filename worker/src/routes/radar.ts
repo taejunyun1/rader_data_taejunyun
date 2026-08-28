@@ -3,6 +3,8 @@ import type { RadarPeriod } from "@radar/shared";
 import { computeStats, saveSnapshot, saveSnapshotSynthesis, windowFor } from "../radar/snapshot";
 import { synthesizeRadar } from "../radar/synthesize";
 import { enqueueResearchJob } from "../jobs/enqueue";
+import { verifiedRequester } from "../lib/httpErrors";
+import { readJson } from "../lib/requestBody";
 
 const radar = new Hono<{ Bindings: Env }>();
 
@@ -44,10 +46,10 @@ radar.get("/snapshots", async (c) => {
 });
 
 radar.post("/synthesize", async (c) => {
-  const body = (await c.req.json<{ period?: string }>().catch(() => ({}))) as { period?: string };
+  const body = (await readJson<{ period?: string }>(c)) ?? {};
   const period = (PERIODS.has(body.period ?? "") ? body.period : "WEEKLY") as RadarPeriod;
   try {
-    const requestedBy = c.req.header("CF-Access-Authenticated-User-Email") ?? "local";
+    const requestedBy = verifiedRequester(c);
     const result = await enqueueResearchJob(c.env, { kind: "RADAR_SYNTHESIS", input: { period } }, requestedBy);
     return c.json(result, 202);
   } catch (err) {

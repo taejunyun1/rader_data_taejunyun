@@ -21,7 +21,7 @@ export default defineConfig({
     })),
   ],
   test: {
-    include: ["test/backfillDiscovery.test.ts", "test/sourceVersionIntegrity.test.ts"],
+    include: ["test/aiCallSettlement.test.ts", "test/backfillDiscovery.test.ts", "test/jobDispatchConcurrency.test.ts", "test/requestBodyLimits.test.ts", "test/scheduledDispatch.test.ts", "test/sourceVersionIntegrity.test.ts"],
     exclude: ["test/settingsBackfillRoute.test.ts"],
     setupFiles: ["./test/helpers/runtime.ts"],
     fileParallelism: false,

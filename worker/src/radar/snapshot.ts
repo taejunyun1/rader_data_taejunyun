@@ -129,15 +129,5 @@ export async function createWeeklySnapshotIfDue(env: Env): Promise<string | null
 }
 
 export async function createWeeklySnapshotWithSynthesis(env: Env): Promise<string | null> {
-  const snapshotId = await createWeeklySnapshotIfDue(env);
-  if (!snapshotId) return null;
-
-  try {
-    const { synthesizeRadar } = await import("./synthesize");
-    const synthesis = await synthesizeRadar(env, "WEEKLY");
-    await saveSnapshotSynthesis(env.DB, snapshotId, synthesis);
-  } catch (err) {
-    console.error(JSON.stringify({ level: "error", scope: "cron:synthesis", message: (err as Error).message }));
-  }
-  return snapshotId;
+  return createWeeklySnapshotIfDue(env);
 }

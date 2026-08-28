@@ -114,17 +114,17 @@ export async function releaseAnalysisBudgetReservation(
   db: D1Database,
   researchJobId: string,
 ): Promise<void> {
-  await settleBudgetReservation(db, researchJobId, true);
+  await settleBudgetReservation(db, researchJobId);
 }
 
 export async function releaseDeepAnalysisBudgetReservation(
   db: D1Database,
   researchJobId: string,
 ): Promise<void> {
-  await settleBudgetReservation(db, researchJobId, false);
+  await settleBudgetReservation(db, researchJobId);
 }
 
-async function settleBudgetReservation(db: D1Database, researchJobId: string, recordVisualUsage: boolean): Promise<void> {
+async function settleBudgetReservation(db: D1Database, researchJobId: string): Promise<void> {
   const reservation = await db.prepare(
     `SELECT id, month, amount_usd AS amountUsd
      FROM ai_budget_reservations
@@ -134,22 +134,12 @@ async function settleBudgetReservation(db: D1Database, researchJobId: string, re
   if (!reservation) return;
 
   const releasedAt = new Date().toISOString();
-  const statements = [];
-  if (recordVisualUsage) {
-    statements.push(
-      db.prepare(
-        `INSERT OR IGNORE INTO ai_usage
-         (id, month, provider, model, purpose, input_tokens, output_tokens, cost_usd, created_at)
-         VALUES (?, ?, 'cloudflare', 'workers-ai-visual', 'visual_reservation', 0, 0, ?, ?)`
-      ).bind(`visual-reservation:${reservation.id}`, reservation.month, Number(reservation.amountUsd), releasedAt),
-    );
-  }
-  statements.push(
+  const statements = [
     db.prepare(
       `UPDATE ai_budget_reservations
        SET status = 'RELEASED', released_at = ?
        WHERE id = ? AND status = 'RESERVED'`
     ).bind(releasedAt, reservation.id),
-  );
+  ];
   await db.batch(statements);
 }

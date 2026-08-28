@@ -1,7 +1,7 @@
 import type { ResearchJob, ResearchJobKind, ResearchJobResultRef, ResearchJobStatus } from "@radar/shared/discovery";
 import { uuid } from "../ingestion/ids";
 
-type JobRow = Record<string, unknown>;
+export type JobRow = Record<string, unknown>;
 
 function parse(value: unknown): unknown {
   if (typeof value !== "string" || !value) return null;
@@ -75,12 +75,17 @@ export async function listResearchJobs(db: D1Database, requestedBy: string, limi
 }
 
 export async function setWorkflowInstanceId(db: D1Database, id: string, workflowInstanceId: string): Promise<void> {
-  await db.prepare("UPDATE research_jobs SET workflow_instance_id = ?, updated_at = ? WHERE id = ?").bind(workflowInstanceId, new Date().toISOString(), id).run();
+  await db.prepare("UPDATE research_jobs SET workflow_instance_id = ?, error_code = NULL, updated_at = ? WHERE id = ? AND workflow_instance_id IS NULL AND status = 'QUEUED'").bind(workflowInstanceId, new Date().toISOString(), id).run();
+}
+
+export async function markDispatchPending(db: D1Database, id: string, error = "workflow_create_failed"): Promise<void> {
+  await db.prepare("UPDATE research_jobs SET error_code = 'dispatch_pending', error = ?, updated_at = ? WHERE id = ? AND status = 'QUEUED'")
+    .bind(error.slice(0, 300), new Date().toISOString(), id).run();
 }
 
 export async function markJobRunning(db: D1Database, id: string, message = "작업을 시작했습니다."): Promise<void> {
   const now = new Date().toISOString();
-  await db.prepare("UPDATE research_jobs SET status = 'RUNNING', progress = MAX(progress, 5), message = ?, started_at = COALESCE(started_at, ?), updated_at = ? WHERE id = ?").bind(message, now, now, id).run();
+  await db.prepare("UPDATE research_jobs SET status = 'RUNNING', progress = MAX(progress, 5), message = ?, started_at = COALESCE(started_at, ?), updated_at = ? WHERE id = ? AND status IN ('QUEUED', 'RUNNING')").bind(message, now, now, id).run();
 }
 
 export async function updateJobProgress(db: D1Database, id: string, progress: number, message: string): Promise<void> {
@@ -89,17 +94,17 @@ export async function updateJobProgress(db: D1Database, id: string, progress: nu
 
 export async function completeResearchJob(db: D1Database, id: string, result: unknown, resultRef: ResearchJobResultRef | null): Promise<void> {
   const now = new Date().toISOString();
-  await db.prepare("UPDATE research_jobs SET status = 'SUCCEEDED', progress = 100, message = '완료', result_json = ?, result_ref_json = ?, finished_at = ?, updated_at = ? WHERE id = ?").bind(JSON.stringify(result ?? null), JSON.stringify(resultRef ?? null), now, now, id).run();
+  await db.prepare("UPDATE research_jobs SET status = 'SUCCEEDED', progress = 100, message = '완료', result_json = ?, result_ref_json = ?, finished_at = ?, updated_at = ? WHERE id = ? AND status = 'RUNNING'").bind(JSON.stringify(result ?? null), JSON.stringify(resultRef ?? null), now, now, id).run();
 }
 
 export async function failResearchJob(db: D1Database, id: string, errorCode: string, error: string): Promise<void> {
   const now = new Date().toISOString();
-  await db.prepare("UPDATE research_jobs SET status = 'FAILED', error_code = ?, error = ?, message = '작업에 실패했습니다.', finished_at = ?, updated_at = ? WHERE id = ?").bind(errorCode.slice(0, 100), error.slice(0, 300), now, now, id).run();
+  await db.prepare("UPDATE research_jobs SET status = 'FAILED', error_code = ?, error = ?, message = '작업에 실패했습니다.', finished_at = ?, updated_at = ? WHERE id = ? AND status NOT IN ('SUCCEEDED', 'FAILED', 'BLOCKED')").bind(errorCode.slice(0, 100), error.slice(0, 300), now, now, id).run();
 }
 
 export async function blockResearchJob(db: D1Database, id: string, errorCode: string, error: string): Promise<void> {
   const now = new Date().toISOString();
-  await db.prepare("UPDATE research_jobs SET status = 'BLOCKED', error_code = ?, error = ?, message = '설정 확인이 필요합니다.', finished_at = ?, updated_at = ? WHERE id = ?").bind(errorCode.slice(0, 100), error.slice(0, 300), now, now, id).run();
+  await db.prepare("UPDATE research_jobs SET status = 'BLOCKED', error_code = ?, error = ?, message = '설정 확인이 필요합니다.', finished_at = ?, updated_at = ? WHERE id = ? AND status NOT IN ('SUCCEEDED', 'FAILED', 'BLOCKED')").bind(errorCode.slice(0, 100), error.slice(0, 300), now, now, id).run();
 }
 
 export async function dismissResearchJob(db: D1Database, id: string, requestedBy: string): Promise<boolean> {

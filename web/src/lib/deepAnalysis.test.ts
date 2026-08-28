@@ -432,7 +432,7 @@ describe("deep analysis budget reservation", () => {
     expect(db.reservations.filter((row) => row.status === "RESERVED")).toHaveLength(1);
   });
 
-  it("records conservative visual spend before release so sequential jobs cannot bypass the monthly cap", async () => {
+  it("does not fabricate visual spend when a zero-cost Workers AI call is released", async () => {
     vi.doUnmock("../../../worker/src/analysis/budgetReservation");
     vi.resetModules();
     const { releaseAnalysisBudgetReservation, reserveVisualAnalysisBudget, visualAnalysisReservationUsd } = await import(
@@ -449,9 +449,8 @@ describe("deep analysis budget reservation", () => {
     const second = await reserveVisualAnalysisBudget(env, { researchJobId: "job-visual-sequential-2" });
 
     expect(first).toMatchObject({ ok: true, amountUsd });
-    expect(db.usageRows).toHaveLength(1);
-    expect(db.usageRows[0]).toMatchObject({ costUsd: amountUsd, purpose: "visual_reservation" });
-    expect(second).toEqual({ ok: false });
+    expect(db.usageRows).toHaveLength(0);
+    expect(second).toMatchObject({ ok: true, amountUsd });
   });
 
   it("reserves the extraction-wide 80-call visual ceiling through the same atomic budget boundary", async () => {

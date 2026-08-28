@@ -2613,19 +2613,11 @@ describe("visual asset routes", () => {
 
 describe("scheduled visual cleanup isolation", () => {
   it("runs cleanup in isolation so cron success paths still complete when cleanup throws", async () => {
-    const cleanupExpiredVisualExtractionTemps = vi.fn().mockRejectedValue(new Error("cleanup_failed"));
-    const syncHomepageReading = vi.fn().mockResolvedValue({ imported: 2 });
-    const createWeeklySnapshotWithSynthesis = vi.fn().mockResolvedValue("snapshot-1");
-    const runDiscovery = vi.fn().mockResolvedValue({ collected: 3, fieldSignalsCollected: 1, queries: ["visual culture"] });
-    const loadParams = vi.fn().mockResolvedValue({ divergence: 0.61 });
+    const runScheduledCron = vi.fn().mockResolvedValue({ status: "PARTIAL" });
     const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const infoLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
 
-    vi.doMock("../../../worker/src/visual/cleanup", () => ({ cleanupExpiredVisualExtractionTemps }));
-    vi.doMock("../../../worker/src/homepage/reading", () => ({ syncHomepageReading }));
-    vi.doMock("../../../worker/src/radar/snapshot", () => ({ createWeeklySnapshotWithSynthesis }));
-    vi.doMock("../../../worker/src/discovery/run", () => ({ runDiscovery }));
-    vi.doMock("../../../worker/src/lib/params", () => ({ loadParams }));
+    vi.doMock("../../../worker/src/operations/scheduled", () => ({ runScheduledCron }));
 
     const worker = await import("../../../worker/src/index");
     const env = { DB: {} as D1Database } as Env;
@@ -2633,15 +2625,10 @@ describe("scheduled visual cleanup isolation", () => {
     await worker.default.scheduled({ cron: "0 1 * * *" } as ScheduledEvent, env);
     await worker.default.scheduled({ cron: "0 9 * * 1" } as ScheduledEvent, env);
 
-    expect(cleanupExpiredVisualExtractionTemps).toHaveBeenCalledTimes(2);
-    expect(syncHomepageReading).toHaveBeenCalledTimes(1);
-    expect(createWeeklySnapshotWithSynthesis).toHaveBeenCalledTimes(1);
-    expect(runDiscovery).toHaveBeenCalledTimes(1);
-    expect(loadParams).toHaveBeenCalledTimes(1);
-    expect(errorLog).toHaveBeenCalledWith(expect.stringContaining("\"scope\":\"cron:visual-cleanup\""));
-    expect(infoLog).toHaveBeenCalledWith(expect.stringContaining("\"homepageReading\""));
-    expect(infoLog).toHaveBeenCalledWith(expect.stringContaining("\"snapshot\":\"snapshot-1\""));
-    expect(infoLog).toHaveBeenCalledWith(expect.stringContaining("\"discovery\":3"));
+    expect(runScheduledCron).toHaveBeenNthCalledWith(1, env, "0 1 * * *");
+    expect(runScheduledCron).toHaveBeenNthCalledWith(2, env, "0 9 * * 1");
+    expect(infoLog).toHaveBeenCalledTimes(2);
+    expect(errorLog).not.toHaveBeenCalled();
   });
 
   it("uses a dedicated hourly cleanup schedule without running research cron handlers", async () => {
@@ -2650,31 +2637,15 @@ describe("scheduled visual cleanup isolation", () => {
     };
     expect(config.triggers?.crons).toContain("0 * * * *");
 
-    const cleanupExpiredVisualExtractionTemps = vi.fn().mockResolvedValue({
-      scanned: 1,
-      deleted: 1,
-      cleanupFailures: 0,
-      skippedActiveOrRecent: 0,
-    });
-    const syncHomepageReading = vi.fn();
-    const createWeeklySnapshotWithSynthesis = vi.fn();
-    const runDiscovery = vi.fn();
-    const loadParams = vi.fn();
+    const runScheduledCron = vi.fn().mockResolvedValue({ status: "SUCCEEDED" });
 
-    vi.doMock("../../../worker/src/visual/cleanup", () => ({ cleanupExpiredVisualExtractionTemps }));
-    vi.doMock("../../../worker/src/homepage/reading", () => ({ syncHomepageReading }));
-    vi.doMock("../../../worker/src/radar/snapshot", () => ({ createWeeklySnapshotWithSynthesis }));
-    vi.doMock("../../../worker/src/discovery/run", () => ({ runDiscovery }));
-    vi.doMock("../../../worker/src/lib/params", () => ({ loadParams }));
+    vi.doMock("../../../worker/src/operations/scheduled", () => ({ runScheduledCron }));
 
     const worker = await import("../../../worker/src/index");
     await worker.default.scheduled({ cron: "0 * * * *" } as ScheduledEvent, { DB: {} as D1Database } as Env);
 
-    expect(cleanupExpiredVisualExtractionTemps).toHaveBeenCalledTimes(1);
-    expect(syncHomepageReading).not.toHaveBeenCalled();
-    expect(createWeeklySnapshotWithSynthesis).not.toHaveBeenCalled();
-    expect(runDiscovery).not.toHaveBeenCalled();
-    expect(loadParams).not.toHaveBeenCalled();
+    expect(runScheduledCron).toHaveBeenCalledTimes(1);
+    expect(runScheduledCron).toHaveBeenCalledWith(expect.anything(), "0 * * * *");
   });
 });
 

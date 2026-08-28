@@ -167,6 +167,16 @@ Semantic Search, Obsidian CLI, arXiv/RSS, Usage dashboard는 이미 구현된 �
 - `ai_usage`에 호출별 token/cost/purpose를 기록
 - 월 예산은 기본 `$10`, 80% 경고, 100% Distill 중단
 - 자동 작업을 추가할 때도 예산 초과 가능성과 guardrail 적용 범위를 확인한다.
+- OpenAI 호출은 `ai_call_attempts` 원장에서 결정적 idempotency key로 예약·호출·정산 상태를 추적한다. 실제 token usage만 `ai_usage`에 기록하며 정산 실패는 `usage_settlement_required`로 성공을 막는다. Workers AI 시각 호출은 실제 비용을 임의로 청구하지 않고 0달러로 원장에 정산한다.
+- 예약 원장에는 stale lease 회수 경계가 있으며, terminal job의 오래된 예약만 회수한다. 실행 중인 job의 예약은 cron이 임의로 해제하지 않는다.
+
+### 6-1. 예약 작업과 인증 경계
+
+- cron은 `0 * * * *` 시각 임시 파일·dispatch pending·안전한 AI 예약 정리, `0 1 * * *` homepage reading 동기화, `0 3 * * 1` snapshot 통계·Discovery만 담당한다. 주간 cron은 AI Radar synthesis를 호출하지 않으며 synthesis는 명시적인 사용자 작업으로만 실행한다.
+- 모든 cron 실행은 `system_runs`의 `(kind, window_key)` 유일 키로 중복 전달을 흡수하고, 형제 작업 하나가 실패해도 다른 결과를 보존한 채 `PARTIAL`로 기록한다. 알 수 없는 cron 문자열은 no-op으로 종료한다.
+- production에서 Cloudflare Access domain/audience가 없으면 API는 fail closed한다. local development/test에서만 명시적으로 우회하며, 사용자 식별자는 검증된 Hono identity에서 읽는다.
+- API JSON 본문은 선언된 `Content-Length`와 chunked reader 양쪽에서 상한을 검사하고, multipart 업로드도 파일 상한 전에 요청 길이를 검사한다. API 오류는 request id를 포함한 `{ error, requestId, details? }` 형태로 반환한다.
+- Workflow dispatch는 job id를 Workflow instance id로 사용하며, enqueue 경쟁에서 partial unique index의 승자를 반환한다. dispatch 실패는 `QUEUED + dispatch_pending`으로 남겨 동일 job id를 reconciliation에서 재시도하고, terminal job 상태는 compare-and-set으로 stale replay가 덮어쓰지 못한다.
 
 ## 7. 작업·검증·배포 규칙
 

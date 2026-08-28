@@ -21,12 +21,10 @@ import {
   updateAutoSuggestionReviewStatus,
 } from "../visual/store";
 import { uuid } from "../ingestion/ids";
+import { verifiedRequester } from "../lib/httpErrors";
+import { assertContentLength, readJson } from "../lib/requestBody";
 
 const visualAssets = new Hono<{ Bindings: Env }>();
-
-function requestedBy(c: { req: { header(name: string): string | undefined } }): string {
-  return c.req.header("CF-Access-Authenticated-User-Email") ?? "local";
-}
 
 function hasSignature(bytes: Uint8Array, contentType: string): boolean {
   if (contentType === "image/jpeg") return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
@@ -64,6 +62,7 @@ visualAssets.get("/", async (c) => {
 });
 
 visualAssets.post("/", async (c) => {
+  assertContentLength(c, MAX_PERSONAL_VISUAL_BYTES + 64_000);
   const form = await c.req.raw.formData().catch(() => null);
   const file = form?.get("file");
   if (!(file instanceof File)) return c.json({ error: "file_required" }, 400);
@@ -94,7 +93,7 @@ visualAssets.post("/", async (c) => {
     let jobId: string | null = null;
     let jobError: string | null = null;
     try {
-      const result = await enqueueResearchJob(c.env, { kind: "VISUAL_TRANSFORM", input: { visualAssetId: created.asset.id } }, requestedBy(c));
+      const result = await enqueueResearchJob(c.env, { kind: "VISUAL_TRANSFORM", input: { visualAssetId: created.asset.id } }, verifiedRequester(c));
       jobId = result.job.id;
     } catch (error) {
       jobError = error instanceof Error ? error.message.slice(0, 300) : "job_enqueue_failed";
@@ -135,7 +134,7 @@ visualAssets.patch("/:id/analysis", async (c) => {
   const visualAssetId = c.req.param("id");
   const asset = await getVisualAsset(c.env.DB, visualAssetId);
   if (!asset) return c.json({ error: "not_found" }, 404);
-  const body = await c.req.json<{ action?: unknown; payload?: unknown }>().catch(() => ({} as { action?: unknown; payload?: unknown }));
+  const body = (await readJson<{ action?: unknown; payload?: unknown }>(c)) ?? {};
   const action = body.action === "accept" || body.action === "dismiss" || body.action === "edit" ? body.action : null;
   if (!action) return c.json({ error: "analysis_action_invalid" }, 400);
   const analysisVersion = await getVisualVersionForAnalysis(c.env.DB, visualAssetId);
@@ -175,7 +174,7 @@ visualAssets.patch("/:id/assignment", async (c) => {
   const visualAssetId = c.req.param("id");
   const asset = await getVisualAsset(c.env.DB, visualAssetId);
   if (!asset) return c.json({ error: "not_found" }, 404);
-  const body = await c.req.json<{ sourceId?: unknown; sourceVersionId?: unknown }>().catch(() => ({} as { sourceId?: unknown; sourceVersionId?: unknown }));
+  const body = (await readJson<{ sourceId?: unknown; sourceVersionId?: unknown }>(c)) ?? {};
   const sourceId = typeof body.sourceId === "string" ? body.sourceId.trim() : "";
   if (!sourceId) return c.json({ error: "assignment_source_required" }, 400);
   const expectedVersionId = typeof body.sourceVersionId === "string" ? body.sourceVersionId.trim() : null;
@@ -237,7 +236,7 @@ visualAssets.patch("/:id/selection", async (c) => {
   const visualAssetId = c.req.param("id");
   const asset = await getVisualAsset(c.env.DB, visualAssetId);
   if (!asset) return c.json({ error: "not_found" }, 404);
-  const body = await c.req.json<{ selectionStatus?: unknown }>().catch(() => ({} as { selectionStatus?: unknown }));
+  const body = (await readJson<{ selectionStatus?: unknown }>(c)) ?? {};
   const selectionStatus = body.selectionStatus === "REVIEW" || body.selectionStatus === "SELECTED"
     ? body.selectionStatus
     : null;
@@ -280,7 +279,7 @@ visualAssets.patch("/:id/rights", async (c) => {
   const visualAssetId = c.req.param("id");
   const asset = await getVisualAsset(c.env.DB, visualAssetId);
   if (!asset) return c.json({ error: "not_found" }, 404);
-  const body = await c.req.json<{ rightsStatus?: unknown; rightsBasis?: unknown }>().catch(() => ({} as { rightsStatus?: unknown; rightsBasis?: unknown }));
+  const body = (await readJson<{ rightsStatus?: unknown; rightsBasis?: unknown }>(c)) ?? {};
   const rightsStatus = parseRightsStatus(body.rightsStatus);
   if (!rightsStatus) return c.json({ error: "rights_status_invalid" }, 400);
   const rightsBasis = typeof body.rightsBasis === "string" ? body.rightsBasis.trim() : "";
@@ -311,7 +310,7 @@ visualAssets.post("/:id/retry", async (c) => {
   const visualAssetId = c.req.param("id");
   const asset = await getVisualAsset(c.env.DB, visualAssetId);
   if (!asset) return c.json({ error: "not_found" }, 404);
-  const requester = requestedBy(c);
+  const requester = verifiedRequester(c);
   const original = await getOriginalVisualVersion(c.env.DB, visualAssetId);
   if ((asset.processingStatus === "TRANSFORM_PENDING" || asset.processingStatus === "FAILED") && original?.r2Key) {
     const result = await enqueueResearchJob(c.env, { kind: "VISUAL_TRANSFORM", input: { visualAssetId } }, requester);
@@ -349,7 +348,7 @@ visualAssets.post("/:id/storage-transition", async (c) => {
   const visualAssetId = c.req.param("id");
   const asset = await getVisualAsset(c.env.DB, visualAssetId);
   if (!asset) return c.json({ error: "not_found" }, 404);
-  const body = await c.req.json<{ target?: unknown; confirmation?: unknown; secondConfirmation?: unknown }>().catch(() => ({} as { target?: unknown; confirmation?: unknown; secondConfirmation?: unknown }));
+  const body = (await readJson<{ target?: unknown; confirmation?: unknown; secondConfirmation?: unknown }>(c)) ?? {};
   const target = body.target === "CAPSULE" || body.target === "TEXT_ONLY" ? body.target : null;
   const confirmation = body.confirmation === "DELETE_ORIGINAL" || body.confirmation === "DELETE_CAPSULE" ? body.confirmation : null;
   const secondConfirmation = typeof body.secondConfirmation === "string" ? body.secondConfirmation.trim() : "";

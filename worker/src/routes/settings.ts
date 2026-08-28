@@ -7,6 +7,8 @@ import { createSource } from "../ingestion/store";
 import { PARAMS_KEY, loadParams } from "../lib/params";
 import { callOpenAi } from "../lib/openai";
 import { isCuratedModelId, listAvailableModels, loadModelRoles, saveModelRoles, type AvailableModel } from "../lib/modelSettings";
+import { verifiedRequester } from "../lib/httpErrors";
+import { readJson } from "../lib/requestBody";
 
 const settings = new Hono<{ Bindings: Env }>();
 
@@ -24,7 +26,7 @@ settings.get("/models", async (c) => {
 });
 
 settings.post("/models/test", async (c) => {
-  const body = await c.req.json<{ modelId?: string }>().catch(() => null);
+  const body = await readJson<{ modelId?: string }>(c);
   const modelId = typeof body?.modelId === "string" ? body.modelId.trim() : "";
   if (!isCuratedModelId(c.env, modelId)) return c.json({ error: "invalid_model" }, 400);
 
@@ -54,7 +56,7 @@ settings.post("/models/test", async (c) => {
 });
 
 settings.put("/models", async (c) => {
-  const body = await c.req.json<{ baseModel?: string; reviewModel?: string }>().catch(() => null);
+  const body = await readJson<{ baseModel?: string; reviewModel?: string }>(c);
   const baseModel = typeof body?.baseModel === "string" ? body.baseModel.trim() : "";
   const reviewModel = typeof body?.reviewModel === "string" ? body.reviewModel.trim() : "";
   if (!isCuratedModelId(c.env, baseModel) || !isCuratedModelId(c.env, reviewModel)) return c.json({ error: "invalid_model" }, 400);
@@ -98,7 +100,7 @@ settings.get("/params", async (c) => {
 });
 
 settings.put("/params", async (c) => {
-  const body = await c.req.json<Partial<RadarParams> & { preset?: string }>().catch(() => null);
+  const body = await readJson<Partial<RadarParams> & { preset?: string }>(c);
   if (!body) return c.json({ error: "invalid_body" }, 400);
 
   let params: RadarParams;
@@ -164,7 +166,7 @@ settings.post("/import-homepage", async (c) => {
 });
 
 settings.post("/backfill-discovery", async (c) => {
-  const requestedBy = c.req.header("CF-Access-Authenticated-User-Email") ?? "local";
+  const requestedBy = verifiedRequester(c);
   try {
     const result = await backfillDiscoverySources(c.env, requestedBy, 10);
     return c.json(result, 202);

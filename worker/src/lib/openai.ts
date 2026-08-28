@@ -1,4 +1,5 @@
 import { loadModelRoles, openAiHeaders, pricingForModel } from "./modelSettings";
+import { deterministicAiCallKey, markAiCallCalled, markAiCallFailed, markAiCallSettlementPending, reserveAiCall, settleAiCall } from "./aiCallLedger";
 
 export interface OpenAiMessage {
   role: "system" | "user" | "assistant";
@@ -12,6 +13,10 @@ export interface OpenAiCallOptions {
   modelId?: string;
   jsonMode?: boolean;
   maxOutputTokens?: number;
+  researchJobId?: string;
+  workflowStep?: string;
+  promptVersion?: string;
+  reservationUsd?: number;
 }
 
 export interface OpenAiCallResult {
@@ -27,12 +32,44 @@ interface ChatCompletionResponse {
   choices?: { message: { content: string } }[];
   usage?: { prompt_tokens: number; completion_tokens: number };
   error?: { message: string };
+  id?: string;
 }
 
 export async function callOpenAi(env: Env, opts: OpenAiCallOptions): Promise<OpenAiCallResult> {
   const tier = opts.model ?? "high";
   const model = opts.modelId ?? await resolveModelId(env, tier);
   const url = `${env.OPENAI_BASE_URL}/chat/completions`;
+
+  const idempotencyKey = opts.researchJobId
+    ? deterministicAiCallKey({
+      researchJobId: opts.researchJobId,
+      purpose: opts.purpose,
+      workflowStep: opts.workflowStep ?? opts.purpose,
+      promptVersion: opts.promptVersion ?? "v1",
+    })
+    : null;
+  const ledger = idempotencyKey
+    ? await reserveAiCall(env.DB, {
+      researchJobId: opts.researchJobId!,
+      idempotencyKey,
+      purpose: opts.purpose,
+      model,
+      reservedUsd: opts.reservationUsd ?? 0.01,
+      budgetUsd: parseFloat(env.MONTHLY_BUDGET_USD) || 10,
+    })
+    : null;
+  if (idempotencyKey && (!ledger?.ok || !ledger.attempt)) throw new Error("monthly_budget_exhausted");
+  if (ledger?.attempt?.status === "SETTLED" && ledger.attempt.responseText != null) {
+    return {
+      text: ledger.attempt.responseText,
+      costUsd: ledger.attempt.actualUsd ?? 0,
+      model: ledger.attempt.model,
+      inputTokens: ledger.attempt.inputTokens,
+      outputTokens: ledger.attempt.outputTokens,
+      pricingKnown: pricingForModel(env, ledger.attempt.model).known,
+    };
+  }
+  if (ledger?.attempt) await markAiCallCalled(env.DB, ledger.attempt.id);
 
   const body: Record<string, unknown> = {
     model,
@@ -41,14 +78,17 @@ export async function callOpenAi(env: Env, opts: OpenAiCallOptions): Promise<Ope
   if (opts.jsonMode) body.response_format = { type: "json_object" };
   if (opts.maxOutputTokens) body.max_completion_tokens = opts.maxOutputTokens;
 
+  const headers = openAiHeaders(env);
+  if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
   const res = await fetch(url, {
     method: "POST",
-    headers: openAiHeaders(env),
+    headers,
     body: JSON.stringify(body),
   });
 
   if (!res.ok) {
     const errText = await res.text();
+    if (ledger?.attempt) await markAiCallFailed(env.DB, ledger.attempt.id, `openai_error_${res.status}`);
     throw new Error(`openai_error_${res.status}: ${errText.slice(0, 300)}`);
   }
 
@@ -59,13 +99,27 @@ export async function callOpenAi(env: Env, opts: OpenAiCallOptions): Promise<Ope
   const outputTokens = data.usage?.completion_tokens ?? 0;
   const costUsd = (inputTokens / 1e6) * price.input + (outputTokens / 1e6) * price.output;
 
-  await recordAiUsage(env, {
-    purpose: opts.purpose,
-    model,
-    inputTokens,
-    outputTokens,
-    costUsd,
-  });
+  if (ledger?.attempt) {
+    await markAiCallSettlementPending(env.DB, ledger.attempt.id, data.id ?? null);
+    try {
+      await settleAiCall(env.DB, {
+        id: ledger.attempt.id,
+        month: new Date().toISOString().slice(0, 7),
+        model,
+        purpose: opts.purpose,
+        inputTokens,
+        outputTokens,
+        actualUsd: costUsd,
+        providerRequestId: data.id ?? null,
+        responseText: text,
+      });
+    } catch (error) {
+      console.error(JSON.stringify({ level: "error", scope: "ai-usage-settlement", idempotencyKey, message: error instanceof Error ? error.message : String(error) }));
+      throw new Error("usage_settlement_required");
+    }
+  } else {
+    await recordAiUsage(env, { purpose: opts.purpose, model, inputTokens, outputTokens, costUsd });
+  }
 
   return { text, costUsd, model, inputTokens, outputTokens, pricingKnown: price.known };
 }
@@ -88,8 +142,7 @@ async function recordAiUsage(
        VALUES (?, ?, 'openai', ?, ?, ?, ?, ?, ?)`
     )
     .bind(id, month, u.model, u.purpose, u.inputTokens, u.outputTokens, u.costUsd, new Date().toISOString())
-    .run()
-    .catch(() => undefined);
+    .run();
 }
 
 export async function monthSpendUsd(env: Env): Promise<number> {

@@ -29,7 +29,7 @@ const SECTION_DEFS: Record<RadarPeriod, string[]> = {
   ],
 };
 
-export async function synthesizeRadar(env: Env, period: RadarPeriod): Promise<RadarSynthesis> {
+export async function synthesizeRadar(env: Env, period: RadarPeriod, researchJobId?: string): Promise<RadarSynthesis> {
   const { start, end } = windowFor(period, new Date());
   const startIso = start.toISOString();
   const endIso = end.toISOString();
@@ -92,6 +92,9 @@ Rules: grounded in given data only; if data is thin, say so honestly in the item
 
   const res = await callOpenAi(env, {
     purpose: `radar-${period.toLowerCase()}`,
+    researchJobId,
+    workflowStep: `radar-${period.toLowerCase()}`,
+    promptVersion: "radar-v1",
     model: "deep",
     jsonMode: true,
     maxOutputTokens: 3000,
