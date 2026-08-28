@@ -21,7 +21,7 @@ export default defineConfig({
     })),
   ],
   test: {
-    include: ["test/aiCallSettlement.test.ts", "test/backfillDiscovery.test.ts", "test/bulkScale.test.ts", "test/jobDispatchConcurrency.test.ts", "test/requestBodyLimits.test.ts", "test/scheduledDispatch.test.ts", "test/sourceVersionIntegrity.test.ts", "src/ingestion/dedup.test.ts", "src/ingestion/store.test.ts"],
+    include: ["test/aiCallSettlement.test.ts", "test/backfillDiscovery.test.ts", "test/bulkScale.test.ts", "test/jobDispatchConcurrency.test.ts", "test/requestBodyLimits.test.ts", "test/scheduledDispatch.test.ts", "test/sourceVersionIntegrity.test.ts", "src/ingestion/dedup.test.ts", "src/ingestion/matching.test.ts", "src/ingestion/store.test.ts", "src/reservoir/mergeGroups.test.ts"],
     exclude: ["test/settingsBackfillRoute.test.ts"],
     setupFiles: ["./test/helpers/runtime.ts"],
     fileParallelism: false,
