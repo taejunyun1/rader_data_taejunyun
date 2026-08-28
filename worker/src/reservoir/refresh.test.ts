@@ -76,23 +76,21 @@ describe("reservoir refresh service", () => {
     expect(candidate).toEqual({ decision: "REVIEW", status: "PENDING" });
   });
 
-  it("applies a connected component larger than 100 source IDs", async () => {
+  it("applies one 101-member connected duplicate component", async () => {
     const prefix = "!!!!!!!!!!!!!!!!large-component-";
-    const sharedTitle = "Large connected component";
-    const sharedAuthors = "Author, A";
+    const sharedDoi = "10.1000/large-connected-component";
     const now = new Date().toISOString();
 
     for (let index = 0; index < 101; index += 1) {
       const id = `${prefix}${String(index).padStart(3, "0")}`;
-      const doi = `10.1000/large-component-${index === 100 ? 0 : index}`;
       await env.DB.prepare(
-        `INSERT INTO sources (id, kind, title, authors, year, doi, canonical_url, origin, reliability, status, quality_status, created_at, updated_at)
-         VALUES (?, 'WEB', ?, ?, 2026, ?, 'https://large-component.example/source', 'large-component-origin', 'PRIMARY', 'stored', 'READY', ?, ?)`,
-      ).bind(id, sharedTitle, sharedAuthors, doi, now, now).run();
+        `INSERT INTO sources (id, kind, title, doi, reliability, status, quality_status, created_at, updated_at)
+         VALUES (?, 'WEB', ?, ?, 'PRIMARY', 'stored', 'READY', ?, ?)`,
+      ).bind(id, `Large connected component ${index}`, sharedDoi, now, now).run();
       if (index >= 50) {
         await env.DB.prepare(
           `INSERT INTO source_fingerprints (source_id, kind, value, created_at) VALUES (?, 'DOI', ?, ?)`,
-        ).bind(id, "10.1000/large-component-" + (index === 100 ? 0 : index), now).run();
+        ).bind(id, sharedDoi, now).run();
       }
     }
 
@@ -102,14 +100,15 @@ describe("reservoir refresh service", () => {
     expect(run.scannedCount).toBe(50);
     const scannedIds = await env.DB.prepare("SELECT id FROM sources ORDER BY id ASC LIMIT 50").all<{ id: string }>();
     expect(scannedIds.results.every(({ id }) => id.startsWith(prefix))).toBe(true);
-    const merge = await env.DB.prepare(
-      `SELECT id, canonical_source_id AS canonicalSourceId
-       FROM source_merge_groups WHERE canonical_source_id LIKE ? ORDER BY created_at DESC LIMIT 1`,
-    ).bind(`${prefix}%`).first<{ id: string; canonicalSourceId: string }>();
-    expect(merge).toBeTruthy();
-    const members = await env.DB.prepare(
-      "SELECT COUNT(*) AS count FROM source_merge_members WHERE group_id = ?",
-    ).bind(merge!.id).first<{ count: number }>();
-    expect(Number(members?.count)).toBeGreaterThan(1);
+    const groups = await env.DB.prepare(
+      `SELECT g.id, COUNT(*) AS memberCount
+       FROM source_merge_groups g
+       JOIN source_merge_members m ON m.group_id = g.id
+       WHERE g.reversed_at IS NULL AND m.source_id LIKE ?
+       GROUP BY g.id
+       ORDER BY g.id`,
+    ).bind(`${prefix}%`).all<{ id: string; memberCount: number }>();
+    expect(groups.results).toHaveLength(1);
+    expect(Number(groups.results[0]?.memberCount)).toBe(101);
   });
 });

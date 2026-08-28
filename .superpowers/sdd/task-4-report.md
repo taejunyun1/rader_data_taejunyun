@@ -89,3 +89,25 @@ The bounded run is executed during the accepted POST request and persisted as co
 - `selectCanonicalSourceId` now queries source IDs in fixed 90-ID chunks, then combines all chunk candidates using the original deterministic ranking (signals, full text, text length, creation time, ID).
 - Added APPLY regression coverage with 101 connected source IDs and verified the scoped refresh suite: 44 tests passed.
 - No deploy, migration, push, R2, or AI operation was performed.
+
+## Second re-review fix — 2026-08-29
+
+### Outcome
+
+- Replaced the weak large-component APPLY assertion with 101 sources sharing one normalized DOI, including persisted fingerprints across the 50-source scan boundary. The regression now requires exactly one active merge group containing all 101 sources.
+- `createLogicalMerge` now checks source existence and active memberships in fixed 90-ID chunks, keeping every source-ID `IN (...)` query below D1's 100-bound-parameter limit.
+- The service test directly creates a reversible 102-source logical group, verifies duplicate/canonical IDs are deduplicated to one canonical membership, and proves reversal preserves every source row.
+- Added later-chunk validation cases proving a missing source or an active membership is still rejected before any new group is written.
+
+### TDD evidence
+
+1. RED: `refresh.test.ts` and the direct `mergeGroups.test.ts` both failed with `D1_ERROR: too many SQL variables` at the unchunked source existence query.
+2. RED: later-chunk missing-source and active-membership tests failed with the same D1 error instead of the established validation errors.
+3. GREEN: `pnpm --filter @radar/worker exec vitest run --config vitest.config.ts src/reservoir/mergeGroups.test.ts src/reservoir/refresh.test.ts` passed 2 files and 8 tests.
+4. GREEN: `pnpm --filter @radar/worker run typecheck` completed with `tsc --noEmit` exit 0.
+
+### Preservation audit
+
+- Group and member writes remain in the existing single D1 batch, so validation happens before the atomic write and reversal continues to mark only the group while retaining source/member rows.
+- No deploy, remote migration, push, source deletion, R2 mutation, or AI call was performed.
+- Unrelated dirty reports and untracked workspace artifacts were left untouched and excluded from the commit.

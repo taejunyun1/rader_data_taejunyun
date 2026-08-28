@@ -8,8 +8,18 @@ export interface LogicalMergeInput {
   reasons: string[];
 }
 
+const MAX_SOURCE_IDS_PER_QUERY = 90;
+
 function uniqueSourceIds(input: LogicalMergeInput): string[] {
   return [...new Set([input.canonicalSourceId, ...input.memberSourceIds])];
+}
+
+function sourceIdChunks(sourceIds: string[]): string[][] {
+  const result: string[][] = [];
+  for (let index = 0; index < sourceIds.length; index += MAX_SOURCE_IDS_PER_QUERY) {
+    result.push(sourceIds.slice(index, index + MAX_SOURCE_IDS_PER_QUERY));
+  }
+  return result;
 }
 
 export async function createLogicalMerge(db: D1Database, input: LogicalMergeInput): Promise<string> {
@@ -19,23 +29,30 @@ export async function createLogicalMerge(db: D1Database, input: LogicalMergeInpu
     throw new Error("Merge confidence must be between 0 and 1");
   }
 
-  const placeholders = sourceIds.map(() => "?").join(", ");
-  const existingSources = await db.prepare(
-    `SELECT COUNT(*) AS count FROM sources WHERE id IN (${placeholders})`,
-  ).bind(...sourceIds).first<{ count: number }>();
-  if (Number(existingSources?.count ?? 0) !== sourceIds.length) {
+  let existingSourceCount = 0;
+  for (const group of sourceIdChunks(sourceIds)) {
+    const placeholders = group.map(() => "?").join(", ");
+    const existingSources = await db.prepare(
+      `SELECT COUNT(*) AS count FROM sources WHERE id IN (${placeholders})`,
+    ).bind(...group).first<{ count: number }>();
+    existingSourceCount += Number(existingSources?.count ?? 0);
+  }
+  if (existingSourceCount !== sourceIds.length) {
     throw new Error("Every logical merge member must reference an existing source");
   }
 
-  const activeMembership = await db.prepare(
-    `SELECT m.source_id
-     FROM source_merge_members m
-     JOIN source_merge_groups g ON g.id = m.group_id
-     WHERE g.reversed_at IS NULL AND m.source_id IN (${placeholders})
-     LIMIT 1`,
-  ).bind(...sourceIds).first<{ source_id: string }>();
-  if (activeMembership) {
-    throw new Error(`Source ${activeMembership.source_id} already belongs to an active merge group`);
+  for (const group of sourceIdChunks(sourceIds)) {
+    const placeholders = group.map(() => "?").join(", ");
+    const activeMembership = await db.prepare(
+      `SELECT m.source_id
+       FROM source_merge_members m
+       JOIN source_merge_groups g ON g.id = m.group_id
+       WHERE g.reversed_at IS NULL AND m.source_id IN (${placeholders})
+       LIMIT 1`,
+    ).bind(...group).first<{ source_id: string }>();
+    if (activeMembership) {
+      throw new Error(`Source ${activeMembership.source_id} already belongs to an active merge group`);
+    }
   }
 
   const groupId = crypto.randomUUID();
