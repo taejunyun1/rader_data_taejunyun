@@ -9,7 +9,6 @@ WHERE origin = 'homepage-reading'
     WHERE v.source_id = sources.id
       AND v.version_origin = 'INITIAL_INGEST'
       AND v.parent_version_id IS NULL
-      AND v.text_scope = 'FULLTEXT'
       AND v.extraction_method = 'MANUAL_TEXT'
   );
 
