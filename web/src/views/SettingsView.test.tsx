@@ -25,6 +25,35 @@ describe("SettingsView repository maintenance", () => {
     expect(screen.getByRole("button", { name: "정리 적용" })).toBeEnabled();
   });
 
+  it("continues preview batches, aggregates their counts, and waits for the terminal batch before enabling apply", async () => {
+    let refreshCalls = 0;
+    let completeSecondBatch: ((response: Response) => void) | undefined;
+    vi.mocked(fetch).mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/settings/params") return Promise.resolve(new Response(JSON.stringify({ familiarity: 0.5, researchDepth: 0.5, divergence: 0.5, counterStrength: 0.5, technicalPhotographic: 0.5 })));
+      if (url === "/api/settings/models") return Promise.resolve(new Response(JSON.stringify({ roles: { baseModel: "base", reviewModel: "review" }, models: [{ id: "base", pricingKnown: true }, { id: "review", pricingKnown: true }] })));
+      if (url === "/api/reservoir/duplicates?status=PENDING") return Promise.resolve(new Response(JSON.stringify({ items: [] })));
+      if (url === "/api/reservoir/refresh" && init?.method === "POST") {
+        refreshCalls += 1;
+        if (refreshCalls === 1) return Promise.resolve(new Response(JSON.stringify({ runId: "preview-1", mode: "PREVIEW", hasMore: true, autoMergeCount: 3, reviewCount: 2 }), { status: 202 }));
+        return new Promise((resolve) => { completeSecondBatch = resolve; });
+      }
+      return Promise.resolve(new Response(JSON.stringify({ ok: true })));
+    });
+    const user = userEvent.setup();
+    render(<SettingsView />);
+
+    void user.click(screen.getByRole("button", { name: "저장소 점검 미리보기" }));
+
+    await waitFor(() => expect(refreshCalls).toBe(2));
+    expect(screen.getByRole("button", { name: "정리 적용" })).toBeDisabled();
+
+    completeSecondBatch?.(new Response(JSON.stringify({ runId: "preview-2", mode: "PREVIEW", hasMore: false, autoMergeCount: 4, reviewCount: 1 }), { status: 202 }));
+
+    expect(await screen.findByText("자동 병합 7건 · 검토 3건")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "정리 적용" })).toBeEnabled();
+  });
+
   it("lists pending duplicate candidates with review actions", async () => {
     render(<SettingsView />);
 

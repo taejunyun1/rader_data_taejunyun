@@ -24,6 +24,7 @@ type TestedRoles = { baseModel: string | null; reviewModel: string | null };
 interface ReservoirRefreshRun {
   runId: string;
   mode: "PREVIEW" | "APPLY";
+  hasMore: boolean;
   autoMergeCount: number;
   reviewCount: number;
 }
@@ -126,14 +127,22 @@ export default function SettingsView() {
 
   async function refreshRepository(mode: ReservoirRefreshRun["mode"]) {
     setBusy(true);
+    if (mode === "PREVIEW") setRefreshPreview(null);
     setRefreshMsg(mode === "PREVIEW" ? "저장소를 점검하는 중입니다…" : "정리를 적용하는 중입니다…");
     try {
-      const response = await fetch("/api/reservoir/refresh", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode }) });
-      const data = await response.json() as ReservoirRefreshRun;
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const summary = `자동 병합 ${data.autoMergeCount}건 · 검토 ${data.reviewCount}건`;
+      let data: ReservoirRefreshRun;
+      let autoMergeCount = 0;
+      let reviewCount = 0;
+      do {
+        const response = await fetch("/api/reservoir/refresh", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode }) });
+        data = await response.json() as ReservoirRefreshRun;
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        autoMergeCount += data.autoMergeCount;
+        reviewCount += data.reviewCount;
+      } while (mode === "PREVIEW" && data.hasMore);
+      const summary = `자동 병합 ${autoMergeCount}건 · 검토 ${reviewCount}건`;
       if (mode === "PREVIEW") {
-        setRefreshPreview(data);
+        setRefreshPreview({ ...data!, autoMergeCount, reviewCount });
         setRefreshMsg(summary);
         await loadPendingDuplicates();
       } else {
@@ -175,7 +184,7 @@ export default function SettingsView() {
     <section className="settings-section"><h2>홈페이지 연결</h2><p>taejunyun.com의 프로젝트 정보를 발견 맥락에 반영합니다. 원본 데이터는 별도로 보존됩니다.</p><button className="ui-button-secondary" disabled={busy} onClick={() => void action("/api/settings/import-homepage", setHomepageMsg, (data) => `프로젝트 ${data.imported ?? 0}개를 가져왔습니다. 중복 ${data.duplicates ?? 0}개.`)}>홈페이지 프로젝트 다시 가져오기</button>{homepageMsg && <p className="reservoir-message" role="status">{homepageMsg}</p>}</section>
     <section className="settings-section"><h2>발견 자료 원문 보정</h2><p>본문이 없거나 짧은 발견 자료를 한 번에 최대 10개 다시 가져옵니다. 기존 원문과 이전 버전은 그대로 보존됩니다.</p><button className="ui-button-secondary" disabled={busy} onClick={() => void action("/api/settings/backfill-discovery", setBackfillMsg, (data) => `발견 자료 ${data.selected ?? 0}개 중 ${data.enqueued ?? 0}개의 원문 수집을 시작했습니다. 건너뜀 ${data.skipped ?? 0}개, 오류 ${data.errors ?? 0}개.`)}>발견 자료 원문 다시 가져오기</button>{backfillMsg && <p className="reservoir-message" role="status">{backfillMsg}</p>}</section>
     <section className="settings-section"><h2>데이터 내보내기</h2><p>원본과 분석 결과를 필요한 형식으로 내려받습니다.</p><div className="settings-actions"><a className="ui-button-secondary" href="/api/export/json" download>전체 JSON</a><a className="ui-button-secondary" href="/api/export/markdown" download>마크다운</a><a className="ui-button-secondary" href="/api/export/csv" download>자료 CSV</a><button className="ui-button-secondary" disabled={busy} onClick={() => void action("/api/export/originals-to-r2", setExportMsg, (data) => `원본 ${data.copied ?? 0}/${data.total ?? 0}개를 백업했습니다.`)}>원본 R2 백업</button></div>{exportMsg && <p className="reservoir-message" role="status">{exportMsg}</p>}</section>
-    <section className="settings-section"><h2>저장소 정리</h2><p>원본 자료와 분석 기록은 항상 보존됩니다. 미리보기는 활성 병합을 만들지 않고, 적용할 자동 병합과 검토 대상을 보여줍니다.</p><div className="settings-actions"><button className="ui-button-secondary" disabled={busy} onClick={() => void refreshRepository("PREVIEW")}>저장소 점검 미리보기</button><button className="ui-button" disabled={busy || !refreshPreview} onClick={() => void refreshRepository("APPLY")}>정리 적용</button></div>{refreshMsg && <p className="reservoir-message" role="status">{refreshMsg}</p>}<div className="settings-duplicate-review"><h3>검토 대기 중복 후보</h3>{pendingDuplicates.length ? <div className="settings-duplicate-list">{pendingDuplicates.map((candidate) => <article className="settings-duplicate-card" key={candidate.id}><div><strong>{candidate.leftTitle}</strong><span>↔</span><strong>{candidate.rightTitle}</strong></div><p>일치도 {Math.round(candidate.score * 100)}% · {candidate.reasons.join(" · ")}</p><div className="settings-actions"><button className="ui-button-secondary" disabled={busy} onClick={() => void resolvePendingDuplicate(candidate, "MERGE")}>병합</button><button className="ui-button-secondary" disabled={busy} onClick={() => void resolvePendingDuplicate(candidate, "SEPARATE")}>별도 유지</button></div></article>)}</div> : <p className="settings-empty">검토 대기 중인 중복 후보가 없습니다.</p>}</div></section>
+    <section className="settings-section"><h2>저장소 정리</h2><p>원본 자료와 분석 기록은 항상 보존됩니다. 미리보기는 활성 병합을 만들지 않고, 적용할 자동 병합과 검토 대상을 보여줍니다.</p><div className="settings-actions"><button className="ui-button-secondary" disabled={busy} onClick={() => void refreshRepository("PREVIEW")}>저장소 점검 미리보기</button><button className="ui-button" disabled={busy || !refreshPreview || refreshPreview.hasMore} onClick={() => void refreshRepository("APPLY")}>정리 적용</button></div>{refreshMsg && <p className="reservoir-message" role="status">{refreshMsg}</p>}<div className="settings-duplicate-review"><h3>검토 대기 중복 후보</h3>{pendingDuplicates.length ? <div className="settings-duplicate-list">{pendingDuplicates.map((candidate) => <article className="settings-duplicate-card" key={candidate.id}><div><strong>{candidate.leftTitle}</strong><span>↔</span><strong>{candidate.rightTitle}</strong></div><p>일치도 {Math.round(candidate.score * 100)}% · {candidate.reasons.join(" · ")}</p><div className="settings-actions"><button className="ui-button-secondary" disabled={busy} onClick={() => void resolvePendingDuplicate(candidate, "MERGE")}>병합</button><button className="ui-button-secondary" disabled={busy} onClick={() => void resolvePendingDuplicate(candidate, "SEPARATE")}>별도 유지</button></div></article>)}</div> : <p className="settings-empty">검토 대기 중인 중복 후보가 없습니다.</p>}</div></section>
     <section className="settings-section"><h2>고급 관리</h2><p>운영 중 데이터 품질을 보정할 때만 실행하세요. 작업 결과는 되돌리기 어렵습니다.</p><div className="settings-actions"><button className="ui-button-secondary" disabled={busy} onClick={() => void action("/api/search/embed-backfill?limit=25", setExportMsg, (data) => `자료 ${data.embedded ?? 0}개를 의미 색인했습니다. 남은 자료 ${data.remaining ?? 0}개.`)}>의미 색인 채우기</button><button className="ui-button-secondary" disabled={busy} onClick={() => void action("/api/reservoir/retag-all", setExportMsg, (data) => `자료 ${data.retagged ?? 0}개의 주제를 다시 분류했습니다.`)}>주제 다시 분류</button></div></section>
   </div>;
 }

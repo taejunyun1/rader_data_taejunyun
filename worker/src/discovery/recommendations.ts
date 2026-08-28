@@ -15,8 +15,8 @@ const recommendationSourceOrder: DiscoveryRecommendationSource[] = [
   "MOMENTUM",
   "DISTILL",
   "RESEARCH_GAP",
-  "COUNTER",
   "UNDERREPRESENTED",
+  "COUNTER",
 ];
 
 function cleanKeyword(value: unknown): string | null {

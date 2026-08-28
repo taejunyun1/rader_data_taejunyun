@@ -25,4 +25,20 @@ describe("diversifyRecommendations", () => {
     });
     expect(recommendations.find(({ keyword }) => keyword === "저장 키워드")).toMatchObject({ selected: true });
   });
+
+  it("uses the contract source order, including the counter lane", () => {
+    const sources = ["SAVED", "MOMENTUM", "DISTILL", "RESEARCH_GAP", "UNDERREPRESENTED", "COUNTER"] as const;
+    const items: CandidateRecommendation[] = sources.map((source) => ({
+      keyword: `${source} counter keyword`,
+      lane: "COUNTER",
+      source,
+      score: 1,
+      reason: source,
+    }));
+
+    const recommendations = diversifyRecommendations(items, []);
+
+    expect(recommendations.map(({ source }) => source)).toEqual(sources);
+    expect(recommendations.every(({ lane }) => lane === "COUNTER")).toBe(true);
+  });
 });
