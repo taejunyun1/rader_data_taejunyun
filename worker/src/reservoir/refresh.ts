@@ -13,6 +13,8 @@ const MAX_STATEMENTS_PER_BATCH = 50;
 const MAX_CANDIDATE_LOOKUP_PAIRS = 40;
 const MAX_PERSISTED_FINGERPRINT_PAIRS = 200;
 const MAX_CANONICAL_SOURCE_IDS_PER_QUERY = 90;
+const MAX_MERGE_MEMBERS_PER_STATEMENT = 25;
+const MAX_CANDIDATE_STATUS_IDS_PER_STATEMENT = 98;
 
 interface RefreshSource extends SourceMatchInput {
   id: string;
@@ -394,6 +396,71 @@ async function selectCanonicalSourceId(db: D1Database, sourceIds: string[]): Pro
   return canonical.id;
 }
 
+async function createAutomaticLogicalMerge(
+  db: D1Database,
+  input: {
+    canonicalSourceId: string;
+    memberSourceIds: string[];
+    confidence: number;
+    reasons: string[];
+    candidateIds: string[];
+  },
+  now: string,
+): Promise<void> {
+  const sourceIds = [...new Set([input.canonicalSourceId, ...input.memberSourceIds])];
+  if (sourceIds.length < 2) throw new Error("A logical merge requires at least two distinct sources");
+
+  let existingSourceCount = 0;
+  for (const group of chunks(sourceIds, MAX_CANONICAL_SOURCE_IDS_PER_QUERY)) {
+    const placeholders = group.map(() => "?").join(", ");
+    const existingSources = await db.prepare(
+      `SELECT COUNT(*) AS count FROM sources WHERE id IN (${placeholders})`,
+    ).bind(...group).first<{ count: number }>();
+    existingSourceCount += Number(existingSources?.count ?? 0);
+  }
+  if (existingSourceCount !== sourceIds.length) {
+    throw new Error("Every logical merge member must reference an existing source");
+  }
+
+  for (const group of chunks(sourceIds, MAX_CANONICAL_SOURCE_IDS_PER_QUERY)) {
+    const placeholders = group.map(() => "?").join(", ");
+    const activeMembership = await db.prepare(
+      `SELECT m.source_id
+       FROM source_merge_members m
+       JOIN source_merge_groups g ON g.id = m.group_id
+       WHERE g.reversed_at IS NULL AND m.source_id IN (${placeholders})
+       LIMIT 1`,
+    ).bind(...group).first<{ source_id: string }>();
+    if (activeMembership) {
+      throw new Error(`Source ${activeMembership.source_id} already belongs to an active merge group`);
+    }
+  }
+
+  const groupId = crypto.randomUUID();
+  const statements = [
+    db.prepare(
+      `INSERT INTO source_merge_groups
+       (id, canonical_source_id, mode, confidence, reasons_json, created_at)
+       VALUES (?, ?, 'AUTO', ?, ?, ?)`,
+    ).bind(groupId, input.canonicalSourceId, input.confidence, JSON.stringify(input.reasons), now),
+    ...chunks(sourceIds, MAX_MERGE_MEMBERS_PER_STATEMENT).map((group) => db.prepare(
+      `INSERT INTO source_merge_members (group_id, source_id, role, created_at)
+       VALUES ${group.map(() => "(?, ?, ?, ?)").join(", ")}`,
+    ).bind(...group.flatMap((sourceId) => [
+      groupId,
+      sourceId,
+      sourceId === input.canonicalSourceId ? "CANONICAL" : "MEMBER",
+      now,
+    ]))),
+    ...chunks(input.candidateIds, MAX_CANDIDATE_STATUS_IDS_PER_STATEMENT).map((group) => db.prepare(
+      `UPDATE source_duplicate_candidates
+       SET status = 'MERGED', merge_group_id = ?, resolved_at = ?
+       WHERE id IN (${group.map(() => "?").join(", ")}) AND status = 'PENDING'`,
+    ).bind(groupId, now, ...group)),
+  ];
+  await db.batch(statements);
+}
+
 async function applyAutomaticMerges(db: D1Database, pairs: StoredAssessedPair[], now: string): Promise<void> {
   const eligible = pairs.filter((pair) => pair.assessment.decision === "AUTO_MERGE" && pair.candidate.status === "PENDING");
   const components = new SourceComponents();
@@ -402,18 +469,13 @@ async function applyAutomaticMerges(db: D1Database, pairs: StoredAssessedPair[],
   for (const sourceIds of components.groups()) {
     const canonicalSourceId = await selectCanonicalSourceId(db, sourceIds);
     const componentPairs = eligible.filter((pair) => sourceIds.includes(pair.left.id) && sourceIds.includes(pair.right.id));
-    const groupId = await createLogicalMerge(db, {
+    await createAutomaticLogicalMerge(db, {
       canonicalSourceId,
       memberSourceIds: sourceIds.filter((id) => id !== canonicalSourceId),
-      mode: "AUTO",
       confidence: Math.min(...componentPairs.map((pair) => pair.assessment.confidence)),
       reasons: [...new Set(componentPairs.flatMap((pair) => pair.assessment.reasons))],
-    });
-    await db.batch(componentPairs.map((pair) => db.prepare(
-      `UPDATE source_duplicate_candidates
-       SET status = 'MERGED', merge_group_id = ?, resolved_at = ?
-       WHERE id = ? AND status = 'PENDING'`,
-    ).bind(groupId, now, pair.candidate.id)));
+      candidateIds: componentPairs.map((pair) => pair.candidate.id),
+    }, now);
   }
 }
 

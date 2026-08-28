@@ -94,7 +94,25 @@ describe("reservoir refresh service", () => {
       }
     }
 
-    const run = await runReservoirRefresh(env.DB, "APPLY");
+    let preparedStatementCount = 0;
+    let candidateStatusUpdateCount = 0;
+    const countedDb = new Proxy(env.DB, {
+      get(target, property, receiver) {
+        if (property === "prepare") {
+          return (query: string) => {
+            preparedStatementCount += 1;
+            if (query.includes("UPDATE source_duplicate_candidates") && query.includes("status = 'MERGED'")) {
+              candidateStatusUpdateCount += 1;
+            }
+            return target.prepare(query);
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+
+    const run = await runReservoirRefresh(countedDb, "APPLY");
 
     expect(run.status).toBe("COMPLETED");
     expect(run.scannedCount).toBe(50);
@@ -110,5 +128,100 @@ describe("reservoir refresh service", () => {
     ).bind(`${prefix}%`).all<{ id: string; memberCount: number }>();
     expect(groups.results).toHaveLength(1);
     expect(Number(groups.results[0]?.memberCount)).toBe(101);
+    expect(preparedStatementCount).toBeLessThan(1_000);
+    expect(candidateStatusUpdateCount).toBeLessThanOrEqual(20);
+  });
+
+  it("rolls back an interrupted automatic merge and succeeds on retry", async () => {
+    const prefix = "!!!!!!!!atomic-retry-";
+    const sharedDoi = "10.1000/atomic-retry";
+    for (let index = 0; index < 3; index += 1) {
+      await insertSource(`${prefix}${index}`, `Atomic retry ${index}`, sharedDoi);
+    }
+
+    const queryByStatement = new WeakMap<object, string>();
+    let failedMergeBatch = false;
+    const interruptedDb = new Proxy(env.DB, {
+      get(target, property, receiver) {
+        if (property === "prepare") {
+          return (query: string) => {
+            const statement = target.prepare(query);
+            return new Proxy(statement, {
+              get(statementTarget, statementProperty, statementReceiver) {
+                if (statementProperty === "bind") {
+                  return (...values: unknown[]) => {
+                    const bound = statementTarget.bind(...values);
+                    queryByStatement.set(bound, query);
+                    return bound;
+                  };
+                }
+                const value = Reflect.get(statementTarget, statementProperty, statementReceiver) as unknown;
+                return typeof value === "function" ? value.bind(statementTarget) : value;
+              },
+            });
+          };
+        }
+        if (property === "batch") {
+          return async (statements: D1PreparedStatement[]) => {
+            const resolvesCandidates = statements.some((statement) => {
+              const query = queryByStatement.get(statement);
+              return query?.includes("UPDATE source_duplicate_candidates") && query.includes("status = 'MERGED'");
+            });
+            if (resolvesCandidates && !failedMergeBatch) {
+              failedMergeBatch = true;
+              return target.batch([
+                ...statements,
+                target.prepare("INSERT INTO source_merge_groups (id) VALUES ('forced-merge-failure')"),
+              ]);
+            }
+            return target.batch(statements);
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+
+    await expect(runReservoirRefresh(interruptedDb, "APPLY")).rejects.toThrow();
+
+    const afterFailure = await env.DB.prepare(
+      `SELECT
+         (SELECT COUNT(*)
+          FROM source_merge_groups g
+          JOIN source_merge_members m ON m.group_id = g.id
+          WHERE g.reversed_at IS NULL AND m.source_id LIKE ?) AS activeGroupMemberCount,
+         (SELECT COUNT(*)
+          FROM source_duplicate_candidates
+          WHERE left_source_id LIKE ? AND status = 'PENDING') AS pendingCandidateCount`,
+    ).bind(`${prefix}%`, `${prefix}%`).first<{
+      activeGroupMemberCount: number;
+      pendingCandidateCount: number;
+    }>();
+    expect(afterFailure).toEqual({ activeGroupMemberCount: 0, pendingCandidateCount: 3 });
+
+    const retry = await runReservoirRefresh(env.DB, "APPLY");
+    expect(retry.status).toBe("COMPLETED");
+    const afterRetry = await env.DB.prepare(
+      `SELECT
+         (SELECT COUNT(*)
+          FROM source_merge_groups g
+          JOIN source_merge_members m ON m.group_id = g.id
+          WHERE g.reversed_at IS NULL AND m.source_id LIKE ?) AS activeGroupMemberCount,
+         (SELECT COUNT(*)
+          FROM source_duplicate_candidates
+          WHERE left_source_id LIKE ? AND status = 'PENDING') AS pendingCandidateCount,
+         (SELECT COUNT(*)
+          FROM source_duplicate_candidates
+          WHERE left_source_id LIKE ? AND status = 'MERGED') AS mergedCandidateCount`,
+    ).bind(`${prefix}%`, `${prefix}%`, `${prefix}%`).first<{
+      activeGroupMemberCount: number;
+      pendingCandidateCount: number;
+      mergedCandidateCount: number;
+    }>();
+    expect(afterRetry).toEqual({
+      activeGroupMemberCount: 3,
+      pendingCandidateCount: 0,
+      mergedCandidateCount: 3,
+    });
   });
 });
