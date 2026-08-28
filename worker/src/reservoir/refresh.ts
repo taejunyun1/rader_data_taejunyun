@@ -592,17 +592,26 @@ export async function resolveDuplicateCandidate(
   } else {
     const sourceIds = [row.left_source_id, row.right_source_id];
     const canonicalSourceId = await selectCanonicalSourceId(db, sourceIds);
-    const groupId = await createLogicalMerge(db, {
-      canonicalSourceId,
-      memberSourceIds: sourceIds.filter((id) => id !== canonicalSourceId),
-      mode: "MANUAL",
-      confidence: Number(row.score),
-      reasons: JSON.parse(row.reasons_json) as string[],
-    });
-    await db.prepare(
-      `UPDATE source_duplicate_candidates
-       SET status = 'MERGED', merge_group_id = ?, resolved_at = ? WHERE id = ? AND status = 'PENDING'`,
-    ).bind(groupId, now, candidateId).run();
+    try {
+      await createLogicalMerge(db, {
+        canonicalSourceId,
+        memberSourceIds: sourceIds.filter((id) => id !== canonicalSourceId),
+        mode: "MANUAL",
+        confidence: Number(row.score),
+        reasons: JSON.parse(row.reasons_json) as string[],
+      }, {
+        candidateId,
+        resolvedAt: now,
+      });
+    } catch (error) {
+      const current = await db.prepare(
+        "SELECT status FROM source_duplicate_candidates WHERE id = ?",
+      ).bind(candidateId).first<{ status: DuplicateCandidateStatus }>();
+      if (current && current.status !== "PENDING") {
+        throw new Error("duplicate_candidate_already_resolved");
+      }
+      throw error;
+    }
   }
   return (await listDuplicateCandidates(db, action === "MERGE" ? "MERGED" : "SEPARATE"))
     .find((candidate) => candidate.id === candidateId) ?? null;

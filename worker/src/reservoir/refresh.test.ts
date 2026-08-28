@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { runReservoirRefresh } from "./refresh";
+import { resolveDuplicateCandidate, runReservoirRefresh } from "./refresh";
 
 async function insertSource(id: string, title: string, doi?: string): Promise<void> {
   const now = new Date().toISOString();
@@ -223,5 +223,146 @@ describe("reservoir refresh service", () => {
       pendingCandidateCount: 0,
       mergedCandidateCount: 3,
     });
+  });
+
+  it("rolls back an interrupted manual MERGE and succeeds on retry", async () => {
+    const prefix = "!!!!!!!!manual-atomic-retry-";
+    await insertSource(`${prefix}left`, "Manual atomic retry");
+    await insertSource(`${prefix}right`, "Manual atomic retry");
+    const candidateId = `${prefix}candidate`;
+    await env.DB.prepare(
+      `INSERT INTO source_duplicate_candidates
+       (id, left_source_id, right_source_id, decision, score, reasons_json, status, created_at)
+       VALUES (?, ?, ?, 'REVIEW', 1, '["TITLE_EXACT_WITHOUT_SUPPORT"]', 'PENDING', ?)`,
+    ).bind(candidateId, `${prefix}left`, `${prefix}right`, new Date().toISOString()).run();
+
+    const queryByStatement = new WeakMap<object, string>();
+    let failedMergeBatch = false;
+    const interruptedDb = new Proxy(env.DB, {
+      get(target, property, receiver) {
+        if (property === "prepare") {
+          return (query: string) => {
+            const statement = target.prepare(query);
+            return new Proxy(statement, {
+              get(statementTarget, statementProperty, statementReceiver) {
+                if (statementProperty === "bind") {
+                  return (...values: unknown[]) => {
+                    const bound = statementTarget.bind(...values);
+                    queryByStatement.set(bound, query);
+                    return bound;
+                  };
+                }
+                const value = Reflect.get(statementTarget, statementProperty, statementReceiver) as unknown;
+                return typeof value === "function" ? value.bind(statementTarget) : value;
+              },
+            });
+          };
+        }
+        if (property === "batch") {
+          return async (statements: D1PreparedStatement[]) => {
+            const resolvesCandidate = statements.some((statement) => {
+              const query = queryByStatement.get(statement);
+              return query?.includes("UPDATE source_duplicate_candidates") && query.includes("status = 'MERGED'");
+            });
+            if (resolvesCandidate && !failedMergeBatch) {
+              failedMergeBatch = true;
+              return target.batch([
+                ...statements,
+                target.prepare("INSERT INTO source_merge_groups (id) VALUES ('forced-manual-merge-failure')"),
+              ]);
+            }
+            return target.batch(statements);
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+
+    await expect(resolveDuplicateCandidate(interruptedDb, candidateId, "MERGE")).rejects.toThrow();
+
+    const afterFailure = await env.DB.prepare(
+      `SELECT
+         (SELECT COUNT(DISTINCT g.id)
+          FROM source_merge_groups g
+          JOIN source_merge_members m ON m.group_id = g.id
+          WHERE g.reversed_at IS NULL AND m.source_id LIKE ?) AS activeGroupCount,
+         (SELECT COUNT(*)
+          FROM source_duplicate_candidates
+          WHERE id = ? AND status = 'PENDING') AS pendingCandidateCount,
+         (SELECT COUNT(*) FROM sources WHERE id LIKE ?) AS sourceCount`,
+    ).bind(`${prefix}%`, candidateId, `${prefix}%`).first<{
+      activeGroupCount: number;
+      pendingCandidateCount: number;
+      sourceCount: number;
+    }>();
+    expect(afterFailure).toEqual({ activeGroupCount: 0, pendingCandidateCount: 1, sourceCount: 2 });
+
+    await expect(resolveDuplicateCandidate(env.DB, candidateId, "MERGE"))
+      .resolves.toMatchObject({ id: candidateId, status: "MERGED" });
+    const afterRetry = await env.DB.prepare(
+      `SELECT
+         (SELECT COUNT(DISTINCT g.id)
+          FROM source_merge_groups g
+          JOIN source_merge_members m ON m.group_id = g.id
+          WHERE g.reversed_at IS NULL AND m.source_id LIKE ?) AS activeGroupCount,
+         (SELECT COUNT(*)
+          FROM source_duplicate_candidates
+          WHERE id = ? AND status = 'PENDING') AS pendingCandidateCount,
+         (SELECT COUNT(*) FROM sources WHERE id LIKE ?) AS sourceCount`,
+    ).bind(`${prefix}%`, candidateId, `${prefix}%`).first<{
+      activeGroupCount: number;
+      pendingCandidateCount: number;
+      sourceCount: number;
+    }>();
+    expect(afterRetry).toEqual({ activeGroupCount: 1, pendingCandidateCount: 0, sourceCount: 2 });
+  });
+
+  it("rejects a stale manual MERGE without creating an orphan group", async () => {
+    const prefix = "!!!!!!!!manual-stale-";
+    const candidateId = `${prefix}candidate`;
+    await insertSource(`${prefix}left`, "Manual stale merge");
+    await insertSource(`${prefix}right`, "Manual stale merge");
+    await env.DB.prepare(
+      `INSERT INTO source_duplicate_candidates
+       (id, left_source_id, right_source_id, decision, score, reasons_json, status, created_at)
+       VALUES (?, ?, ?, 'REVIEW', 1, '["TITLE_EXACT_WITHOUT_SUPPORT"]', 'PENDING', ?)`,
+    ).bind(candidateId, `${prefix}left`, `${prefix}right`, new Date().toISOString()).run();
+
+    let resolvedBeforeBatch = false;
+    const staleDb = new Proxy(env.DB, {
+      get(target, property, receiver) {
+        if (property === "batch") {
+          return async (statements: D1PreparedStatement[]) => {
+            if (!resolvedBeforeBatch) {
+              resolvedBeforeBatch = true;
+              await target.prepare(
+                "UPDATE source_duplicate_candidates SET status = 'SEPARATE', resolved_at = ? WHERE id = ?",
+              ).bind(new Date().toISOString(), candidateId).run();
+            }
+            return target.batch(statements);
+          };
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+
+    await expect(resolveDuplicateCandidate(staleDb, candidateId, "MERGE"))
+      .rejects.toThrow("duplicate_candidate_already_resolved");
+    const state = await env.DB.prepare(
+      `SELECT
+         (SELECT COUNT(DISTINCT g.id)
+          FROM source_merge_groups g
+          JOIN source_merge_members m ON m.group_id = g.id
+          WHERE g.reversed_at IS NULL AND m.source_id LIKE ?) AS activeGroupCount,
+         status, merge_group_id AS mergeGroupId
+       FROM source_duplicate_candidates WHERE id = ?`,
+    ).bind(`${prefix}%`, candidateId).first<{
+      activeGroupCount: number;
+      status: string;
+      mergeGroupId: string | null;
+    }>();
+    expect(state).toEqual({ activeGroupCount: 0, status: "SEPARATE", mergeGroupId: null });
   });
 });

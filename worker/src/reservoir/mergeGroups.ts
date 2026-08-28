@@ -8,6 +8,11 @@ export interface LogicalMergeInput {
   reasons: string[];
 }
 
+export interface LogicalMergeCandidateResolution {
+  candidateId: string;
+  resolvedAt: string;
+}
+
 const MAX_SOURCE_IDS_PER_QUERY = 90;
 
 function uniqueSourceIds(input: LogicalMergeInput): string[] {
@@ -22,7 +27,11 @@ function sourceIdChunks(sourceIds: string[]): string[][] {
   return result;
 }
 
-export async function createLogicalMerge(db: D1Database, input: LogicalMergeInput): Promise<string> {
+export async function createLogicalMerge(
+  db: D1Database,
+  input: LogicalMergeInput,
+  candidateResolution?: LogicalMergeCandidateResolution,
+): Promise<string> {
   const sourceIds = uniqueSourceIds(input);
   if (sourceIds.length < 2) throw new Error("A logical merge requires at least two distinct sources");
   if (!Number.isFinite(input.confidence) || input.confidence < 0 || input.confidence > 1) {
@@ -57,8 +66,25 @@ export async function createLogicalMerge(db: D1Database, input: LogicalMergeInpu
 
   const groupId = crypto.randomUUID();
   const createdAt = new Date().toISOString();
-  await db.batch([
-    db.prepare(
+  const groupInsert = candidateResolution
+    ? db.prepare(
+      `INSERT INTO source_merge_groups
+       (id, canonical_source_id, mode, confidence, reasons_json, created_at)
+       SELECT ?,
+              CASE WHEN EXISTS (
+                SELECT 1 FROM source_duplicate_candidates WHERE id = ? AND status = 'PENDING'
+              ) THEN ? ELSE NULL END,
+              ?, ?, ?, ?`,
+    ).bind(
+      groupId,
+      candidateResolution.candidateId,
+      input.canonicalSourceId,
+      input.mode,
+      input.confidence,
+      JSON.stringify(input.reasons),
+      createdAt,
+    )
+    : db.prepare(
       `INSERT INTO source_merge_groups
        (id, canonical_source_id, mode, confidence, reasons_json, created_at)
        VALUES (?, ?, ?, ?, ?, ?)`,
@@ -69,7 +95,9 @@ export async function createLogicalMerge(db: D1Database, input: LogicalMergeInpu
       input.confidence,
       JSON.stringify(input.reasons),
       createdAt,
-    ),
+    );
+  await db.batch([
+    groupInsert,
     ...sourceIds.map((sourceId) => db.prepare(
       `INSERT INTO source_merge_members (group_id, source_id, role, created_at)
        VALUES (?, ?, ?, ?)`,
@@ -79,6 +107,11 @@ export async function createLogicalMerge(db: D1Database, input: LogicalMergeInpu
       sourceId === input.canonicalSourceId ? "CANONICAL" : "MEMBER",
       createdAt,
     )),
+    ...(candidateResolution ? [db.prepare(
+      `UPDATE source_duplicate_candidates
+       SET status = 'MERGED', merge_group_id = ?, resolved_at = ?
+       WHERE id = ? AND status = 'PENDING'`,
+    ).bind(groupId, candidateResolution.resolvedAt, candidateResolution.candidateId)] : []),
   ]);
   return groupId;
 }
