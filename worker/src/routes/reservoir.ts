@@ -8,6 +8,15 @@ import { listVisualAssets } from "../visual/store";
 import { loadReservoirPdfOriginal } from "./visualExtraction";
 import { verifiedRequester } from "../lib/httpErrors";
 import { readJson } from "../lib/requestBody";
+import {
+  getReservoirRefreshRun,
+  listDuplicateCandidates,
+  resolveDuplicateCandidate,
+  runReservoirRefresh,
+  type DuplicateCandidateStatus,
+  type DuplicateReviewAction,
+  type ReservoirRefreshMode,
+} from "../reservoir/refresh";
 
 const reservoir = new Hono<{ Bindings: Env }>();
 const MAX_SOURCE_TEXT_CHARS = 500_000;
@@ -254,6 +263,48 @@ reservoir.post("/retag-all", async (c) => {
   }
   if (stmts.length) await c.env.DB.batch(stmts);
   return c.json({ retagged: stmts.length });
+});
+
+reservoir.post("/refresh", async (c) => {
+  const body = (await readJson<{ mode?: unknown }>(c)) ?? {};
+  if (body.mode !== "PREVIEW" && body.mode !== "APPLY") {
+    return c.json({ error: "invalid_refresh_mode" }, 400);
+  }
+  const run = await runReservoirRefresh(c.env.DB, body.mode as ReservoirRefreshMode);
+  return c.json({ runId: run.id, ...run }, 202);
+});
+
+reservoir.get("/refresh/:runId", async (c) => {
+  const run = await getReservoirRefreshRun(c.env.DB, c.req.param("runId"));
+  return run ? c.json(run) : c.json({ error: "refresh_run_not_found" }, 404);
+});
+
+reservoir.get("/duplicates", async (c) => {
+  const status = c.req.query("status") ?? "PENDING";
+  if (status !== "PENDING" && status !== "MERGED" && status !== "SEPARATE") {
+    return c.json({ error: "invalid_duplicate_status" }, 400);
+  }
+  return c.json({ items: await listDuplicateCandidates(c.env.DB, status as DuplicateCandidateStatus) });
+});
+
+reservoir.post("/duplicates/:candidateId", async (c) => {
+  const body = (await readJson<{ action?: unknown }>(c)) ?? {};
+  if (body.action !== "MERGE" && body.action !== "SEPARATE") {
+    return c.json({ error: "invalid_duplicate_action" }, 400);
+  }
+  try {
+    const candidate = await resolveDuplicateCandidate(
+      c.env.DB,
+      c.req.param("candidateId"),
+      body.action as DuplicateReviewAction,
+    );
+    return candidate ? c.json(candidate) : c.json({ error: "duplicate_candidate_not_found" }, 404);
+  } catch (error) {
+    if ((error as Error).message === "duplicate_candidate_already_resolved") {
+      return c.json({ error: "duplicate_candidate_already_resolved" }, 409);
+    }
+    throw error;
+  }
 });
 
 reservoir.post("/:sourceId/deep-analysis", async (c) => {
