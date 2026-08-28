@@ -265,14 +265,15 @@ test("a JS-shell acquisition failure leaves the metadata-only source blocked fro
     originalText: null,
     jobStatus: "FAILED",
     errorCode: "workflow_runtime_failed",
-    jobError: "EXTRACTION_EMPTY",
+    jobError: "remote_acquisition_failure;code=EXTRACTION_EMPTY",
   };
   await installAcquisitionFixture(page, fixture);
   await keepFixtureCandidate(page, fixture);
 
   const jobCenter = page.getByLabel("백그라운드 작업");
   await expect(jobCenter.getByText("원문 수집 · 실패")).toBeVisible();
-  await expect(jobCenter.getByText("EXTRACTION_EMPTY")).toBeVisible();
+  await expect(jobCenter.getByText(/지원되는 원문을 가져올 수 없습니다/)).toBeVisible();
+  await expect(jobCenter.getByText("EXTRACTION_EMPTY")).toHaveCount(0);
   await page.getByRole("button", { name: "저장소", exact: true }).click();
   await page.getByRole("button", { name: new RegExp(fixture.title) }).click();
   const readingPane = page.getByRole("region", { name: "자료 읽기" });
