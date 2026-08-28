@@ -15,6 +15,7 @@
     "typecheck": "pnpm -r run typecheck",
     "deploy": "pnpm --filter @radar/web run build && pnpm --filter @radar/worker run deploy",
     "db:migrate": "pnpm --filter @radar/worker run db:migrate",
+    "db:migrate:remote": "pnpm --filter @radar/worker run db:migrate:remote",
     "cf:typegen": "pnpm --filter @radar/worker run cf:typegen",
     "sync:obsidian": "node cli/obsidian-sync.mjs"
   }

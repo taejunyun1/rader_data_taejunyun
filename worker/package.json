@@ -7,6 +7,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "db:migrate": "wrangler d1 migrations apply research-radar-db",
+    "db:migrate:remote": "wrangler d1 migrations apply research-radar-db --remote",
     "cf:typegen": "wrangler types",
     "typecheck": "tsc --noEmit",
     "test": "vitest --config vitest.config.ts",
