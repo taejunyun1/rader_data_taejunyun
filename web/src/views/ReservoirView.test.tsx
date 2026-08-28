@@ -295,6 +295,19 @@ describe("ReservoirView", () => {
     expect(screen.getByRole("combobox", { name: "심층 정리 품질" })).toHaveValue("precision");
   });
 
+  it("shows a quality recheck action instead of acquisition for FULLTEXT REVIEW", async () => {
+    currentSourceDetail = {
+      ...sourceDetail,
+      acquisition: { ...sourceDetail.acquisition, qualityStatus: "REVIEW", charCount: 3_790, canDeepAnalyze: false, originalTextUrl: null },
+    };
+    render(<ReservoirView />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+
+    expect(await screen.findByRole("button", { name: "품질 다시 검사" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "원문 수집 필요" })).not.toBeInTheDocument();
+  });
+
   it("opens reading before asking for a judgment", async () => {
     render(<ReservoirView />);
     await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
