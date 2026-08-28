@@ -109,11 +109,13 @@ describe("ingestion normalization", () => {
 
     expect(result.sources).toEqual([
       "home-acquired|READY|v-home-acquired",
+      "home-correct|READY|v-home-correct",
       "home-summary|REVIEW|v-home-summary",
       "manual-source|READY|v-manual",
     ]);
     expect(result.versions).toEqual([
       "v-home-acquired|home-acquired|FULLTEXT|HTML_STATIC|REEXTRACT|v-home-seed",
+      "v-home-correct|home-correct|METADATA_ONLY|DISCOVERY_METADATA|INITIAL_INGEST|",
       "v-home-seed|home-acquired|METADATA_ONLY|DISCOVERY_METADATA|INITIAL_INGEST|",
       "v-home-summary|home-summary|METADATA_ONLY|DISCOVERY_METADATA|INITIAL_INGEST|",
       "v-manual|manual-source|FULLTEXT|MANUAL_TEXT|INITIAL_INGEST|",
@@ -678,10 +680,12 @@ function verifyHomepageSummaryScopeMigration(): {
     "CREATE TABLE source_versions (id TEXT PRIMARY KEY, source_id TEXT, text_scope TEXT, extraction_method TEXT, version_origin TEXT, parent_version_id TEXT);",
     "INSERT INTO sources VALUES ('home-summary', 'homepage-reading', 'HOMEPAGE_JSON', 'READY', 'v-home-summary');",
     "INSERT INTO sources VALUES ('home-acquired', 'homepage-reading', 'HOMEPAGE_JSON', 'READY', 'v-home-acquired');",
+    "INSERT INTO sources VALUES ('home-correct', 'homepage-reading', 'HOMEPAGE_JSON', 'READY', 'v-home-correct');",
     "INSERT INTO sources VALUES ('manual-source', 'manual', 'PLAIN_TEXT', 'READY', 'v-manual');",
     "INSERT INTO source_versions VALUES ('v-home-summary', 'home-summary', 'FULLTEXT', 'MANUAL_TEXT', 'INITIAL_INGEST', NULL);",
     "INSERT INTO source_versions VALUES ('v-home-seed', 'home-acquired', 'FULLTEXT', 'MANUAL_TEXT', 'INITIAL_INGEST', NULL);",
     "INSERT INTO source_versions VALUES ('v-home-acquired', 'home-acquired', 'FULLTEXT', 'HTML_STATIC', 'REEXTRACT', 'v-home-seed');",
+    "INSERT INTO source_versions VALUES ('v-home-correct', 'home-correct', 'METADATA_ONLY', 'DISCOVERY_METADATA', 'INITIAL_INGEST', NULL);",
     "INSERT INTO source_versions VALUES ('v-manual', 'manual-source', 'FULLTEXT', 'MANUAL_TEXT', 'INITIAL_INGEST', NULL);",
     migrationSql,
     migrationSql,
