@@ -851,6 +851,25 @@ describe("ReservoirView", () => {
     expect(fetch).not.toHaveBeenCalledWith("/api/reservoir/source-1/deep-analysis", expect.anything());
   });
 
+  it("does not offer web-source visual refetch while FULLTEXT quality is under review", async () => {
+    currentSourceDetail = {
+      ...sourceDetail,
+      source: { ...sourceDetail.source, inputFormat: "URL_HTML" },
+      acquisition: {
+        ...sourceDetail.acquisition,
+        qualityStatus: "REVIEW",
+        charCount: 3_790,
+        canDeepAnalyze: false,
+        originalTextUrl: null,
+      },
+    };
+    render(<ReservoirView />);
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+
+    expect(screen.getByRole("button", { name: "품질 다시 검사" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "원문 다시 가져오기" })).not.toBeInTheDocument();
+  });
+
   it("shows pdf visual extraction controls without disturbing the current reading pane", async () => {
     render(<ReservoirView />);
     await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
