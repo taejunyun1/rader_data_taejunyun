@@ -98,15 +98,20 @@ interface RemoteAcquisitionDiagnostic {
 function parseRemoteAcquisitionDiagnostic(
   error: string | null,
 ): RemoteAcquisitionDiagnostic {
-  const code = error?.match(/(?:^|;)code=([A-Z0-9_]+)/)?.[1]
-    ?? error?.match(/RemoteAcquisitionError:\s*([A-Z0-9_]+)/)?.[1]
-    ?? null;
-  const rawStatus = error?.match(/(?:^|;)status=(\d{3})/)?.[1];
-  const reason = error?.match(/(?:^|;)reason=([A-Z0-9_]+)/)?.[1] ?? null;
+  if (error?.startsWith("remote_acquisition_failure;")) {
+    const code = error.match(/(?:^|;)code=([A-Z0-9_]+)/)?.[1] ?? null;
+    const rawStatus = error.match(/(?:^|;)status=(\d{3})/)?.[1];
+    const reason = error.match(/(?:^|;)reason=([A-Z0-9_]+)/)?.[1] ?? null;
+    return {
+      code,
+      status: rawStatus ? Number(rawStatus) : null,
+      reason,
+    };
+  }
   return {
-    code,
-    status: rawStatus ? Number(rawStatus) : null,
-    reason,
+    code: error?.match(/RemoteAcquisitionError:\s*([A-Z0-9_]+)/)?.[1] ?? null,
+    status: null,
+    reason: null,
   };
 }
 
@@ -153,13 +158,6 @@ export function jobFailurePresentation(
     "EXTRACTION_EMPTY",
   ].includes(diagnostic.code ?? "");
 
-  if (permanentStatus || challenged) {
-    return {
-      message: "원문 사이트가 자동 수집을 허용하지 않습니다. 브라우저에서 원문을 확인하거나, 전문이 필요하면 Inbox에 텍스트 또는 파일로 추가해 주세요.",
-      retryable: false,
-      sourceUrl: acquisitionSourceUrl(job),
-    };
-  }
   if (diagnostic.status === 408 || diagnostic.code === "FETCH_TIMEOUT") {
     return {
       message: "원문 사이트의 응답 시간이 초과됐습니다. 잠시 후 다시 실행해 주세요.",
@@ -172,6 +170,13 @@ export function jobFailurePresentation(
       message: "원문 사이트의 요청 한도에 도달했습니다. 잠시 후 다시 실행해 주세요.",
       retryable: true,
       sourceUrl: null,
+    };
+  }
+  if (permanentStatus || challenged) {
+    return {
+      message: "원문 사이트가 자동 수집을 허용하지 않습니다. 브라우저에서 원문을 확인하거나, 전문이 필요하면 Inbox에 텍스트 또는 파일로 추가해 주세요.",
+      retryable: false,
+      sourceUrl: acquisitionSourceUrl(job),
     };
   }
   if (diagnostic.code === "HTTP_5XX") {

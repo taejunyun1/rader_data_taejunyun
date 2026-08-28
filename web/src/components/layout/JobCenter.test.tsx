@@ -103,6 +103,71 @@ describe("JobCenter", () => {
     expect(onRetry).toHaveBeenCalledWith("job-1");
   });
 
+  it.each([
+    ["408", "원문 사이트의 응답 시간이 초과됐습니다"],
+    ["429", "원문 사이트의 요청 한도에 도달했습니다"],
+  ])("keeps retry for transient HTTP %s diagnostics even when a challenge is reported", async (status, message) => {
+    const onRetry = vi.fn();
+    render(<JobCenter
+      jobs={[job({
+        kind: "SOURCE_ACQUISITION",
+        status: "FAILED",
+        input: { sourceId: "source-1", url: "https://publisher.example/article" },
+        resultRef: null,
+        errorCode: "workflow_runtime_failed",
+        error: `remote_acquisition_failure;code=HTTP_4XX;status=${status};reason=ACCESS_CHALLENGE`,
+      })]}
+      onDismiss={vi.fn()}
+      onRetry={onRetry}
+      onResult={vi.fn()}
+    />);
+
+    expect(screen.getByText(new RegExp(message))).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "다시 실행" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "다시 실행" }));
+    expect(onRetry).toHaveBeenCalledWith("job-1");
+  });
+
+  it("does not trust code-like fields outside an acquisition diagnostic", () => {
+    render(<JobCenter
+      jobs={[job({
+        kind: "SOURCE_ACQUISITION",
+        status: "FAILED",
+        input: { sourceId: "source-1", url: "https://publisher.example/article" },
+        resultRef: null,
+        errorCode: "workflow_runtime_failed",
+        error: "RuntimeError;code=HTTP_4XX;status=403;reason=ACCESS_CHALLENGE",
+      })]}
+      onDismiss={vi.fn()}
+      onRetry={vi.fn()}
+      onResult={vi.fn()}
+    />);
+
+    expect(screen.getByText("원문 수집을 완료하지 못했습니다.")).toBeInTheDocument();
+    expect(screen.queryByText(/RuntimeError|HTTP_4XX/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "원문 열기" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "다시 실행" })).toBeInTheDocument();
+  });
+
+  it("withholds the original link when a permanent failure has credentialed input URL", () => {
+    render(<JobCenter
+      jobs={[job({
+        kind: "SOURCE_ACQUISITION",
+        status: "FAILED",
+        input: { sourceId: "source-1", url: "https://user:secret@publisher.example/article" },
+        resultRef: null,
+        errorCode: "workflow_runtime_failed",
+        error: "remote_acquisition_failure;code=HTTP_4XX;status=403;reason=ACCESS_CHALLENGE",
+      })]}
+      onDismiss={vi.fn()}
+      onRetry={vi.fn()}
+      onResult={vi.fn()}
+    />);
+
+    expect(screen.getByText(/원문 사이트가 자동 수집을 허용하지 않습니다/)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "원문 열기" })).not.toBeInTheDocument();
+  });
+
   it("handles legacy acquisition errors without exposing implementation text", () => {
     render(<JobCenter
       jobs={[job({
