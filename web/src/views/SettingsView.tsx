@@ -139,7 +139,7 @@ export default function SettingsView() {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         autoMergeCount += data.autoMergeCount;
         reviewCount += data.reviewCount;
-      } while (mode === "PREVIEW" && data.hasMore);
+      } while (data.hasMore);
       const summary = `자동 병합 ${autoMergeCount}건 · 검토 ${reviewCount}건`;
       if (mode === "PREVIEW") {
         setRefreshPreview({ ...data!, autoMergeCount, reviewCount });

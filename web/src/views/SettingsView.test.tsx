@@ -54,6 +54,41 @@ describe("SettingsView repository maintenance", () => {
     expect(screen.getByRole("button", { name: "정리 적용" })).toBeEnabled();
   });
 
+  it("continues apply batches and waits for the terminal apply batch before showing completion", async () => {
+    const refreshRequests: RequestInit[] = [];
+    let completeSecondBatch: ((response: Response) => void) | undefined;
+    vi.mocked(fetch).mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/settings/params") return Promise.resolve(new Response(JSON.stringify({ familiarity: 0.5, researchDepth: 0.5, divergence: 0.5, counterStrength: 0.5, technicalPhotographic: 0.5 })));
+      if (url === "/api/settings/models") return Promise.resolve(new Response(JSON.stringify({ roles: { baseModel: "base", reviewModel: "review" }, models: [{ id: "base", pricingKnown: true }, { id: "review", pricingKnown: true }] })));
+      if (url === "/api/reservoir/duplicates?status=PENDING") return Promise.resolve(new Response(JSON.stringify({ items: [] })));
+      if (url === "/api/reservoir/refresh" && init?.method === "POST") {
+        refreshRequests.push(init);
+        const mode = JSON.parse(String(init.body)).mode;
+        if (mode === "PREVIEW") return Promise.resolve(new Response(JSON.stringify({ runId: "preview-1", mode, hasMore: false, autoMergeCount: 1, reviewCount: 1 }), { status: 202 }));
+        if (refreshRequests.filter((request) => JSON.parse(String(request.body)).mode === "APPLY").length === 1) {
+          return Promise.resolve(new Response(JSON.stringify({ runId: "apply-1", mode, hasMore: true, autoMergeCount: 2, reviewCount: 1 }), { status: 202 }));
+        }
+        return new Promise((resolve) => { completeSecondBatch = resolve; });
+      }
+      return Promise.resolve(new Response(JSON.stringify({ ok: true })));
+    });
+    const user = userEvent.setup();
+    render(<SettingsView />);
+
+    await user.click(screen.getByRole("button", { name: "저장소 점검 미리보기" }));
+    await screen.findByText("자동 병합 1건 · 검토 1건");
+    await user.click(screen.getByRole("button", { name: "정리 적용" }));
+
+    await waitFor(() => expect(refreshRequests.filter((request) => JSON.parse(String(request.body)).mode === "APPLY")).toHaveLength(2));
+    expect(screen.getByText("정리를 적용하는 중입니다…")).toBeInTheDocument();
+
+    completeSecondBatch?.(new Response(JSON.stringify({ runId: "apply-2", mode: "APPLY", hasMore: false, autoMergeCount: 3, reviewCount: 2 }), { status: 202 }));
+
+    expect(await screen.findByText("정리를 적용했습니다. 자동 병합 5건 · 검토 3건")).toBeInTheDocument();
+    expect(JSON.parse(String(refreshRequests[2].body)).mode).toBe("APPLY");
+  });
+
   it("lists pending duplicate candidates with review actions", async () => {
     render(<SettingsView />);
 
