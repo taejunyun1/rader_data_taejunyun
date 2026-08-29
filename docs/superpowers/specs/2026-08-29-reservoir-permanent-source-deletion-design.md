@@ -20,11 +20,13 @@ This was chosen over immediate deletion because it prevents accidental loss, and
 Deleting source `S` permanently removes its source-owned data:
 
 1. The active source row and every `source_versions` row, including the source original/version R2 objects.
-2. Source analyses, keywords, questions, fragments, user signals, processing jobs, source embeddings, identity keys, and refresh fingerprints.
+2. Source analyses, keywords, questions, fragments, thread links, user signals, processing jobs, source embeddings, identity keys, and refresh fingerprints.
 3. Duplicate candidates that include `S`, plus the selected source's membership in a logical merge group.
 4. Visual assets owned by `S` or its versions, their versions, analyses, embeddings, relations, operations, extraction runs and units, including visual and temporary R2 objects.
 
 It does not alter another source, its data, or its R2 objects. It also does not rewrite shared historical output that may mention the deleted source in JSON snapshots, distill sessions, or completed job results.
+
+`discovery_candidates` is discovery history rather than source-owned content. A candidate linked to `S` is preserved, but its nullable `source_id` link is cleared so it cannot point to a deleted source. `discovery_field_signals.source_id` identifies the configured discovery feed, not a Reservoir source, and is therefore not changed.
 
 ## Merge behavior
 
@@ -54,6 +56,7 @@ Responses:
 | `404` | Source no longer exists. |
 | `409` | Title confirmation mismatch, an active source job/extraction exists, or the merge state changed before deletion. |
 | `502` | One or more R2 objects could not be removed. No D1 records are deleted. |
+| `500` | The D1 deletion batch failed after R2 cleanup. The source remains visible and the request can be retried. |
 
 The endpoint returns no original text, R2 key, or deleted payload.
 
