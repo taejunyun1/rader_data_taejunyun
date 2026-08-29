@@ -170,6 +170,37 @@ describe("source deletion preflight", () => {
     );
   });
 
+  it("blocks queued visual transform and analysis jobs that identify the source through their asset", async () => {
+    const sourceId = `${crypto.randomUUID()}-visual-job`;
+    const versionId = await insertSource(sourceId, "시각 작업 자료");
+    const fixture = await insertVisualDeletionFixture(sourceId, versionId);
+    const now = new Date().toISOString();
+    const transformJobId = `${sourceId}-transform-job`;
+    await env.DB.prepare(
+      `INSERT INTO research_jobs
+       (id, kind, status, progress, input_json, dedupe_key, created_at, updated_at)
+       VALUES (?, 'VISUAL_TRANSFORM', 'QUEUED', 0, ?, ?, ?, ?)`,
+    ).bind(transformJobId, JSON.stringify({ visualAssetId: fixture.assetId }), transformJobId, now, now).run();
+
+    await expectDeletionError(
+      deleteSourcePermanently(env, { sourceId, confirmTitle: "시각 작업 자료" }),
+      "source_delete_active_work",
+    );
+
+    await env.DB.prepare("UPDATE research_jobs SET status = 'FAILED' WHERE id = ?").bind(transformJobId).run();
+    const analysisJobId = `${sourceId}-analysis-job`;
+    await env.DB.prepare(
+      `INSERT INTO research_jobs
+       (id, kind, status, progress, input_json, dedupe_key, created_at, updated_at)
+       VALUES (?, 'VISUAL_ANALYSIS', 'RUNNING', 5, ?, ?, ?, ?)`,
+    ).bind(analysisJobId, JSON.stringify({ visualAssetId: fixture.assetId }), analysisJobId, now, now).run();
+
+    await expectDeletionError(
+      deleteSourcePermanently(env, { sourceId, confirmTitle: "시각 작업 자료" }),
+      "source_delete_active_work",
+    );
+  });
+
   it("collects deduplicated source/version/visual/temp keys and leaves D1 unchanged when R2 fails", async () => {
     const sourceId = `${crypto.randomUUID()}-r2-fail`;
     const sourceKey = `tests/delete/${sourceId}/source`;
@@ -371,6 +402,72 @@ describe("source deletion D1 purge", () => {
     );
     expect(await env.DB.prepare("SELECT id FROM source_versions WHERE source_id = ?")
       .bind(sourceId).first()).not.toBeNull();
+  });
+
+  it("rejects visual work queued after preflight in the final D1 guard", async () => {
+    const sourceId = `${crypto.randomUUID()}-late-visual-job`;
+    const versionId = await insertSource(sourceId, "배치 직전 시각 작업");
+    const fixture = await insertVisualDeletionFixture(sourceId, versionId);
+    const staleDb = {
+      prepare: env.DB.prepare.bind(env.DB),
+      batch: vi.fn(async (statements: D1PreparedStatement[]) => {
+        const now = new Date().toISOString();
+        await env.DB.prepare(
+          `INSERT INTO research_jobs
+           (id, kind, status, progress, input_json, dedupe_key, created_at, updated_at)
+           VALUES (?, 'VISUAL_ANALYSIS', 'QUEUED', 0, ?, ?, ?, ?)`,
+        ).bind(
+          `${sourceId}-late-job`,
+          JSON.stringify({ visualAssetId: fixture.assetId }),
+          `${sourceId}-late-job`,
+          now,
+          now,
+        ).run();
+        return env.DB.batch(statements);
+      }),
+    } as unknown as D1Database;
+
+    await expectDeletionError(
+      deleteSourcePermanently(
+        { DB: staleDb, ORIGINALS: env.ORIGINALS },
+        { sourceId, confirmTitle: "배치 직전 시각 작업" },
+      ),
+      "source_delete_active_work",
+    );
+    expect(await env.DB.prepare("SELECT id FROM sources WHERE id = ?").bind(sourceId).first()).not.toBeNull();
+  });
+
+  it("rejects a new source version and R2 key injected before the deletion batch", async () => {
+    const sourceId = `${crypto.randomUUID()}-late-version`;
+    const sourceKey = `tests/delete/${sourceId}/source`;
+    await insertSource(sourceId, "배치 직전 새 버전", sourceKey);
+    const injectedVersionId = `${sourceId}-v2`;
+    const injectedKey = `tests/delete/${sourceId}/injected-v2`;
+    const staleDb = {
+      prepare: env.DB.prepare.bind(env.DB),
+      batch: vi.fn(async (statements: D1PreparedStatement[]) => {
+        const now = new Date().toISOString();
+        await env.DB.prepare(
+          `INSERT INTO source_versions
+           (id, source_id, version, r2_key, normalized_text, char_count, normalization_status,
+            version_origin, review_status, text_scope, extraction_method, created_at)
+           VALUES (?, ?, 2, ?, 'new version', 11, 'READY', 'REEXTRACT', 'ACTIVE', 'FULLTEXT', 'MANUAL_TEXT', ?)`,
+        ).bind(injectedVersionId, sourceId, injectedKey, now).run();
+        await env.ORIGINALS.put(injectedKey, "injected version");
+        return env.DB.batch(statements);
+      }),
+    } as unknown as D1Database;
+
+    await expectDeletionError(
+      deleteSourcePermanently(
+        { DB: staleDb, ORIGINALS: env.ORIGINALS },
+        { sourceId, confirmTitle: "배치 직전 새 버전" },
+      ),
+      "source_delete_state_changed",
+    );
+    expect(await env.DB.prepare("SELECT id FROM sources WHERE id = ?").bind(sourceId).first()).not.toBeNull();
+    expect(await env.DB.prepare("SELECT id FROM source_versions WHERE id = ?").bind(injectedVersionId).first()).not.toBeNull();
+    expect(await env.ORIGINALS.get(injectedKey)).not.toBeNull();
   });
 
   it("deletes visual descendants and all existing R2 objects", async () => {

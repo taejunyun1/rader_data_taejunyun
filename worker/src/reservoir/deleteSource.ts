@@ -54,7 +54,140 @@ interface SourceDeletionPlan {
   title: string;
   r2Keys: string[];
   merge: ActiveMergeSnapshot | null;
+  dependencySnapshot: string;
 }
+
+const ACTIVE_WORK_QUERY = `
+  SELECT 1 AS active
+  FROM research_jobs
+  WHERE status IN ('QUEUED', 'RUNNING')
+    AND json_extract(input_json, '$.sourceId') = ?
+  UNION ALL
+  SELECT 1 AS active
+  FROM research_jobs job
+  JOIN visual_assets asset ON asset.id = json_extract(job.input_json, '$.visualAssetId')
+  WHERE job.kind IN ('VISUAL_TRANSFORM', 'VISUAL_ANALYSIS')
+    AND job.status IN ('QUEUED', 'RUNNING')
+    AND (asset.parent_source_id = ?
+         OR asset.parent_version_id IN (SELECT id FROM source_versions WHERE source_id = ?))
+  UNION ALL
+  SELECT 1 AS active
+  FROM visual_extraction_runs
+  WHERE parent_source_id = ? AND status IN ('UPLOADING', 'QUEUED', 'RUNNING')
+  UNION ALL
+  SELECT 1 AS active
+  FROM visual_asset_operations operation
+  JOIN visual_assets asset ON asset.id = operation.visual_asset_id
+  WHERE (asset.parent_source_id = ?
+         OR asset.parent_version_id IN (SELECT id FROM source_versions WHERE source_id = ?))
+    AND operation.status = 'PENDING'`;
+
+const SOURCE_DEPENDENCY_SNAPSHOT_QUERY = `
+  WITH target(source_id) AS (SELECT ?),
+  owned_versions AS (
+    SELECT version.id
+    FROM source_versions version
+    JOIN target ON target.source_id = version.source_id
+  ),
+  owned_assets AS (
+    SELECT asset.id
+    FROM visual_assets asset
+    CROSS JOIN target
+    WHERE target.source_id = asset.parent_source_id
+       OR asset.parent_version_id IN (SELECT id FROM owned_versions)
+  ),
+  owned_runs AS (
+    SELECT run.id
+    FROM visual_extraction_runs run
+    JOIN target ON target.source_id = run.parent_source_id
+  )
+  SELECT json_object(
+    'sources', json(COALESCE((
+      SELECT json_group_array(json_object(
+        'id', source.id,
+        'activeVersionId', source.active_version_id,
+        'r2Key', source.r2_key,
+        'state', source.status
+      ))
+      FROM (SELECT source.id, source.active_version_id, source.r2_key, source.status
+            FROM sources source
+            JOIN target ON target.source_id = source.id
+            ORDER BY source.id) source
+    ), '[]')),
+    'versions', json(COALESCE((
+      SELECT json_group_array(json_object(
+        'id', version.id,
+        'sourceId', version.source_id,
+        'parentVersionId', version.parent_version_id,
+        'version', version.version,
+        'r2Key', version.r2_key,
+        'state', version.normalization_status
+      ))
+      FROM (SELECT version.id, version.source_id, version.parent_version_id, version.version,
+                   version.r2_key, version.normalization_status
+            FROM source_versions version
+            WHERE version.id IN (SELECT id FROM owned_versions)
+            ORDER BY version.id) version
+    ), '[]')),
+    'assets', json(COALESCE((
+      SELECT json_group_array(json_object(
+        'id', asset.id,
+        'parentSourceId', asset.parent_source_id,
+        'parentVersionId', asset.parent_version_id,
+        'state', asset.processing_status,
+        'deletedAt', asset.deleted_at
+      ))
+      FROM (SELECT asset.id, asset.parent_source_id, asset.parent_version_id,
+                   asset.processing_status, asset.deleted_at
+            FROM visual_assets asset
+            WHERE asset.id IN (SELECT id FROM owned_assets)
+            ORDER BY asset.id) asset
+    ), '[]')),
+    'assetVersions', json(COALESCE((
+      SELECT json_group_array(json_object(
+        'id', version.id,
+        'assetId', version.visual_asset_id,
+        'parentVersionId', version.parent_asset_version_id,
+        'version', version.version,
+        'variant', version.variant,
+        'r2Key', version.r2_key,
+        'contentHash', version.content_hash,
+        'deletedAt', version.deleted_at
+      ))
+      FROM (SELECT version.id, version.visual_asset_id, version.parent_asset_version_id,
+                   version.version, version.variant, version.r2_key, version.content_hash, version.deleted_at
+            FROM visual_asset_versions version
+            WHERE version.visual_asset_id IN (SELECT id FROM owned_assets)
+            ORDER BY version.id) version
+    ), '[]')),
+    'extractionRuns', json(COALESCE((
+      SELECT json_group_array(json_object(
+        'id', run.id,
+        'sourceId', run.parent_source_id,
+        'parentVersionId', run.parent_version_id,
+        'state', run.status
+      ))
+      FROM (SELECT run.id, run.parent_source_id, run.parent_version_id, run.status
+            FROM visual_extraction_runs run
+            WHERE run.id IN (SELECT id FROM owned_runs)
+            ORDER BY run.id) run
+    ), '[]')),
+    'extractionUnits', json(COALESCE((
+      SELECT json_group_array(json_object(
+        'id', unit.id,
+        'runId', unit.run_id,
+        'unitNumber', unit.unit_number,
+        'tempR2Key', unit.temp_r2_key,
+        'state', unit.status,
+        'deletedAt', unit.deleted_at
+      ))
+      FROM (SELECT unit.id, unit.run_id, unit.unit_number, unit.temp_r2_key,
+                   unit.status, unit.deleted_at
+            FROM visual_extraction_units unit
+            WHERE unit.run_id IN (SELECT id FROM owned_runs)
+            ORDER BY unit.id) unit
+    ), '[]'))
+  ) AS snapshot`;
 
 async function loadActiveMergeSnapshot(
   db: D1Database,
@@ -98,25 +231,17 @@ export async function getSourceDeletionPreview(
 }
 
 async function hasActiveWork(db: D1Database, sourceId: string): Promise<boolean> {
-  const row = await db.prepare(
-    `SELECT 1 AS active
-     FROM research_jobs
-     WHERE status IN ('QUEUED', 'RUNNING')
-       AND json_extract(input_json, '$.sourceId') = ?
-     UNION ALL
-     SELECT 1 AS active
-     FROM visual_extraction_runs
-     WHERE parent_source_id = ? AND status IN ('UPLOADING', 'QUEUED', 'RUNNING')
-     UNION ALL
-     SELECT 1 AS active
-     FROM visual_asset_operations operation
-     JOIN visual_assets asset ON asset.id = operation.visual_asset_id
-     WHERE (asset.parent_source_id = ?
-            OR asset.parent_version_id IN (SELECT id FROM source_versions WHERE source_id = ?))
-       AND operation.status = 'PENDING'
-     LIMIT 1`,
-  ).bind(sourceId, sourceId, sourceId, sourceId).first<{ active: number }>();
+  const row = await db.prepare(`${ACTIVE_WORK_QUERY} LIMIT 1`)
+    .bind(sourceId, sourceId, sourceId, sourceId, sourceId, sourceId)
+    .first<{ active: number }>();
   return Boolean(row);
+}
+
+async function loadDependencySnapshot(db: D1Database, sourceId: string): Promise<string> {
+  const row = await db.prepare(SOURCE_DEPENDENCY_SNAPSHOT_QUERY)
+    .bind(sourceId)
+    .first<{ snapshot: string }>();
+  return row?.snapshot ?? "[]";
 }
 
 async function loadR2Keys(db: D1Database, sourceId: string): Promise<string[]> {
@@ -150,11 +275,13 @@ async function loadDeletionPlan(db: D1Database, input: DeleteSourceInput): Promi
   if (await hasActiveWork(db, input.sourceId)) {
     throw new SourceDeletionError("source_delete_active_work");
   }
+  const r2Keys = await loadR2Keys(db, source.id);
   return {
     sourceId: source.id,
     title: source.title,
-    r2Keys: await loadR2Keys(db, source.id),
+    r2Keys,
     merge: await loadActiveMergeSnapshot(db, source.id),
+    dependencySnapshot: await loadDependencySnapshot(db, source.id),
   };
 }
 
@@ -183,7 +310,13 @@ async function assertPlanStillCurrent(db: D1Database, plan: SourceDeletionPlan):
   const source = await db.prepare("SELECT title FROM sources WHERE id = ?")
     .bind(plan.sourceId).first<{ title: string }>();
   const currentMerge = await loadActiveMergeSnapshot(db, plan.sourceId);
-  if (!source || source.title !== plan.title || mergeFingerprint(currentMerge) !== mergeFingerprint(plan.merge)) {
+  const currentDependencies = await loadDependencySnapshot(db, plan.sourceId);
+  if (
+    !source
+    || source.title !== plan.title
+    || mergeFingerprint(currentMerge) !== mergeFingerprint(plan.merge)
+    || currentDependencies !== plan.dependencySnapshot
+  ) {
     throw new SourceDeletionError("source_delete_state_changed");
   }
   if (await hasActiveWork(db, plan.sourceId)) {
@@ -199,17 +332,33 @@ function deletionGuard(
     return db.prepare(
       `SELECT CASE WHEN
          EXISTS (SELECT 1 FROM sources WHERE id = ? AND title = ?)
+         AND (${SOURCE_DEPENDENCY_SNAPSHOT_QUERY}) = ?
+         AND NOT EXISTS (${ACTIVE_WORK_QUERY})
          AND NOT EXISTS (
            SELECT 1 FROM source_merge_members member
            JOIN source_merge_groups merge_group ON merge_group.id = member.group_id
            WHERE member.source_id = ? AND merge_group.reversed_at IS NULL
          )
        THEN 1 ELSE json('source_delete_guard_failed') END AS valid`,
-    ).bind(plan.sourceId, plan.title, plan.sourceId);
+    ).bind(
+      plan.sourceId,
+      plan.title,
+      plan.sourceId,
+      plan.dependencySnapshot,
+      plan.sourceId,
+      plan.sourceId,
+      plan.sourceId,
+      plan.sourceId,
+      plan.sourceId,
+      plan.sourceId,
+      plan.sourceId,
+    );
   }
   return db.prepare(
     `SELECT CASE WHEN
        EXISTS (SELECT 1 FROM sources WHERE id = ? AND title = ?)
+       AND (${SOURCE_DEPENDENCY_SNAPSHOT_QUERY}) = ?
+       AND NOT EXISTS (${ACTIVE_WORK_QUERY})
        AND EXISTS (
          SELECT 1 FROM source_merge_members member
          JOIN source_merge_groups merge_group ON merge_group.id = member.group_id
@@ -224,6 +373,14 @@ function deletionGuard(
   ).bind(
     plan.sourceId,
     plan.title,
+    plan.sourceId,
+    plan.dependencySnapshot,
+    plan.sourceId,
+    plan.sourceId,
+    plan.sourceId,
+    plan.sourceId,
+    plan.sourceId,
+    plan.sourceId,
     plan.sourceId,
     plan.merge.groupId,
     plan.merge.role,
@@ -349,10 +506,19 @@ async function deleteD1Records(
   } catch (error) {
     if (error instanceof SourceDeletionError) throw error;
     try {
+      if (await hasActiveWork(db, plan.sourceId)) {
+        throw new SourceDeletionError("source_delete_active_work", error);
+      }
       const current = await db.prepare("SELECT title FROM sources WHERE id = ?")
         .bind(plan.sourceId).first<{ title: string }>();
       const currentMerge = await loadActiveMergeSnapshot(db, plan.sourceId);
-      if (!current || current.title !== plan.title || mergeFingerprint(currentMerge) !== mergeFingerprint(plan.merge)) {
+      const currentDependencies = await loadDependencySnapshot(db, plan.sourceId);
+      if (
+        !current
+        || current.title !== plan.title
+        || mergeFingerprint(currentMerge) !== mergeFingerprint(plan.merge)
+        || currentDependencies !== plan.dependencySnapshot
+      ) {
         throw new SourceDeletionError("source_delete_state_changed", error);
       }
     } catch (inspectionError) {
