@@ -408,6 +408,54 @@ describe("source deletion D1 purge", () => {
     ).bind(targetCandidateId).first()).toBeNull();
   });
 
+  it("rejects a historical survivor deletion between the snapshot and guarded batch", async () => {
+    const prefix = crypto.randomUUID();
+    const deletedCanonicalId = `${prefix}-0-canonical`;
+    const survivorId = `${prefix}-1-survivor`;
+    const selectedSurvivorId = `${prefix}-2-selected-survivor`;
+    const sourceKey = `tests/delete/${deletedCanonicalId}/historical-stale`;
+    await insertSource(deletedCanonicalId, "과거 병합 stale 자료", sourceKey);
+    await insertSource(survivorId, "과거 병합 생존 자료");
+    await insertSource(selectedSurvivorId, "과거 병합 선택 생존 자료");
+    const groupId = await createLogicalMerge(env.DB, {
+      canonicalSourceId: deletedCanonicalId,
+      memberSourceIds: [survivorId, selectedSurvivorId],
+      mode: "MANUAL",
+      confidence: 1,
+      reasons: ["manual_review"],
+    });
+    await reverseLogicalMerge(env.DB, groupId);
+    await env.DB.prepare("INSERT INTO user_signals (id, source_id, action, created_at) VALUES (?, ?, 'keep', ?)")
+      .bind(`${selectedSurvivorId}-signal`, selectedSurvivorId, new Date().toISOString()).run();
+
+    const staleDb = {
+      prepare: env.DB.prepare.bind(env.DB),
+      batch: vi.fn(async (statements: D1PreparedStatement[]) => {
+        await env.DB.batch([
+          env.DB.prepare("DELETE FROM source_merge_members WHERE group_id = ? AND source_id = ?")
+            .bind(groupId, selectedSurvivorId),
+          env.DB.prepare("DELETE FROM user_signals WHERE source_id = ?").bind(selectedSurvivorId),
+          env.DB.prepare("DELETE FROM source_versions WHERE source_id = ?").bind(selectedSurvivorId),
+          env.DB.prepare("DELETE FROM sources WHERE id = ?").bind(selectedSurvivorId),
+        ]);
+        return env.DB.batch(statements);
+      }),
+    } as unknown as D1Database;
+
+    await expectDeletionError(
+      deleteSourcePermanently(
+        { DB: staleDb, ORIGINALS: env.ORIGINALS },
+        { sourceId: deletedCanonicalId, confirmTitle: "과거 병합 stale 자료" },
+      ),
+      "source_delete_state_changed",
+    );
+    expect(await env.DB.prepare("SELECT id FROM sources WHERE id = ?").bind(deletedCanonicalId).first()).not.toBeNull();
+    expect(await env.DB.prepare("SELECT id FROM sources WHERE id = ?").bind(selectedSurvivorId).first()).toBeNull();
+    expect(await env.DB.prepare(
+      "SELECT source_id FROM source_merge_members WHERE group_id = ? AND source_id = ?",
+    ).bind(groupId, selectedSurvivorId).first()).toBeNull();
+  });
+
   it("removes an active group when the selected source is its only remaining member", async () => {
     const prefix = crypto.randomUUID();
     const sourceId = `${prefix}-last`;
