@@ -3,7 +3,14 @@ import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
 import reservoir from "./reservoir";
 
-const app = new Hono<{ Bindings: Env }>();
+const app = new Hono<{
+  Bindings: Env;
+  Variables: { identity: { sub: string; email: string; name: string } };
+}>();
+app.use("*", async (c, next) => {
+  c.set("identity", { sub: "test", email: "test@local", name: "Test" });
+  await next();
+});
 app.route("/api/reservoir", reservoir);
 
 async function insertSource(input: {
@@ -38,6 +45,14 @@ async function post(path: string, body: unknown): Promise<Response> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   }, env as unknown as Env);
+}
+
+async function deleteRequest(path: string, body: unknown, bindings: Env = env as unknown as Env): Promise<Response> {
+  return app.request(path, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }, bindings);
 }
 
 describe("reservoir refresh routes", () => {
@@ -157,5 +172,54 @@ describe("reservoir refresh routes", () => {
       "SELECT COUNT(*) AS count FROM sources WHERE id IN (?, ?)",
     ).bind("0000d-merge-left", "0000d-merge-right").first<{ count: number }>();
     expect(Number(retained?.count ?? 0)).toBe(2);
+  });
+});
+
+describe("reservoir permanent deletion route", () => {
+  it("exposes merge deletion impact in source detail", async () => {
+    const sourceId = `${crypto.randomUUID()}-detail-delete`;
+    await insertSource({ id: sourceId, title: "삭제 preview" });
+    const response = await app.request(`/api/reservoir/${sourceId}`, undefined, env);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      deletion: { sourceId, title: "삭제 preview", mergeRole: "NONE", mergeMemberCount: 1 },
+    });
+  });
+
+  it("rejects an invalid body and an exact-title mismatch", async () => {
+    const sourceId = `${crypto.randomUUID()}-route-confirm`;
+    await insertSource({ id: sourceId, title: "정확한 제목" });
+    const invalid = await deleteRequest(`/api/reservoir/${sourceId}`, {});
+    expect(invalid.status).toBe(400);
+    await expect(invalid.json()).resolves.toMatchObject({ error: "invalid_source_delete_confirmation" });
+    const mismatch = await deleteRequest(`/api/reservoir/${sourceId}`, { confirmTitle: "다른 제목" });
+    expect(mismatch.status).toBe(409);
+    await expect(mismatch.json()).resolves.toMatchObject({ error: "source_delete_confirmation_mismatch" });
+  });
+
+  it("returns only deletion identifiers on success", async () => {
+    const sourceId = `${crypto.randomUUID()}-route-success`;
+    await insertSource({ id: sourceId, title: "API 삭제" });
+    const response = await deleteRequest(`/api/reservoir/${sourceId}`, { confirmTitle: "API 삭제" });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ deletedSourceId: sourceId, merge: null });
+  });
+
+  it("maps R2 failure to 502 without exposing keys or raw errors", async () => {
+    const sourceId = `${crypto.randomUUID()}-route-r2`;
+    await insertSource({ id: sourceId, title: "R2 route 실패" });
+    await env.DB.prepare("UPDATE sources SET r2_key = ? WHERE id = ?")
+      .bind(`tests/delete/${sourceId}/secret`, sourceId).run();
+    const failingEnv = {
+      DB: env.DB,
+      ORIGINALS: { delete: async () => { throw new Error("secret/key/path"); } },
+    } as unknown as Env;
+    const response = await deleteRequest(
+      `/api/reservoir/${sourceId}`,
+      { confirmTitle: "R2 route 실패" },
+      failingEnv,
+    );
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({ error: "source_delete_r2_failed" });
   });
 });
