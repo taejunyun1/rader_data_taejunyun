@@ -470,6 +470,94 @@ describe("source deletion D1 purge", () => {
     expect(await env.ORIGINALS.get(injectedKey)).not.toBeNull();
   });
 
+  it("rejects an R2-backed dependency added between the dependency and key snapshots", async () => {
+    const sourceId = `${crypto.randomUUID()}-late-visual-dependency`;
+    const sourceKey = `tests/delete/${sourceId}/source`;
+    const versionId = await insertSource(sourceId, "배치 직전 시각 의존성", sourceKey);
+    let injectedFixture: Awaited<ReturnType<typeof insertVisualDeletionFixture>> | undefined;
+    let dependencySnapshotLoaded = false;
+    let injectedKeyWasEnumerated = false;
+    const staleDb = new Proxy(env.DB, {
+      get(target, property, receiver) {
+        if (property !== "prepare") {
+          const value = Reflect.get(target, property, receiver);
+          return typeof value === "function" ? value.bind(target) : value;
+        }
+        return (query: string) => {
+          const prepared = target.prepare(query);
+          const isDependencySnapshot = query.includes("WITH target(source_id)");
+          const isR2KeyEnumeration = query.includes("SELECT r2_key AS r2Key FROM sources");
+          if (!isDependencySnapshot && !isR2KeyEnumeration) return prepared;
+          return new Proxy(prepared, {
+            get(preparedTarget, preparedProperty, preparedReceiver) {
+              if (preparedProperty !== "bind") {
+                const value = Reflect.get(preparedTarget, preparedProperty, preparedReceiver);
+                return typeof value === "function" ? value.bind(preparedTarget) : value;
+              }
+              return (...bindValues: unknown[]) => {
+                const bound = preparedTarget.bind(...bindValues);
+                return new Proxy(bound, {
+                  get(boundTarget, boundProperty, boundReceiver) {
+                    if (boundProperty !== (isDependencySnapshot ? "first" : "all")) {
+                      const value = Reflect.get(boundTarget, boundProperty, boundReceiver);
+                      return typeof value === "function" ? value.bind(boundTarget) : value;
+                    }
+                    if (isDependencySnapshot) {
+                      return async () => {
+                        const result = await boundTarget.first();
+                        if (!dependencySnapshotLoaded) {
+                          dependencySnapshotLoaded = true;
+                          injectedFixture = await insertVisualDeletionFixture(sourceId, versionId);
+                        }
+                        return result;
+                      };
+                    }
+                    return async () => {
+                      const result = await boundTarget.all<{ r2Key: string }>();
+                      injectedKeyWasEnumerated = Boolean(
+                        injectedFixture
+                        && result.results?.some((row) => row.r2Key === injectedFixture?.visualKey),
+                      );
+                      return result;
+                    };
+                  },
+                });
+              };
+            },
+          });
+        };
+      },
+    });
+
+    await expectDeletionError(
+      deleteSourcePermanently(
+        { DB: staleDb, ORIGINALS: env.ORIGINALS },
+        { sourceId, confirmTitle: "배치 직전 시각 의존성" },
+      ),
+      "source_delete_state_changed",
+    );
+    expect(injectedFixture).toBeDefined();
+    expect(injectedKeyWasEnumerated).toBe(true);
+    expect(await env.DB.prepare("SELECT id FROM sources WHERE id = ?").bind(sourceId).first()).not.toBeNull();
+    expect(await env.DB.prepare("SELECT id FROM visual_assets WHERE id = ?")
+      .bind(injectedFixture?.assetId).first()).not.toBeNull();
+    expect(await env.DB.prepare("SELECT id FROM visual_extraction_runs WHERE parent_source_id = ?")
+      .bind(sourceId).first()).not.toBeNull();
+    for (const [table, id] of [
+      ["visual_asset_versions", `${injectedFixture?.assetId}-v1`],
+      ["visual_analyses", `${injectedFixture?.assetId}-analysis`],
+      ["visual_embeddings", `${injectedFixture?.assetId}-embedding`],
+      ["visual_relations", `${injectedFixture?.assetId}-relation`],
+      ["visual_asset_operations", `${injectedFixture?.assetId}-operation`],
+      ["visual_extraction_units", `${sourceId}-unit`],
+    ]) {
+      expect(await env.DB.prepare(`SELECT id FROM ${table} WHERE id = ?`).bind(id).first(), table).not.toBeNull();
+    }
+    expect(await env.ORIGINALS.get(sourceKey)).not.toBeNull();
+    expect(await env.ORIGINALS.get(injectedFixture?.visualKey ?? "")).not.toBeNull();
+    expect(await env.ORIGINALS.get(injectedFixture?.tempKey ?? "")).not.toBeNull();
+  });
+
   it("deletes visual descendants and all existing R2 objects", async () => {
     const sourceId = `${crypto.randomUUID()}-visual-success`;
     const sourceKey = `tests/delete/${sourceId}/source`;

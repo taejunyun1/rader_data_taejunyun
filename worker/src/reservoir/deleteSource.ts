@@ -275,13 +275,14 @@ async function loadDeletionPlan(db: D1Database, input: DeleteSourceInput): Promi
   if (await hasActiveWork(db, input.sourceId)) {
     throw new SourceDeletionError("source_delete_active_work");
   }
+  const dependencySnapshot = await loadDependencySnapshot(db, source.id);
   const r2Keys = await loadR2Keys(db, source.id);
   return {
     sourceId: source.id,
     title: source.title,
     r2Keys,
     merge: await loadActiveMergeSnapshot(db, source.id),
-    dependencySnapshot: await loadDependencySnapshot(db, source.id),
+    dependencySnapshot,
   };
 }
 
@@ -533,6 +534,7 @@ export async function deleteSourcePermanently(
   input: DeleteSourceInput,
 ): Promise<DeleteSourceResult> {
   const plan = await loadDeletionPlan(env.DB, input);
+  await assertPlanStillCurrent(env.DB, plan);
   await deleteR2Keys(env.ORIGINALS, plan.r2Keys);
   const merge = await deleteD1Records(env.DB, plan);
   return { deletedSourceId: plan.sourceId, merge };
