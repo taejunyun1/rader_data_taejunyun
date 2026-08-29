@@ -13,11 +13,13 @@ describe("discovery source registry", () => {
       "https://unthinking.photography/feed",
       "https://aperture.org/feed/",
       "https://hyperallergic.com/rss/",
+      "https://lenscratch.com/feed/",
     ]);
     expect(DEFAULT_FIELD_SIGNAL_FEEDS).toEqual([
       "https://www.collegeart.org/news/feed/",
       "https://forarthistory.org.uk/feed/",
       "https://www.icp.org/rss.xml",
+      "https://www.smb.museum/en/rss-feed/press-releases.xml",
     ]);
   });
 
@@ -30,6 +32,24 @@ describe("discovery source registry", () => {
     expect(byId.get("artnews")).toMatchObject({ accessPolicy: "PAYWALLED", autoCollect: false });
     expect(byId.get("kci")).toMatchObject({ collection: "API", autoCollect: false });
     expect(byId.get("google-scholar")).toMatchObject({ collection: "SEARCH", autoCollect: false });
+    expect(byId.get("lenscratch")).toMatchObject({ collection: "RSS", autoCollect: true, target: "READING" });
+    expect(byId.get("smb-berlin")).toMatchObject({ collection: "RSS", autoCollect: true, target: "FIELD_SIGNAL" });
+  });
+
+  it("lists Korean academic web entry points without enabling implicit scraping", () => {
+    const byId = new Map(DISCOVERY_SOURCE_PRESETS.map((source) => [source.id, source]));
+
+    expect(byId.get("korean-photography-society-jams")).toMatchObject({
+      url: "https://skp.jams.or.kr/",
+      collection: "SEARCH",
+      target: "READING",
+      autoCollect: false,
+    });
+    expect(byId.get("kiss")).toMatchObject({ collection: "API", autoCollect: false });
+    expect(byId.get("dbpia")).toMatchObject({ collection: "API", autoCollect: false });
+    expect(byId.get("national-assembly-library")).toMatchObject({ collection: "API", autoCollect: false });
+    expect(byId.get("scienceon")).toMatchObject({ collection: "API", autoCollect: false });
+    expect(byId.get("arxiv")).toMatchObject({ collection: "API", autoCollect: false });
   });
 
   it("resolves a curated feed to its source policy", () => {

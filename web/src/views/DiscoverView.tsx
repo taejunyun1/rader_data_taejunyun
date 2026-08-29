@@ -129,6 +129,27 @@ function sourceCollectionLabel(source: DiscoverySourcePreset): string {
   return "검색 링크로 확인";
 }
 
+const DISCOVERY_SOURCE_GROUPS = [
+  {
+    id: "automatic",
+    title: "공개 RSS 자동 수집",
+    description: "인증키 없이 공개 RSS에서 제목·요약·링크를 확인합니다.",
+    sources: DISCOVERY_SOURCE_PRESETS.filter((source) => source.autoCollect),
+  },
+  {
+    id: "api",
+    title: "API 연동 필요",
+    description: "RISS·KISS·DBpia·KCI·국회도서관·ScienceON 등은 공식 키·이용 조건 확인 후 연결합니다.",
+    sources: DISCOVERY_SOURCE_PRESETS.filter((source) => source.collection === "API"),
+  },
+  {
+    id: "web",
+    title: "공개 웹·검색 링크",
+    description: "페이지에서 직접 확인하는 출처입니다. 자동 HTML 수집은 출처별 허가와 구조 검증 후 추가합니다.",
+    sources: DISCOVERY_SOURCE_PRESETS.filter((source) => !source.autoCollect && source.collection !== "API"),
+  },
+] as const;
+
 const DISCOVERY_ACTIONS: DecisionAction[] = [
   { id: "develop", label: "발전시키기", description: "저장소에 보관하고 연구 방향에 반영" },
   { id: "keep", label: "보관하기", description: "다음 리서치까지 표시해 두기" },
@@ -717,7 +738,7 @@ export default function DiscoverView({
         <div className="discovery-settings__grid">
           <section><h2>사용자 추가 RSS·Atom 피드</h2><p>검증된 기본 피드는 자동으로 적용됩니다. 여기는 별도 공개 피드만 한 줄에 하나씩, 최대 6개 추가합니다. 접근이 확인되지 않은 HTML은 읽을거리 후보가 되지 않습니다.</p><textarea value={feeds} onChange={(event) => setFeeds(event.target.value)} placeholder="https://some-journal.org/rss" /><button className="ui-button-secondary" onClick={() => void saveFeeds()}>피드 저장</button>{feedMsg && <span className="table-note">{feedMsg}</span>}</section>
         </div>
-        <section className="discovery-sources"><h2>추천 출처 · 수집 상태</h2><p>공개 피드는 자동 수집하고, 기관형 데이터베이스는 공식 연동 상태를 구분해 표시합니다.</p>{DISCOVERY_SOURCE_PRESETS.map((source: DiscoverySourcePreset) => <div className="discovery-source__row" key={source.id}><a href={source.url} target="_blank" rel="noreferrer">{source.name} ↗</a><span>{source.description} · {sourceCollectionLabel(source)}</span></div>)}</section>
+        {DISCOVERY_SOURCE_GROUPS.map((group) => <section className="discovery-sources" key={group.id}><h2>{group.title}</h2><p>{group.description}</p>{group.sources.map((source: DiscoverySourcePreset) => <div className="discovery-source__row" key={source.id}><a href={source.url} target="_blank" rel="noreferrer">{source.name} ↗</a><span>{source.description} · {sourceCollectionLabel(source)}</span></div>)}</section>)}
         {homepageProjects.length > 0 && <section className="discovery-sources"><h2>내 홈페이지 기반 출발점</h2><p>홈페이지에서 추출된 프로젝트가 발견 검색의 맥락으로 사용됩니다{homepageExtractedAt ? ` · 마지막 추출 ${new Date(homepageExtractedAt).toLocaleDateString("ko-KR")}` : ""}.</p>{homepageProjects.slice(0, 5).map((project) => <div className="discovery-source__row" key={project.slug}><a href={project.projectUrl} target="_blank" rel="noreferrer">{project.title} ↗</a><span>{project.year ?? "연도 미상"} · 이미지 {project.imageCount} · 영상 {project.videoCount}</span></div>)}</section>}
       </details>
     </div>

@@ -146,6 +146,7 @@ describe("discovery pipeline accounting", () => {
       "https://unthinking.photography/feed",
       "https://aperture.org/feed/",
       "https://hyperallergic.com/rss/",
+      "https://lenscratch.com/feed/",
       "https://custom.example/photo-feed.xml",
     ]);
     expect(feeds.at(-1)).toMatchObject({
