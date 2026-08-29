@@ -194,7 +194,7 @@ Read Next 후보 전건 OpenAlex 존재 검증(openalex_id 발급된 것만 제�
 ### Task 5.4: Discovery Keep 원문 수집·Reservoir 복구 흐름
 사용자 Keep은 먼저 `DISCOVERY_METADATA/METADATA_ONLY` version을 만든 뒤 읽을 수 있는 URL에 대해서만 dedupe된 `SOURCE_ACQUISITION` background job을 등록한다. 성공하면 HTML/PDF raw R2 object와 provenance가 있는 새 version을 추가하고 품질이 좋아질 때만 active로 승격한다. Reservoir는 active version의 `TextScope`, 추출 방식, 품질, 글자 수와 plain-text 원문 endpoint를 표시한다. 수집이 version 추가 전에 실패하면 기존 metadata-only version을 active로 유지하고, 실패 원인은 Job Center와 `processing_jobs`에서 확인한다. `fetch=1`은 새 원문 수집, `analyze=1`은 현재 active version 분석으로 분리한다.
 
-상태는 `QUEUED/RUNNING/SUCCEEDED/FAILED/BLOCKED`이며 원격 오류는 `FETCH_TIMEOUT`, `HTTP_4XX`, `HTTP_5XX`, `UNSUPPORTED_CONTENT_TYPE`, `SIZE_LIMIT`, `REDIRECT_BLOCKED`, `EXTRACTION_EMPTY`, `PDF_CONVERSION_FAILED`를 보존한다. RSS CDATA/entity/HTML tag는 후보 판정 전에 정리한다. 기존 metadata-only discovery source는 설정의 bounded backfill endpoint로 최대 10건씩 수동 처리하며 자동 acquisition/backfill cron은 추가하지 않는다.
+상태는 `QUEUED/RUNNING/SUCCEEDED/FAILED/BLOCKED`이며 원격 오류는 `FETCH_TIMEOUT`, `HTTP_4XX`, `HTTP_5XX`, `UNSUPPORTED_CONTENT_TYPE`, `SIZE_LIMIT`, `REDIRECT_BLOCKED`, `EXTRACTION_EMPTY`, `PDF_CONVERSION_FAILED`를 보존한다. RSS CDATA/entity/HTML tag는 후보 판정 전에 정리한다. 기존 metadata-only `discovery:*` 및 `homepage-reading` 웹 자료는 설정의 bounded backfill endpoint로 최대 10건씩 수동 처리하며 자동 acquisition/backfill cron은 추가하지 않는다.
 
 **AC**: fixture E2E에서 HTML Keep → 원문 수집 job → Reservoir normalized plain text → 심층 정리 활성화가 이어지고, PDF는 `PDF_REMOTE_TO_MARKDOWN` provenance를 표시한다. JS shell은 Job Center에서 수집 실패/재실행을 표시하되 Reservoir에는 실패용 active version을 만들지 않고, 기존 metadata-only source의 재수집 액션과 비활성화된 심층 정리를 유지한다. 기존 업로드 PDF의 `BROWSER_PDFJS` 경로와 분석 이력은 유지한다. **Scope: M**
 

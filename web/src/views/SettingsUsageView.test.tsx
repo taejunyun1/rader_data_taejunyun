@@ -31,7 +31,7 @@ describe("SettingsView", () => {
     expect(screen.getByLabelText("상위 통합·반론 검증 모델")).toHaveValue("gpt-5.4-mini");
   });
 
-  it("runs bounded discovery backfill and explains that prior versions are preserved", async () => {
+  it("runs bounded web-source backfill and explains that prior versions are preserved", async () => {
     const fetchMock = vi.mocked(fetch);
     fetchMock.mockImplementation((input: RequestInfo | URL) => {
       if (String(input) === "/api/settings/params") return Promise.resolve(new Response(JSON.stringify({ familiarity: 0.5, researchDepth: 0.5, divergence: 0.5, counterStrength: 0.5, technicalPhotographic: 0.5 })));
@@ -42,10 +42,10 @@ describe("SettingsView", () => {
     render(<SettingsView />);
 
     expect(await screen.findByText(/이전 버전은 그대로 보존/)).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "발견 자료 원문 다시 가져오기" }));
+    await userEvent.click(screen.getByRole("button", { name: "웹 원문 다시 가져오기" }));
 
     expect(fetchMock).toHaveBeenCalledWith("/api/settings/backfill-discovery", { method: "POST" });
-    expect(await screen.findByText("발견 자료 3개 중 2개의 원문 수집을 시작했습니다. 건너뜀 1개, 오류 0개.")).toBeInTheDocument();
+    expect(await screen.findByText("웹 자료 3개 중 2개의 원문 수집을 시작했습니다. 건너뜀 1개, 오류 0개.")).toBeInTheDocument();
   });
 });
 describe("UsageView", () => { it("shows warning state at the budget threshold", async () => { render(<UsageView />); expect(await screen.findByText(/월 한도의 80% 이상/)).toBeInTheDocument(); expect(screen.getByRole("heading", { name: "사용량" })).toBeInTheDocument(); }); });

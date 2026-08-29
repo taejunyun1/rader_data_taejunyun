@@ -17,16 +17,17 @@ function mockDb(rows: Array<Record<string, unknown>>) {
 }
 
 describe("selectDiscoveryBackfillSources", () => {
-  it("selects only discovery sources without usable active text", () => {
+  it("selects discovery and homepage reading sources without usable active text", () => {
     const ids = selectDiscoveryBackfillSources([
       { id: "metadata", origin: "discovery:arxiv", textScope: "METADATA_ONLY", charCount: 92 },
       { id: "partial", origin: "discovery:rss", textScope: "PARTIAL", charCount: 1_200 },
       { id: "short-fulltext", origin: "discovery:openalex", textScope: "FULLTEXT", charCount: 999 },
       { id: "ready", origin: "discovery:rss", textScope: "FULLTEXT", charCount: 2_400 },
+      { id: "homepage-reading", origin: "homepage-reading", textScope: "METADATA_ONLY", charCount: 283 },
       { id: "manual", origin: "manual", textScope: "METADATA_ONLY", charCount: 40 },
     ]);
 
-    expect(ids).toEqual(["metadata", "partial", "short-fulltext"]);
+    expect(ids).toEqual(["metadata", "partial", "short-fulltext", "homepage-reading"]);
   });
 });
 
@@ -84,7 +85,7 @@ describe("backfillDiscoverySources", () => {
     );
 
     expect(db.prepare).toHaveBeenCalledTimes(1);
-    expect(db.prepare).toHaveBeenCalledWith(expect.stringMatching(/^SELECT /));
+    expect(db.prepare).toHaveBeenCalledWith(expect.stringMatching(/origin = 'homepage-reading'/));
     expect(enqueue).toHaveBeenCalledTimes(3);
     expect(enqueue).not.toHaveBeenCalledWith(
       expect.anything(),

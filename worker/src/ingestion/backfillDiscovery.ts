@@ -24,8 +24,12 @@ export interface DiscoveryBackfillResult {
 
 export function selectDiscoveryBackfillSources(rows: DiscoveryBackfillSource[]): string[] {
   return rows
-    .filter((row) => row.origin?.startsWith("discovery:") && (row.textScope !== "FULLTEXT" || row.charCount < 1_000))
+    .filter((row) => isRemoteBackfillOrigin(row.origin) && (row.textScope !== "FULLTEXT" || row.charCount < 1_000))
     .map((row) => row.id);
+}
+
+function isRemoteBackfillOrigin(origin: string | null): boolean {
+  return origin?.startsWith("discovery:") === true || origin === "homepage-reading";
 }
 
 export async function backfillDiscoverySources(
@@ -41,7 +45,7 @@ export async function backfillDiscoverySources(
             COALESCE(v.char_count, 0) AS charCount
      FROM sources s
      LEFT JOIN source_versions v ON v.id = s.active_version_id
-     WHERE s.origin LIKE 'discovery:%'
+     WHERE (s.origin LIKE 'discovery:%' OR s.origin = 'homepage-reading')
        AND (COALESCE(v.text_scope, 'UNKNOWN') <> 'FULLTEXT' OR COALESCE(v.char_count, 0) < 1000)
      ORDER BY s.updated_at ASC, s.id ASC
      LIMIT ?`,

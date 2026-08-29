@@ -5,7 +5,7 @@ import type { PdfVisualExtractionCapability, VisualAssetSummary, VisualExtractio
 import type { SourceAccess } from "../lib/sourceAccess";
 import { deriveSourceAccess } from "../lib/sourceAccess";
 import { formatDateKo } from "../lib/ui";
-import { labelOf, ORIGIN_LABELS, PROVENANCE_LABELS, RELIABILITY_LABELS, SOURCE_KIND_LABELS } from "../lib/labels";
+import { labelOf, ORIGIN_LABELS, PROVENANCE_LABELS, QUALITY_STATUS_LABELS, RELIABILITY_LABELS, SOURCE_KIND_LABELS } from "../lib/labels";
 import { formatSourceTitle } from "../lib/sourcePresentation";
 import PageHeader from "../components/layout/PageHeader";
 import StatusMessage from "../components/ui/StatusMessage";
@@ -149,11 +149,23 @@ function deepAnalysisBlockReason(block: DeepAnalysisBlock): string {
   return `본문이 ${block.charCount.toLocaleString("ko-KR")}자로 짧아 심층 정리를 시작할 수 없습니다. 1,000자 이상의 원문이 필요합니다.`;
 }
 
-function acquisitionBlockReason(acquisition: SourceAcquisitionView): string {
-  const status = `원문 상태 ${acquisition.textScope} · 품질 ${acquisition.qualityStatus} · ${acquisition.charCount.toLocaleString("ko-KR")}자`;
-  if (acquisition.textScope === "METADATA_ONLY") return `${status} — 메타데이터만 저장되어 심층 정리를 시작할 수 없습니다.`;
-  if (acquisition.textScope === "PARTIAL") return `${status} — 본문이 일부만 수집되어 심층 정리를 시작할 수 없습니다.`;
-  if (acquisition.textScope === "EMPTY" || acquisition.textScope === "UNKNOWN") return `${status} — 분석할 원문이 없어 심층 정리를 시작할 수 없습니다.`;
+function acquisitionBlockReason(acquisition: SourceAcquisitionView, canRefetch: boolean, inputFormat?: string | null): string {
+  const scopeLabel = acquisition.textScope === "FULLTEXT"
+    ? "원문 전체"
+    : acquisition.textScope === "PARTIAL"
+      ? "원문 일부"
+      : acquisition.textScope === "METADATA_ONLY"
+        ? "메타데이터만"
+        : acquisition.textScope === "EMPTY"
+          ? "본문 없음"
+          : "원문 상태 확인 필요";
+  const status = `${scopeLabel} · ${labelOf(QUALITY_STATUS_LABELS, acquisition.qualityStatus)} · ${acquisition.charCount.toLocaleString("ko-KR")}자`;
+  const localRepair = inputFormat === "OBSIDIAN_MARKDOWN"
+    ? "받은 자료에서 본문을 보강하거나 Obsidian 동기화를 다시 실행해 주세요."
+    : "받은 자료에서 원문을 보강해 주세요.";
+  if (acquisition.textScope === "METADATA_ONLY") return `${status} — ${canRefetch ? "원문을 다시 가져온 뒤 심층 정리를 시작할 수 있습니다." : localRepair}`;
+  if (acquisition.textScope === "PARTIAL") return `${status} — ${canRefetch ? "본문이 일부만 수집되었습니다. 원문을 다시 가져와 주세요." : localRepair}`;
+  if (acquisition.textScope === "EMPTY" || acquisition.textScope === "UNKNOWN") return `${status} — ${canRefetch ? "분석할 원문을 먼저 가져와 주세요." : localRepair}`;
   if (acquisition.qualityStatus !== "READY") return `${status} — 원문 품질 확인이 필요해 심층 정리를 시작할 수 없습니다.`;
   return `${status} — 1,000자 이상의 정제 원문이 필요합니다.`;
 }
@@ -768,14 +780,14 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
   const document = detail ? toReadingDocument(detail) : null;
   const acquisitionDeepBlocked = detail?.acquisition?.canDeepAnalyze === false;
   const reviewBlocked = detail?.acquisition?.textScope === "FULLTEXT" && detail.acquisition.qualityStatus === "REVIEW";
-  const deepBlockReason = acquisitionDeepBlocked && detail?.acquisition
-    ? acquisitionBlockReason(detail.acquisition)
-    : deepBlock
-      ? deepAnalysisBlockReason(deepBlock)
-      : null;
   const canonicalUrl = typeof detail?.source.canonicalUrl === "string" && detail.source.canonicalUrl.trim()
     ? detail.source.canonicalUrl
     : null;
+  const deepBlockReason = acquisitionDeepBlocked && detail?.acquisition
+    ? acquisitionBlockReason(detail.acquisition, Boolean(canonicalUrl), detail.source.inputFormat)
+    : deepBlock
+      ? deepAnalysisBlockReason(deepBlock)
+      : null;
   const isPdfSource = detail?.source.inputFormat === "PDF_TEXT" || detail?.source.inputFormat === "PDF_SCAN";
   const hasPdfActiveVersion = typeof detail?.source.activeVersionId === "string" && detail.source.activeVersionId.trim().length > 0;
   const pdfCapability = detail?.visualExtractionCapability;
@@ -786,7 +798,7 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
   const deepActionLabel = reviewBlocked
     ? "품질 다시 검사"
     : deepDisabled
-      ? canonicalUrl ? "원문 다시 가져오기" : "원문 수집 필요"
+      ? canonicalUrl ? "원문 다시 가져오기" : "본문 보강 필요"
       : "심층 정리하기";
   const visualExtractionStatus = detail
     ? {

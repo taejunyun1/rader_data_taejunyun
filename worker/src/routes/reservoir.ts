@@ -76,10 +76,20 @@ function acquisitionLabel(textScope: TextScope, charCount: number): string {
   return "원문 상태 확인 필요";
 }
 
+function effectiveAcquisitionQualityStatus(textScope: TextScope, qualityStatus: QualityStatus): QualityStatus {
+  if (qualityStatus !== "UNREVIEWED") return qualityStatus;
+  if (textScope === "EMPTY") return "EMPTY";
+  if (textScope === "PARTIAL" || textScope === "METADATA_ONLY") return "REVIEW";
+  return qualityStatus;
+}
+
 function sourceAcquisitionView(sourceId: string, row: AcquisitionColumns) {
   const textScope = row.acquisitionTextScope ?? "UNKNOWN";
   const extractionMethod = row.acquisitionExtractionMethod ?? "LEGACY";
-  const qualityStatus = row.acquisitionQualityStatus ?? "UNREVIEWED";
+  const qualityStatus = effectiveAcquisitionQualityStatus(
+    textScope,
+    row.acquisitionQualityStatus ?? "UNREVIEWED",
+  );
   const charCount = Number(row.acquisitionCharCount ?? 0);
   const hasNormalizedText = Boolean(row.acquisitionHasNormalizedText);
   const readiness = isDeepAnalysisReady({ textScope, qualityStatus, charCount, normalizedText: hasNormalizedText ? "available" : null });
@@ -353,7 +363,7 @@ reservoir.post("/:sourceId/deep-analysis", async (c) => {
   if (!active) return c.json({ error: "source_not_found" }, 404);
   const readiness = isDeepAnalysisReady({
     textScope: active.text_scope ?? "UNKNOWN",
-    qualityStatus: active.quality_status,
+    qualityStatus: effectiveAcquisitionQualityStatus(active.text_scope ?? "UNKNOWN", active.quality_status),
     charCount: Number(active.char_count ?? 0),
     normalizedText: active.normalized_text,
   });

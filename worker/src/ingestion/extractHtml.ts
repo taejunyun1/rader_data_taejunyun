@@ -3,7 +3,11 @@ import { classifyTextScope, normalizeIngestText, type TextScope } from "@radar/s
 const CONTENT_HINT_RE = /\b(article|content|post|entry|story|main|body|read|markdown|page)\b/i;
 const DROP_BLOCK_RE = /<(script|style|nav|footer|header|aside|noscript)\b[^>]*>[\s\S]*?<\/\1>/gi;
 const ROOT_SHELL_RE = /<(div|main|section)\b[^>]*(?:id|class)=["'][^"']*(root|app|__next|sapper|gatsby|mount)[^"']*["'][^>]*>\s*<\/\1>/i;
-const NOISE_ATTR_RE = /\b(cookie|consent|gdpr|privacy|share|social|subscribe|newsletter|promo|sponsor|advert|ad[-_ ]?(?:slot|banner|container|wrapper)?|outbrain|taboola)\b/i;
+const NOISE_ATTR_TOKEN = String.raw`cookie|consent|gdpr|privacy|share|social|subscribe|newsletter|promo|sponsor|advert(?:isement|ising)?|ad[-_ ](?:slot|banner|container|wrapper)|outbrain|taboola`;
+const NOISE_BLOCK_RE = new RegExp(
+  `<([a-z0-9:-]+)\\b(?=[^>]*\\b(?:class|id|aria-label|aria-labelledby|data-testid|data-component|data-slot|role)=["'][^"']*(?:${NOISE_ATTR_TOKEN})[^"']*["'])[^>]*>[\\s\\S]*?<\\/\\1>`,
+  "gi",
+);
 
 export interface HtmlExtractionResult {
   title: string;
@@ -105,10 +109,7 @@ function stripBoilerplate(html: string): string {
 
   while (cleaned !== previous) {
     previous = cleaned;
-    cleaned = cleaned.replace(
-      /<([a-z0-9:-]+)\b(?=[^>]*\b(?:class|id|aria-label|aria-labelledby|data-testid|data-component|data-slot|role)=["'][^"']*(?:cookie|consent|gdpr|privacy|share|social|subscribe|newsletter|promo|sponsor|advert|ad[-_ ]?(?:slot|banner|container|wrapper)?|outbrain|taboola)[^"']*["'])[^>]*>[\s\S]*?<\/\1>/gi,
-      " ",
-    );
+    cleaned = cleaned.replace(NOISE_BLOCK_RE, " ");
   }
 
   return cleaned;

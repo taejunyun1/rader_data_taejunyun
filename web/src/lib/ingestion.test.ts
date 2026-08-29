@@ -35,6 +35,35 @@ describe("ingestion normalization", () => {
     expect(normalizeIngestText("짧음", "PDF_TEXT").qualityStatus).toBe("REVIEW");
   });
 
+  it("does not mistake repeated short speaker labels for duplicated article text", () => {
+    const transcript = Array.from({ length: 12 }, (_, index) => [
+      "Jon Uriarte",
+      `Question ${index}: This is a distinct interview question about photography, institutions, technology, archives, and visual culture with enough context to remain unique.`,
+      "Alice Lovejoy",
+      `Answer ${index}: This is a distinct long response explaining how photographic practices interact with historical evidence, material processes, education, and public memory.`,
+    ].join("\n")).join("\n");
+
+    const result = normalizeIngestText(transcript, "URL_HTML");
+
+    expect(result.report.warnings).not.toContain("repeated_lines");
+    expect(result.qualityStatus).toBe("READY");
+  });
+
+  it("still flags substantial duplicated article text", () => {
+    const duplicated = "This entire long paragraph was duplicated by the source template and should lower extraction confidence because it dominates the usable article body.";
+    const result = normalizeIngestText([
+      duplicated,
+      duplicated,
+      duplicated,
+      duplicated,
+      "A short unique introduction remains here.",
+      "A short unique conclusion remains here.",
+    ].join("\n"), "URL_HTML");
+
+    expect(result.report.warnings).toContain("repeated_lines");
+    expect(result.qualityStatus).toBe("REVIEW");
+  });
+
   it.each([
     ["obsidian:10_PROJECTS/note.md", "note.md", undefined, "OBSIDIAN", "OBSIDIAN_MARKDOWN"],
     ["upload:pdf", "paper.pdf", { scannedPdf: true }, "MANUAL", "PDF_SCAN"],

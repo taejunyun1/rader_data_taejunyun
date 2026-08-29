@@ -41,6 +41,45 @@ async function post(path: string, body: unknown): Promise<Response> {
 }
 
 describe("reservoir refresh routes", () => {
+  it("reports REVIEW for a legacy PARTIAL version whose source quality is still UNREVIEWED", async () => {
+    const sourceId = "0000e-legacy-partial";
+    const versionId = "0000e-legacy-partial-v1";
+    const now = new Date().toISOString();
+    await env.DB.prepare(
+      `INSERT INTO sources
+       (id, kind, title, reliability, status, origin, input_format, quality_status, created_at, updated_at)
+       VALUES (?, 'NOTE', '레거시 부분 본문', 'PRIVATE', 'stored', 'obsidian:legacy', 'OBSIDIAN_MARKDOWN', 'UNREVIEWED', ?, ?)`,
+    ).bind(sourceId, now, now).run();
+    await env.DB.prepare(
+      `INSERT INTO source_versions
+       (id, source_id, version, extracted_text, char_count, normalized_text, normalization_status,
+        version_origin, review_status, text_scope, extraction_method, created_at)
+       VALUES (?, ?, 1, ?, 283, ?, 'PENDING', 'INITIAL_INGEST', 'ACTIVE', 'PARTIAL', 'LEGACY', ?)`,
+    ).bind(versionId, sourceId, "부분 본문".repeat(36), "부분 본문".repeat(36), now).run();
+    await env.DB.prepare("UPDATE sources SET active_version_id = ? WHERE id = ?").bind(versionId, sourceId).run();
+
+    const response = await app.request(`/api/reservoir/${sourceId}`, undefined, env as unknown as Env);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      acquisition: {
+        textScope: "PARTIAL",
+        qualityStatus: "REVIEW",
+        charCount: 283,
+        canDeepAnalyze: false,
+      },
+    });
+
+    const blocked = await post(`/api/reservoir/${sourceId}/deep-analysis`, {});
+    expect(blocked.status).toBe(422);
+    await expect(blocked.json()).resolves.toMatchObject({
+      error: "deep_analysis_text_not_ready",
+      textScope: "PARTIAL",
+      qualityStatus: "REVIEW",
+      charCount: 283,
+    });
+  });
+
   it("accepts a preview and creates no active logical merge", async () => {
     await insertSource({ id: "0000b-preview-left", title: "Preview left", doi: "10.1000/preview" });
     await insertSource({ id: "0000b-preview-right", title: "Preview right", doi: "https://doi.org/10.1000/preview" });

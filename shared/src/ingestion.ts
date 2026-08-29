@@ -182,6 +182,10 @@ function calculateRepeatedLineRatio(lines: string[]): number {
   if (lines.length < 3) return 0;
   const counts = new Map<string, number>();
   for (const line of lines) counts.set(line, (counts.get(line) ?? 0) + 1);
-  const repeated = [...counts.values()].filter((count) => count > 1).reduce((sum, count) => sum + count, 0);
-  return repeated / lines.length;
+  const totalChars = lines.reduce((sum, line) => sum + countMeaningfulCharacters(line), 0);
+  if (!totalChars) return 0;
+  const repeatedChars = [...counts.entries()]
+    .filter(([, count]) => count > 1)
+    .reduce((sum, [line, count]) => sum + countMeaningfulCharacters(line) * count, 0);
+  return repeatedChars / totalChars;
 }

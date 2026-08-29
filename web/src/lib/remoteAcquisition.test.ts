@@ -92,6 +92,8 @@ describe("static HTML extraction", () => {
 
     expect(result.text).toContain("A timeline built by Lev Manovich");
     expect(result.text).toContain("Trust in the image becomes cryptographic");
+    expect(result.selectedFragmentHtml).toContain('<main id="main"');
+    expect(result.warnings).not.toContain("fallback_body");
   });
 
   it("extracts deterministic visual candidates from stored article HTML and records rejection signals", async () => {

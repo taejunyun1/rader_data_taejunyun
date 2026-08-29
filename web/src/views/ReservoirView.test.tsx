@@ -312,6 +312,33 @@ describe("ReservoirView", () => {
     expect(screen.queryByRole("button", { name: "원문 수집 필요" })).not.toBeInTheDocument();
   });
 
+  it("explains how to repair a partial local source without presenting a dead remote-fetch action", async () => {
+    currentSourceDetail = {
+      ...sourceDetail,
+      source: {
+        ...sourceDetail.source,
+        canonicalUrl: null,
+        inputFormat: "OBSIDIAN_MARKDOWN",
+      },
+      acquisition: {
+        ...sourceDetail.acquisition,
+        textScope: "PARTIAL",
+        qualityStatus: "REVIEW",
+        charCount: 283,
+        acquisitionLabel: "원문 일부 저장됨 · 283자",
+        canDeepAnalyze: false,
+        originalTextUrl: "/api/reservoir/source-1/original-text",
+      },
+    };
+    render(<ReservoirView />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+
+    expect(screen.getByText(/원문 일부 · 검토 필요 · 283자/)).toHaveTextContent("받은 자료에서 본문을 보강하거나 Obsidian 동기화를 다시 실행해 주세요.");
+    expect(screen.getByRole("button", { name: "본문 보강 필요" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "원문 수집 필요" })).not.toBeInTheDocument();
+  });
+
   it("opens reading before asking for a judgment", async () => {
     render(<ReservoirView />);
     await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
@@ -903,7 +930,7 @@ describe("ReservoirView", () => {
 
     expect(screen.getAllByRole("button", { name: "원문 다시 가져오기" })).toHaveLength(2);
     expect(screen.getAllByRole("button", { name: "원문 다시 가져오기" }).every((button) => !(button as HTMLButtonElement).disabled)).toBe(true);
-    expect(screen.getByText(/METADATA_ONLY.*REVIEW.*92자/)).toBeInTheDocument();
+    expect(screen.getByText(/메타데이터만.*검토 필요.*92자/)).toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalledWith("/api/reservoir/source-1/deep-analysis", expect.anything());
   });
 
