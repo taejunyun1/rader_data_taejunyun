@@ -62,7 +62,7 @@ Research Radar는 사진작가 윤태준의 개인 연구 편집 도구다. 챗�
 | Usage | 월 비용·목적·모델·일별 차트 | V2 확장 |
 | Export | JSON/Markdown/CSV 및 R2 원본 백업 | V0 필수 |
 
-저장소 상세의 `자료 삭제`는 앱 전역 `/api/*` Access/CLI 인증 미들웨어를 통과한 요청만 실행할 수 있으며, 프로덕션에서는 삭제 route도 defense-in-depth guard로 인증 주체를 다시 확인한다. 제목을 정확히 재입력하는 절차는 실행 확인이며 유일한 접근 통제가 아니다. 선택 source가 소유한 source/version/analysis/index/visual D1 행과 R2 원본·시각·임시 객체를 제거한다. 활성 research/visual 작업이 있거나 R2 정리에 실패하면 D1을 변경하지 않는다. 병합 구성원 삭제는 선택 자료에만 적용하고, 대표 삭제 시 기존 대표 선정 규칙으로 남은 구성원을 승격한다. Discovery 후보와 과거 Distill/snapshot/job 결과는 보존하며 후보의 nullable `source_id` 연결만 해제한다. 이 동작은 휴지통이나 `ignore` 판단과 다르며 복구할 수 없다.
+저장소 상세의 `자료 삭제`는 앱 전역 `/api/*` 인증 미들웨어를 통과한다. 프로덕션/운영 요청은 Cloudflare Access 검증 또는 CLI 인증을 거쳐야 하고, 삭제 route의 production defense-in-depth guard가 인증 주체를 다시 확인한다. `development`·`test` 환경에서만 local identity bypass가 명시적으로 허용된다. 제목을 정확히 재입력하는 절차는 실행 확인이며 유일한 접근 통제가 아니다. 선택 source가 소유한 source/version/analysis/index/visual D1 행과 R2 원본·시각·임시 객체를 제거한다. 활성 research/visual 작업이 있거나 R2 정리에 실패하면 D1을 변경하지 않는다. 병합 구성원 삭제는 선택 자료에만 적용하고, 대표 삭제 시 기존 대표 선정 규칙으로 남은 구성원을 승격한다. Discovery 후보와 과거 Distill/snapshot/job 결과는 보존하며 후보의 nullable `source_id` 연결만 해제한다. 이 동작은 휴지통이나 `ignore` 판단과 다르며 복구할 수 없다.
 
 삭제 순서는 의도적으로 R2 정리가 D1 batch보다 먼저다. R2 삭제가 성공한 뒤 D1 batch가 실패하면 `source_delete_d1_failed`로 보고하며, D1 내부 변경은 atomic하게 유지된다. 이 경우 성공한 R2 삭제를 다른 저장소에서 rollback하거나 복원하지 않으므로 R2 객체는 삭제된 상태로 남는다.
 
