@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
-import { createLogicalMerge } from "./mergeGroups";
+import { createLogicalMerge, reverseLogicalMerge } from "./mergeGroups";
 import {
   deleteSourcePermanently,
   getSourceDeletionPreview,
@@ -340,6 +340,74 @@ describe("source deletion D1 purge", () => {
       .bind(groupId, strongId).first()).toEqual({ role: "CANONICAL" });
   });
 
+  it("preserves survivor history when deleting a canonical source from a reversed group", async () => {
+    const prefix = crypto.randomUUID();
+    const deletedCanonicalId = `${prefix}-0-canonical`;
+    const survivorId = `${prefix}-1-survivor`;
+    const strongerSurvivorId = `${prefix}-2-survivor`;
+    await insertSource(deletedCanonicalId, "과거 대표 자료");
+    await insertSource(survivorId, "남은 자료");
+    await insertSource(strongerSurvivorId, "우선 남은 자료");
+    const groupId = await createLogicalMerge(env.DB, {
+      canonicalSourceId: deletedCanonicalId,
+      memberSourceIds: [survivorId, strongerSurvivorId],
+      mode: "MANUAL",
+      confidence: 1,
+      reasons: ["manual_review"],
+    });
+    await reverseLogicalMerge(env.DB, groupId);
+
+    const now = new Date().toISOString();
+    const targetCandidateId = `${prefix}-target-candidate`;
+    const survivorHistoryCandidateId = `${prefix}-survivor-history`;
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO source_duplicate_candidates
+         (id, left_source_id, right_source_id, decision, score, reasons_json, status, created_at)
+         VALUES (?, ?, ?, 'REVIEW', 0.9, '[]', 'PENDING', ?)`,
+      ).bind(targetCandidateId, deletedCanonicalId, survivorId, now),
+      env.DB.prepare(
+        `INSERT INTO source_duplicate_candidates
+         (id, left_source_id, right_source_id, decision, score, reasons_json,
+          status, merge_group_id, created_at, resolved_at)
+         VALUES (?, ?, ?, 'AUTO_MERGE', 1, '["historical"]', 'MERGED', ?, ?, ?)`,
+      ).bind(
+        survivorHistoryCandidateId,
+        survivorId,
+        strongerSurvivorId,
+        groupId,
+        now,
+        now,
+      ),
+      env.DB.prepare("INSERT INTO user_signals (id, source_id, action, created_at) VALUES (?, ?, 'keep', ?)")
+        .bind(`${strongerSurvivorId}-signal`, strongerSurvivorId, now),
+    ]);
+
+    await expect(deleteSourcePermanently(env, {
+      sourceId: deletedCanonicalId,
+      confirmTitle: "과거 대표 자료",
+    })).resolves.toEqual({ deletedSourceId: deletedCanonicalId, merge: null });
+
+    const historicalGroup = await env.DB.prepare(
+      "SELECT canonical_source_id, reversed_at FROM source_merge_groups WHERE id = ?",
+    ).bind(groupId).first<{ canonical_source_id: string; reversed_at: string | null }>();
+    expect(historicalGroup).toMatchObject({ canonical_source_id: strongerSurvivorId });
+    expect(historicalGroup?.reversed_at).toBeTruthy();
+    const survivingMembers = await env.DB.prepare(
+      "SELECT source_id, role FROM source_merge_members WHERE group_id = ? ORDER BY source_id",
+    ).bind(groupId).all();
+    expect(survivingMembers.results).toEqual([
+      { source_id: survivorId, role: "MEMBER" },
+      { source_id: strongerSurvivorId, role: "CANONICAL" },
+    ]);
+    expect(await env.DB.prepare(
+      "SELECT status, merge_group_id FROM source_duplicate_candidates WHERE id = ?",
+    ).bind(survivorHistoryCandidateId).first()).toEqual({ status: "MERGED", merge_group_id: groupId });
+    expect(await env.DB.prepare(
+      "SELECT id FROM source_duplicate_candidates WHERE id = ?",
+    ).bind(targetCandidateId).first()).toBeNull();
+  });
+
   it("removes an active group when the selected source is its only remaining member", async () => {
     const prefix = crypto.randomUUID();
     const sourceId = `${prefix}-last`;
@@ -402,6 +470,60 @@ describe("source deletion D1 purge", () => {
     );
     expect(await env.DB.prepare("SELECT id FROM source_versions WHERE source_id = ?")
       .bind(sourceId).first()).not.toBeNull();
+  });
+
+  it("rejects a same-count merge membership and role replacement before deleting the canonical source", async () => {
+    const prefix = crypto.randomUUID();
+    const canonicalId = `${prefix}-canonical`;
+    const removedMemberId = `${prefix}-removed-member`;
+    const retainedMemberId = `${prefix}-retained-member`;
+    const replacementMemberId = `${prefix}-replacement-member`;
+    await insertSource(canonicalId, "교체 전 대표");
+    await insertSource(removedMemberId, "교체 전 구성원");
+    await insertSource(retainedMemberId, "유지 구성원");
+    await insertSource(replacementMemberId, "교체 후 구성원");
+    const groupId = await createLogicalMerge(env.DB, {
+      canonicalSourceId: canonicalId,
+      memberSourceIds: [removedMemberId, retainedMemberId],
+      mode: "MANUAL",
+      confidence: 1,
+      reasons: ["manual_review"],
+    });
+    const staleDb = {
+      prepare: env.DB.prepare.bind(env.DB),
+      batch: vi.fn(async (statements: D1PreparedStatement[]) => {
+        await env.DB.batch([
+          env.DB.prepare("DELETE FROM source_merge_members WHERE group_id = ? AND source_id = ?")
+            .bind(groupId, removedMemberId),
+          env.DB.prepare("UPDATE source_merge_members SET role = 'CANONICAL' WHERE group_id = ? AND source_id = ?")
+            .bind(groupId, retainedMemberId),
+          env.DB.prepare(
+            "INSERT INTO source_merge_members (group_id, source_id, role, created_at) VALUES (?, ?, 'MEMBER', ?)",
+          ).bind(groupId, replacementMemberId, new Date().toISOString()),
+        ]);
+        return env.DB.batch(statements);
+      }),
+    } as unknown as D1Database;
+
+    await expectDeletionError(
+      deleteSourcePermanently(
+        { DB: staleDb, ORIGINALS: env.ORIGINALS },
+        { sourceId: canonicalId, confirmTitle: "교체 전 대표" },
+      ),
+      "source_delete_state_changed",
+    );
+    expect(await env.DB.prepare("SELECT id FROM sources WHERE id = ?").bind(canonicalId).first()).not.toBeNull();
+    await expect(env.DB.prepare(
+      "SELECT source_id AS sourceId, role FROM source_merge_members WHERE group_id = ? ORDER BY source_id",
+    ).bind(groupId).all()).resolves.toEqual({
+      results: [
+        { sourceId: canonicalId, role: "CANONICAL" },
+        { sourceId: replacementMemberId, role: "MEMBER" },
+        { sourceId: retainedMemberId, role: "CANONICAL" },
+      ],
+      success: true,
+      meta: expect.anything(),
+    });
   });
 
   it("rejects visual work queued after preflight in the final D1 guard", async () => {

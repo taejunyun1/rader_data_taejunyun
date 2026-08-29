@@ -47,6 +47,16 @@ interface ActiveMergeSnapshot {
   canonicalSourceId: string;
   role: "CANONICAL" | "MEMBER";
   memberSourceIds: string[];
+  memberRoles: Array<{
+    sourceId: string;
+    role: "CANONICAL" | "MEMBER";
+  }>;
+}
+
+interface HistoricalMergeSnapshot {
+  groupId: string;
+  canonicalSourceId: string;
+  memberSourceIds: string[];
 }
 
 interface SourceDeletionPlan {
@@ -54,6 +64,7 @@ interface SourceDeletionPlan {
   title: string;
   r2Keys: string[];
   merge: ActiveMergeSnapshot | null;
+  mergeFingerprint: string;
   dependencySnapshot: string;
 }
 
@@ -189,6 +200,26 @@ const SOURCE_DEPENDENCY_SNAPSHOT_QUERY = `
     ), '[]'))
   ) AS snapshot`;
 
+const MERGE_MEMBERSHIP_FINGERPRINT_QUERY = `
+  SELECT json_object(
+    'groupId', merge_group.id,
+    'canonicalSourceId', merge_group.canonical_source_id,
+    'members', json(COALESCE((
+      SELECT json_group_array(json_object(
+        'sourceId', member.source_id,
+        'role', member.role
+      ))
+      FROM (
+        SELECT source_id, role
+        FROM source_merge_members
+        WHERE group_id = merge_group.id
+        ORDER BY source_id, role
+      ) member
+    ), '[]'))
+  )
+  FROM source_merge_groups merge_group
+  WHERE merge_group.id = ? AND merge_group.reversed_at IS NULL`;
+
 async function loadActiveMergeSnapshot(
   db: D1Database,
   sourceId: string,
@@ -206,12 +237,44 @@ async function loadActiveMergeSnapshot(
   }>();
   if (!membership) return null;
   const members = await db.prepare(
-    "SELECT source_id AS sourceId FROM source_merge_members WHERE group_id = ? ORDER BY source_id",
-  ).bind(membership.groupId).all<{ sourceId: string }>();
+    "SELECT source_id AS sourceId, role FROM source_merge_members WHERE group_id = ? ORDER BY source_id, role",
+  ).bind(membership.groupId).all<{
+    sourceId: string;
+    role: "CANONICAL" | "MEMBER";
+  }>();
+  const memberRoles = members.results ?? [];
   return {
     ...membership,
-    memberSourceIds: (members.results ?? []).map((row) => row.sourceId),
+    memberSourceIds: memberRoles.map((row) => row.sourceId),
+    memberRoles,
   };
+}
+
+async function loadHistoricalMergeSnapshots(
+  db: D1Database,
+  sourceId: string,
+): Promise<HistoricalMergeSnapshot[]> {
+  const memberships = await db.prepare(
+    `SELECT g.id AS groupId, g.canonical_source_id AS canonicalSourceId
+     FROM source_merge_members m
+     JOIN source_merge_groups g ON g.id = m.group_id
+     WHERE m.source_id = ? AND g.reversed_at IS NOT NULL
+     ORDER BY g.created_at DESC`,
+  ).bind(sourceId).all<{
+    groupId: string;
+    canonicalSourceId: string;
+  }>();
+  const snapshots: HistoricalMergeSnapshot[] = [];
+  for (const membership of memberships.results ?? []) {
+    const members = await db.prepare(
+      "SELECT source_id AS sourceId FROM source_merge_members WHERE group_id = ? ORDER BY source_id",
+    ).bind(membership.groupId).all<{ sourceId: string }>();
+    snapshots.push({
+      ...membership,
+      memberSourceIds: (members.results ?? []).map((row) => row.sourceId),
+    });
+  }
+  return snapshots;
 }
 
 export async function getSourceDeletionPreview(
@@ -277,11 +340,13 @@ async function loadDeletionPlan(db: D1Database, input: DeleteSourceInput): Promi
   }
   const dependencySnapshot = await loadDependencySnapshot(db, source.id);
   const r2Keys = await loadR2Keys(db, source.id);
+  const merge = await loadActiveMergeSnapshot(db, source.id);
   return {
     sourceId: source.id,
     title: source.title,
     r2Keys,
-    merge: await loadActiveMergeSnapshot(db, source.id),
+    merge,
+    mergeFingerprint: mergeFingerprint(merge),
     dependencySnapshot,
   };
 }
@@ -302,8 +367,8 @@ function mergeFingerprint(merge: ActiveMergeSnapshot | null): string {
   return JSON.stringify({
     groupId: merge.groupId,
     canonicalSourceId: merge.canonicalSourceId,
-    role: merge.role,
-    memberSourceIds: [...merge.memberSourceIds].sort(),
+    members: [...merge.memberRoles].sort((left, right) =>
+      left.sourceId.localeCompare(right.sourceId) || left.role.localeCompare(right.role)),
   });
 }
 
@@ -315,7 +380,7 @@ async function assertPlanStillCurrent(db: D1Database, plan: SourceDeletionPlan):
   if (
     !source
     || source.title !== plan.title
-    || mergeFingerprint(currentMerge) !== mergeFingerprint(plan.merge)
+    || mergeFingerprint(currentMerge) !== plan.mergeFingerprint
     || currentDependencies !== plan.dependencySnapshot
   ) {
     throw new SourceDeletionError("source_delete_state_changed");
@@ -370,6 +435,7 @@ function deletionGuard(
            AND merge_group.reversed_at IS NULL
            AND (SELECT COUNT(*) FROM source_merge_members WHERE group_id = ?) = ?
        )
+       AND (${MERGE_MEMBERSHIP_FINGERPRINT_QUERY}) = ?
      THEN 1 ELSE json('source_delete_guard_failed') END AS valid`,
   ).bind(
     plan.sourceId,
@@ -388,6 +454,8 @@ function deletionGuard(
     plan.merge.canonicalSourceId,
     plan.merge.groupId,
     plan.merge.memberSourceIds.length,
+    plan.merge.groupId,
+    plan.mergeFingerprint,
   );
 }
 
@@ -396,7 +464,7 @@ async function mergeMutation(
   plan: SourceDeletionPlan,
 ): Promise<{ statements: D1PreparedStatement[]; result: DeleteSourceMergeResult | null }> {
   if (!plan.merge) return { statements: [], result: null };
-  const remainingIds = plan.merge.memberSourceIds.filter((id) => id !== plan.sourceId);
+  const remainingIds = plan.merge.memberSourceIds.filter((id) => id !== plan.sourceId).sort();
   if (remainingIds.length === 0) {
     return {
       statements: [
@@ -436,18 +504,52 @@ async function mergeMutation(
   };
 }
 
+async function historicalMergeMutation(
+  db: D1Database,
+  sourceId: string,
+): Promise<D1PreparedStatement[]> {
+  const statements: D1PreparedStatement[] = [];
+  const historicalMerges = await loadHistoricalMergeSnapshots(db, sourceId);
+  for (const merge of historicalMerges) {
+    const remainingIds = merge.memberSourceIds.filter((id) => id !== sourceId);
+    if (remainingIds.length === 0) {
+      statements.push(
+        db.prepare("DELETE FROM source_duplicate_candidates WHERE merge_group_id = ?").bind(merge.groupId),
+        db.prepare("DELETE FROM source_merge_members WHERE group_id = ?").bind(merge.groupId),
+        db.prepare("DELETE FROM source_merge_groups WHERE id = ?").bind(merge.groupId),
+      );
+      continue;
+    }
+    if (merge.canonicalSourceId === sourceId) {
+      const canonicalSourceId = await selectCanonicalSourceId(db, remainingIds);
+      statements.push(
+        db.prepare("UPDATE source_merge_groups SET canonical_source_id = ? WHERE id = ? AND canonical_source_id = ?")
+          .bind(canonicalSourceId, merge.groupId, sourceId),
+        db.prepare("UPDATE source_merge_members SET role = 'MEMBER' WHERE group_id = ?")
+          .bind(merge.groupId),
+        db.prepare("UPDATE source_merge_members SET role = 'CANONICAL' WHERE group_id = ? AND source_id = ?")
+          .bind(merge.groupId, canonicalSourceId),
+      );
+    }
+    statements.push(
+      db.prepare("DELETE FROM source_merge_members WHERE group_id = ? AND source_id = ?")
+        .bind(merge.groupId, sourceId),
+    );
+  }
+  return statements;
+}
+
 async function deleteD1Records(
   db: D1Database,
   plan: SourceDeletionPlan,
 ): Promise<DeleteSourceMergeResult | null> {
   await assertPlanStillCurrent(db, plan);
   const merge = await mergeMutation(db, plan);
+  const historicalMerge = await historicalMergeMutation(db, plan.sourceId);
   const sourceId = plan.sourceId;
   const ownedAssets = `SELECT id FROM visual_assets
     WHERE parent_source_id = ?
        OR parent_version_id IN (SELECT id FROM source_versions WHERE source_id = ?)`;
-  const historicalCanonicalGroups = `SELECT id FROM source_merge_groups
-    WHERE canonical_source_id = ? AND reversed_at IS NOT NULL`;
   const statements: D1PreparedStatement[] = [
     deletionGuard(db, plan),
     db.prepare("UPDATE discovery_candidates SET source_id = NULL WHERE source_id = ?").bind(sourceId),
@@ -485,18 +587,7 @@ async function deleteD1Records(
     db.prepare(
       "DELETE FROM source_duplicate_candidates WHERE left_source_id = ? OR right_source_id = ?",
     ).bind(sourceId, sourceId),
-    db.prepare(
-      `DELETE FROM source_duplicate_candidates WHERE merge_group_id IN (${historicalCanonicalGroups})`,
-    ).bind(sourceId),
-    db.prepare(
-      `DELETE FROM source_merge_members WHERE group_id IN (${historicalCanonicalGroups})`,
-    ).bind(sourceId),
-    db.prepare(
-      `DELETE FROM source_merge_groups WHERE id IN (${historicalCanonicalGroups})`,
-    ).bind(sourceId),
-    db.prepare(
-      "DELETE FROM source_merge_members WHERE source_id = ? AND group_id IN (SELECT id FROM source_merge_groups WHERE reversed_at IS NOT NULL)",
-    ).bind(sourceId),
+    ...historicalMerge,
     ...merge.statements,
     db.prepare("DELETE FROM source_versions WHERE source_id = ?").bind(sourceId),
     db.prepare("DELETE FROM sources WHERE id = ?").bind(sourceId),
@@ -517,7 +608,7 @@ async function deleteD1Records(
       if (
         !current
         || current.title !== plan.title
-        || mergeFingerprint(currentMerge) !== mergeFingerprint(plan.merge)
+        || mergeFingerprint(currentMerge) !== plan.mergeFingerprint
         || currentDependencies !== plan.dependencySnapshot
       ) {
         throw new SourceDeletionError("source_delete_state_changed", error);
