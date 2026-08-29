@@ -10,6 +10,7 @@ import { formatSourceTitle } from "../lib/sourcePresentation";
 import PageHeader from "../components/layout/PageHeader";
 import StatusMessage from "../components/ui/StatusMessage";
 import DecisionBottomSheet, { DECISION_STATUS_LABELS } from "../components/reading/DecisionBottomSheet";
+import SourceDeleteDialog from "../components/reservoir/SourceDeleteDialog";
 import { useModalAccessibility } from "../components/reading/modalAccessibility";
 import ReadingActionBar from "../components/reading/ReadingActionBar";
 import ReadingPane from "../components/reading/ReadingPane";
@@ -46,6 +47,12 @@ interface ReservoirItem {
 
 interface SourceDetail {
   source: Record<string, unknown> & { inputFormat?: string | null; activeVersionId?: string | null };
+  deletion: {
+    sourceId: string;
+    title: string;
+    mergeRole: "NONE" | "CANONICAL" | "MEMBER";
+    mergeMemberCount: number;
+  };
   acquisition?: SourceAcquisitionView | null;
   pdfExtraction?: PdfVisualExtractionResult | null;
   visualExtractionCapability?: PdfVisualExtractionCapability;
@@ -170,6 +177,15 @@ function acquisitionBlockReason(acquisition: SourceAcquisitionView, canRefetch: 
   return `${status} — 1,000자 이상의 정제 원문이 필요합니다.`;
 }
 
+function sourceDeleteErrorMessage(code: string): string {
+  if (code === "source_delete_confirmation_mismatch") return "자료 제목이 변경됐습니다. 상세 화면을 다시 불러와 주세요.";
+  if (code === "source_delete_active_work") return "이 자료의 처리 작업이 진행 중입니다. 작업이 끝난 뒤 다시 시도해 주세요.";
+  if (code === "source_delete_state_changed") return "병합 또는 자료 상태가 변경됐습니다. 상세 화면을 다시 불러와 주세요.";
+  if (code === "source_delete_r2_failed") return "원본 저장소 정리에 실패했습니다. 자료는 삭제되지 않았습니다.";
+  if (code === "source_not_found") return "이미 삭제된 자료입니다.";
+  return "자료를 삭제하지 못했습니다. 잠시 후 다시 시도해 주세요.";
+}
+
 function toIndexItem(item: ReservoirItem): SourceIndexItem {
   const status = decisionLabel(item.decisionStatus);
   const nextResearchTag = isMarkedForNextResearch(item.markedForNextResearch) ? "다음 리서치" : null;
@@ -246,6 +262,9 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
   const [pdfExtraction, setPdfExtraction] = useState<PdfVisualExtractionResult | null>(null);
   const [pdfExtractionPending, setPdfExtractionPending] = useState(false);
   const [pdfSheetOpen, setPdfSheetOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deletePending, setDeletePending] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
   const interactionRequest = useRef(0);
   const listRequest = useRef(0);
   const actionRequest = useRef(0);
@@ -260,6 +279,7 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
   const pdfSheetDialogRef = useRef<HTMLElement | null>(null);
   const pdfSheetCloseRef = useRef<HTMLButtonElement | null>(null);
   const filterIntentRef = useRef<ReservoirFilterIntent>({ kind: "", topic: "", decision: "active", generation: 0 });
+  const deleteRequest = useRef(0);
   const compactViewport = useCompactViewport();
   const pdfPreparationTasks = usePdfVisualExtractionTasks();
 
@@ -369,6 +389,10 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
     setPdfExtraction(null);
     setPdfExtractionPending(false);
     setPdfSheetOpen(false);
+    setDeleteOpen(false);
+    setDeletePending(false);
+    setDeleteError("");
+    deleteRequest.current += 1;
   }
 
   function clearSelection() {
@@ -552,6 +576,43 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
       }
     } finally {
       if (actionRequest.current === actionRequestId) setActionPending(false);
+    }
+  }
+
+  async function deleteCurrentSource(confirmTitle: string) {
+    if (!detail) return;
+    const sourceId = String(detail.source.id);
+    const requestId = deleteRequest.current + 1;
+    deleteRequest.current = requestId;
+    setDeletePending(true);
+    setDeleteError("");
+    try {
+      const response = await fetch(`/api/reservoir/${encodeURIComponent(sourceId)}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmTitle }),
+      });
+      const data = await response.json() as { error?: string; deletedSourceId?: string };
+      if (deleteRequest.current !== requestId || selectedIdRef.current !== sourceId) return;
+      if (response.status === 404 && data.error === "source_not_found") {
+        setItems((current) => current.filter((item) => item.id !== sourceId));
+        startInteraction();
+        resetSelection();
+        setMsg("이미 삭제된 자료라 저장소 목록을 새로 불러왔습니다.");
+        await load(filterIntentRef.current);
+        return;
+      }
+      if (!response.ok) throw new Error(data.error ?? "source_delete_failed");
+      setItems((current) => current.filter((item) => item.id !== sourceId));
+      startInteraction();
+      resetSelection();
+      setMsg("자료를 영구 삭제했습니다.");
+      await load(filterIntentRef.current);
+    } catch (error) {
+      if (deleteRequest.current !== requestId || selectedIdRef.current !== sourceId) return;
+      setDeleteError(sourceDeleteErrorMessage(error instanceof Error ? error.message : "source_delete_failed"));
+    } finally {
+      if (deleteRequest.current === requestId) setDeletePending(false);
     }
   }
 
@@ -854,7 +915,7 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
         readingKey={selectedId}
         mobilePane={selectedId ? "reading" : "index"}
         index={<SourceIndex title="저장소 자료" items={indexItems} selectedId={selectedId} onSelect={(id) => void openDetail(id)} />}
-      reading={detailError ? <><ReadingActionBar message="상세 내용을 불러오지 못했습니다." onBack={clearSelection} /><StatusMessage kind="error" title={detailError} action={<button className="ui-button-secondary" onClick={() => selectedId && void openDetail(selectedId)}>다시 시도</button>} /></> : detailLoading ? <><ReadingActionBar message="자료 상세 내용을 불러오는 중…" onBack={clearSelection} /><StatusMessage kind="loading" title="자료 상세 내용을 불러오는 중…" description="원문과 분석 내용을 준비하고 있습니다." /></> : document ? <><ReadingActionBar statusLabel={detail?.source.decisionStatus ? DECISION_STATUS_LABELS[detail.source.decisionStatus as DecisionAction["id"]] : null} pending={actionPending} onBack={clearSelection} onOpenDecision={() => setDecisionOpen(true)} /><div className="deep-analysis-controls" aria-label="심층 정리 실행"><label htmlFor="deep-analysis-profile">심층 정리 품질</label><select id="deep-analysis-profile" value={deepProfile} onChange={(event) => setDeepProfile(event.target.value as "precision" | "maximum")} disabled={deepPending || deepDisabled}><option value="precision">정밀 · 긴 본문 구조화</option><option value="maximum">최고 정밀 · 논거와 연결 검토</option></select><button type="button" className="ui-button" onClick={() => reviewBlocked ? void reanalyze() : deepDisabled ? void refetch() : void runDeepAnalysis()} disabled={deepPending || actionPending || (deepDisabled && !reviewBlocked && !canonicalUrl)}>{actionPending ? (reviewBlocked ? "품질 다시 검사 중…" : "원문 수집 중…") : deepPending ? "심층 정리 중…" : deepActionLabel}</button></div>{canExtractPdf && !compactViewport && pdfProgressPanel}{canExtractPdf && compactViewport && <div className="deep-analysis-controls"><button ref={pdfSheetTriggerRef} type="button" className="ui-button" onClick={() => setPdfSheetOpen(true)}>{pdfExtraction && pdfExtraction.remainingPages > 0 ? "계속" : "시각 자료 찾기"}</button></div>}{needsPdfOriginal && <PdfOriginalRecovery sourceId={String(detail.source.id)} onRecovered={() => openDetail(String(detail.source.id), { preserveAction: true })} />}{deepBlockReason && <p className="deep-analysis-blocked" role="status">{deepBlockReason}</p>}<ReadingPane document={document} deepAnalysis={detail?.deepAnalysis} deepAnalysisHistory={detail?.deepAnalysisHistory} onOpenDeepHistory={(id) => void openDeepHistory(id)} supplementary={visualExtractionStatus ? <VisualAssetPanel assets={[]} extractionContext={visualExtractionStatus} onRequestAcquisition={canonicalUrl && !reviewBlocked ? refetch : undefined} acquisitionPending={actionPending} title="시각 자료 상태" /> : undefined} />{detail?.visuals && <VisualAssetPanel assets={detail.visuals} extractionContext={visualExtractionStatus} showExtractionStatus={false} onAnalysisAction={reviewVisualAnalysis} onAssetUpdated={syncVisualAsset} />}</> : <StatusMessage kind="empty" title="읽을 자료를 선택하세요" description="왼쪽 목록에서 자료를 고르면 원문과 분석 내용을 함께 읽을 수 있습니다." />}
+      reading={detailError ? <><ReadingActionBar message="상세 내용을 불러오지 못했습니다." onBack={clearSelection} /><StatusMessage kind="error" title={detailError} action={<button className="ui-button-secondary" onClick={() => selectedId && void openDetail(selectedId)}>다시 시도</button>} /></> : detailLoading ? <><ReadingActionBar message="자료 상세 내용을 불러오는 중…" onBack={clearSelection} /><StatusMessage kind="loading" title="자료 상세 내용을 불러오는 중…" description="원문과 분석 내용을 준비하고 있습니다." /></> : document ? <><ReadingActionBar statusLabel={detail?.source.decisionStatus ? DECISION_STATUS_LABELS[detail.source.decisionStatus as DecisionAction["id"]] : null} pending={actionPending} onBack={clearSelection} onOpenDecision={() => setDecisionOpen(true)} /><div className="deep-analysis-controls" aria-label="심층 정리 실행"><label htmlFor="deep-analysis-profile">심층 정리 품질</label><select id="deep-analysis-profile" value={deepProfile} onChange={(event) => setDeepProfile(event.target.value as "precision" | "maximum")} disabled={deepPending || deepDisabled}><option value="precision">정밀 · 긴 본문 구조화</option><option value="maximum">최고 정밀 · 논거와 연결 검토</option></select><button type="button" className="ui-button" onClick={() => reviewBlocked ? void reanalyze() : deepDisabled ? void refetch() : void runDeepAnalysis()} disabled={deepPending || actionPending || (deepDisabled && !reviewBlocked && !canonicalUrl)}>{actionPending ? (reviewBlocked ? "품질 다시 검사 중…" : "원문 수집 중…") : deepPending ? "심층 정리 중…" : deepActionLabel}</button></div>{canExtractPdf && !compactViewport && pdfProgressPanel}{canExtractPdf && compactViewport && <div className="deep-analysis-controls"><button ref={pdfSheetTriggerRef} type="button" className="ui-button" onClick={() => setPdfSheetOpen(true)}>{pdfExtraction && pdfExtraction.remainingPages > 0 ? "계속" : "시각 자료 찾기"}</button></div>}{needsPdfOriginal && <PdfOriginalRecovery sourceId={String(detail.source.id)} onRecovered={() => openDetail(String(detail.source.id), { preserveAction: true })} />}{deepBlockReason && <p className="deep-analysis-blocked" role="status">{deepBlockReason}</p>}<ReadingPane document={document} deepAnalysis={detail?.deepAnalysis} deepAnalysisHistory={detail?.deepAnalysisHistory} onOpenDeepHistory={(id) => void openDeepHistory(id)} supplementary={visualExtractionStatus ? <VisualAssetPanel assets={[]} extractionContext={visualExtractionStatus} onRequestAcquisition={canonicalUrl && !reviewBlocked ? refetch : undefined} acquisitionPending={actionPending} title="시각 자료 상태" /> : undefined} />{detail?.visuals && <VisualAssetPanel assets={detail.visuals} extractionContext={visualExtractionStatus} showExtractionStatus={false} onAnalysisAction={reviewVisualAnalysis} onAssetUpdated={syncVisualAsset} />}<section className="source-delete-zone" aria-labelledby="source-delete-zone-title"><div><h3 id="source-delete-zone-title">위험 영역</h3><p>이 자료의 원본, 분석, 버전과 연결된 시각 자료를 영구 삭제합니다.</p></div><button type="button" className="ui-button-danger-outline" disabled={actionPending || deepPending || pdfExtractionPending} onClick={() => { setDeleteError(""); setDeleteOpen(true); }}>자료 삭제</button></section></> : <StatusMessage kind="empty" title="읽을 자료를 선택하세요" description="왼쪽 목록에서 자료를 고르면 원문과 분석 내용을 함께 읽을 수 있습니다." />}
       />}
       {pdfSheetVisible && globalThis.document.body && createPortal(
         <div ref={pdfSheetLayerRef} className="decision-sheet-layer">
@@ -876,6 +937,7 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
         globalThis.document.body,
       )}
       {document && <DecisionBottomSheet document={document} decisionStatus={detail?.source.decisionStatus as DecisionAction["id"] | null} open={decisionOpen} pending={actionPending} pendingAction={pendingAction} error={decisionError} onClose={() => setDecisionOpen(false)} onAction={(action) => void signal(action)} secondaryAction={{ label: "다시 분석하기", onClick: reanalyze }}><div className="source-detail-extra"><div className="source-detail-extra__heading"><h3>자료 기록</h3><button className="ui-button-secondary" type="button" disabled={actionPending || !canonicalUrl} onClick={() => void refetch()}>다시 가져오기</button></div><p>{detail?.versions.length ?? 0}개 버전 · {detail?.signals.length ?? 0}개 판단 기록</p>{!canonicalUrl && <p>원문 주소가 없어 다시 가져올 수 없습니다.</p>}</div></DecisionBottomSheet>}
+      {detail && <SourceDeleteDialog open={deleteOpen} sourceId={detail.deletion.sourceId} title={detail.deletion.title} mergeRole={detail.deletion.mergeRole} mergeMemberCount={detail.deletion.mergeMemberCount} pending={deletePending} error={deleteError} onClose={() => { if (!deletePending) { setDeleteOpen(false); setDeleteError(""); } }} onConfirm={deleteCurrentSource} />}
       {searchHits && <p className="table-note">검색 결과 {searchHits.length}개 · 검색 결과를 선택하면 같은 읽기 화면에서 확인합니다.</p>}
       {detail && <p className="table-note">마지막 확인: {formatDateKo(String(detail.source.createdAt ?? ""))}</p>}
     </div>

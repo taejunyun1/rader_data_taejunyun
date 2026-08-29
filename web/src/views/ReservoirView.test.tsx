@@ -25,6 +25,12 @@ function setViewport(width: number) {
 
 const sourceDetail = {
   source: { id: "source-1", title: "자료 A", authors: "저자", kind: "PAPER_ACADEMIC", reliability: "PRIMARY", origin: "upload", year: 2025, canonicalUrl: "https://example.com/paper" as string | null, provenanceClass: "SOURCE", createdAt: "2026-08-21", markedForNextResearch: 1, inputFormat: "PDF_TEXT", activeVersionId: "version-source-1" },
+  deletion: {
+    sourceId: "source-1",
+    title: "자료 A",
+    mergeRole: "NONE" as const,
+    mergeMemberCount: 1,
+  },
   visualExtractionCapability: { state: "READY" as const, canStart: true, sourceId: "source-1", sourceVersionId: "version-source-1", originalUrl: "/api/reservoir/source-1/original?version=version-source-1", reasonCode: null },
   acquisition: { textScope: "FULLTEXT" as const, extractionMethod: "HTML_STATIC", qualityStatus: "READY", charCount: 2_400, acquisitionLabel: "원문 수집 완료", canDeepAnalyze: true, originalTextUrl: "/api/reservoir/source-1/original-text" as string | null },
   analysis: { summary: "시스템이 정리한 내용", keywords: ["사진"], questions: ["어떻게 읽을까"], important_fragments: ["원문 문장"] },
@@ -136,6 +142,8 @@ const unassignedVisualDetail: VisualAssetDetail = {
 };
 
 let deepAnalysisResult: { status: number; body: Record<string, unknown> };
+let deleteResult: { status: number; body: Record<string, unknown> };
+let pendingDelete: Promise<Response> | null;
 type TestSourceDetail = Omit<typeof sourceDetail, "source" | "acquisition"> & {
   source: Omit<typeof sourceDetail.source, "canonicalUrl"> & { canonicalUrl: string | null };
   acquisition: Omit<typeof sourceDetail.acquisition, "textScope" | "originalTextUrl"> & {
@@ -195,6 +203,8 @@ beforeEach(() => {
   setViewport(1280);
   let requestedWatching = false;
   deepAnalysisResult = { status: 202, body: { job: { id: "deep-job" }, reused: false } };
+  deleteResult = { status: 200, body: { deletedSourceId: "source-1", merge: null } };
+  pendingDelete = null;
   currentSourceDetail = sourceDetail;
   reservoirItems = [{ id: "source-1", title: "자료 A", kind: "PAPER_ACADEMIC", reliability: "PRIMARY", status: "indexed", origin: "upload", year: 2025, canonicalUrl: "https://example.com/paper", activeVersionId: "version-source-1", createdAt: "2026-08-21", topics: "[\"사진\"]", keywordCount: 1, signalCount: 0, markedForNextResearch: 1, decisionStatus: null }];
   pendingSourceOneDetail = null;
@@ -235,6 +245,13 @@ beforeEach(() => {
     }
     if (url === "/api/reservoir/topics") return pendingTopicResponses.shift() ?? Promise.resolve(new Response(JSON.stringify({ topics: [] })));
     if (url.startsWith("/api/search?") && pendingSearch) return pendingSearch;
+    if (url === "/api/reservoir/source-1" && init?.method === "DELETE") {
+      if (pendingDelete) return pendingDelete;
+      if (deleteResult.status === 200 || deleteResult.body.error === "source_not_found") {
+        reservoirItems = reservoirItems.filter((item) => item.id !== "source-1");
+      }
+      return Promise.resolve(new Response(JSON.stringify(deleteResult.body), { status: deleteResult.status }));
+    }
     if (url === "/api/reservoir/source-1" && pendingSourceOneDetail) return pendingSourceOneDetail;
     if (url === "/api/reservoir/source-1" && sourceOneDetailFailure) return Promise.resolve(new Response("", { status: 500 }));
     if (url === "/api/reservoir/source-1") return Promise.resolve(new Response(JSON.stringify(requestedWatching ? { ...currentSourceDetail, source: { ...currentSourceDetail.source, decisionStatus: "watch" } } : currentSourceDetail)));
@@ -297,6 +314,69 @@ describe("ReservoirView", () => {
     expect(screen.getAllByText(/다음 리서치/).length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "심층 정리하기" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "심층 정리 품질" })).toHaveValue("precision");
+  });
+
+  it("permanently deletes after exact-title confirmation and returns to the list", async () => {
+    render(<ReservoirView />);
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+    await userEvent.click(screen.getByRole("button", { name: "자료 삭제" }));
+    const dialog = screen.getByRole("dialog", { name: "자료 영구 삭제" });
+    await userEvent.type(within(dialog).getByLabelText("확인을 위해 자료 제목 입력"), "자료 A");
+    await userEvent.click(within(dialog).getByRole("button", { name: "영구 삭제" }));
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+      "/api/reservoir/source-1",
+      expect.objectContaining({
+        method: "DELETE",
+        body: JSON.stringify({ confirmTitle: "자료 A" }),
+      }),
+    ));
+    expect(await screen.findByText("자료를 영구 삭제했습니다.")).toBeInTheDocument();
+    expect(screen.getByText("읽을 자료를 선택하세요")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /자료 A/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps the detail and translates a storage cleanup failure", async () => {
+    deleteResult = { status: 502, body: { error: "source_delete_r2_failed" } };
+    render(<ReservoirView />);
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+    await userEvent.click(screen.getByRole("button", { name: "자료 삭제" }));
+    const dialog = screen.getByRole("dialog", { name: "자료 영구 삭제" });
+    await userEvent.type(within(dialog).getByLabelText("확인을 위해 자료 제목 입력"), "자료 A");
+    await userEvent.click(within(dialog).getByRole("button", { name: "영구 삭제" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      "원본 저장소 정리에 실패했습니다. 자료는 삭제되지 않았습니다.",
+    );
+    expect(screen.getByText("시스템이 정리한 내용")).toBeInTheDocument();
+  });
+
+  it("returns to a refreshed list when the source was already deleted", async () => {
+    deleteResult = { status: 404, body: { error: "source_not_found" } };
+    render(<ReservoirView />);
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+    await userEvent.click(screen.getByRole("button", { name: "자료 삭제" }));
+    const dialog = screen.getByRole("dialog", { name: "자료 영구 삭제" });
+    await userEvent.type(within(dialog).getByLabelText("확인을 위해 자료 제목 입력"), "자료 A");
+    await userEvent.click(within(dialog).getByRole("button", { name: "영구 삭제" }));
+    expect(await screen.findByText("이미 삭제된 자료라 저장소 목록을 새로 불러왔습니다.")).toBeInTheDocument();
+    expect(screen.getByText("읽을 자료를 선택하세요")).toBeInTheDocument();
+  });
+
+  it("locks the delete dialog while the request is pending", async () => {
+    let resolveDelete: (response: Response) => void = () => undefined;
+    pendingDelete = new Promise((resolve) => { resolveDelete = resolve; });
+    render(<ReservoirView />);
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+    await userEvent.click(screen.getByRole("button", { name: "자료 삭제" }));
+    const dialog = screen.getByRole("dialog", { name: "자료 영구 삭제" });
+    await userEvent.type(within(dialog).getByLabelText("확인을 위해 자료 제목 입력"), "자료 A");
+    await userEvent.click(within(dialog).getByRole("button", { name: "영구 삭제" }));
+    expect(within(dialog).getByRole("button", { name: "삭제 중…" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "취소" })).toBeDisabled();
+    await act(async () => {
+      resolveDelete(new Response(JSON.stringify({ deletedSourceId: "source-1", merge: null })));
+    });
+    expect(await screen.findByText("자료를 영구 삭제했습니다.")).toBeInTheDocument();
   });
 
   it("shows a quality recheck action instead of acquisition for FULLTEXT REVIEW", async () => {
