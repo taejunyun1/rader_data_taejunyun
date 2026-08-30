@@ -18,6 +18,11 @@ import {
   type DuplicateReviewAction,
   type ReservoirRefreshMode,
 } from "../reservoir/refresh";
+import {
+  deleteSourcePermanently,
+  getSourceDeletionPreview,
+  SourceDeletionError,
+} from "../reservoir/deleteSource";
 
 const reservoir = new Hono<{ Bindings: Env }>();
 const MAX_SOURCE_TEXT_CHARS = 500_000;
@@ -432,6 +437,33 @@ reservoir.get("/:sourceId/original", async (c) => {
   });
 });
 
+reservoir.delete("/:sourceId", async (c) => {
+  // The parent app authenticates every /api/* request; keep a defense-in-depth
+  // guard here so a production sub-app mount cannot expose this destructive action.
+  const requester = verifiedRequester(c);
+  const environment = String(c.env.ENVIRONMENT);
+  if (requester === "local" && environment !== "development" && environment !== "test") {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const body = (await readJson<{ confirmTitle?: unknown }>(c)) ?? {};
+  if (typeof body.confirmTitle !== "string" || body.confirmTitle.length === 0) {
+    return c.json({ error: "invalid_source_delete_confirmation" }, 400);
+  }
+  try {
+    const result = await deleteSourcePermanently(c.env, {
+      sourceId: c.req.param("sourceId"),
+      confirmTitle: body.confirmTitle,
+    });
+    return c.json(result);
+  } catch (error) {
+    if (!(error instanceof SourceDeletionError)) throw error;
+    if (error.code === "source_not_found") return c.json({ error: error.code }, 404);
+    if (error.code === "source_delete_r2_failed") return c.json({ error: error.code }, 502);
+    if (error.code === "source_delete_d1_failed") return c.json({ error: error.code }, 500);
+    return c.json({ error: error.code }, 409);
+  }
+});
+
 reservoir.get("/:sourceId", async (c) => {
   const id = c.req.param("sourceId");
   const cycle = await researchCycleMeta(c.env.DB);
@@ -462,6 +494,8 @@ reservoir.get("/:sourceId", async (c) => {
     .bind(cycle.markSince, id)
     .first<Record<string, unknown> & AcquisitionColumns>();
   if (!src) return c.json({ error: "not_found" }, 404);
+  const deletion = await getSourceDeletionPreview(c.env.DB, id);
+  if (!deletion) return c.json({ error: "not_found" }, 404);
 
   const {
     acquisitionTextScope,
@@ -536,6 +570,7 @@ reservoir.get("/:sourceId", async (c) => {
 
   return c.json({
     source,
+    deletion,
     acquisition,
     visualExtractionCapability,
     pdfExtraction,

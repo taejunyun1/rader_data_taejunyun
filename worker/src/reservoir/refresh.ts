@@ -1,5 +1,6 @@
 import { evaluateDuplicate, type DuplicateAssessment, type SourceMatchInput } from "../ingestion/matching";
 import { normalizeDoi, normalizeOriginIdentity, normalizeUrl } from "../ingestion/normalize";
+import { selectCanonicalSourceId } from "./canonicalSource";
 import { createLogicalMerge } from "./mergeGroups";
 
 export type ReservoirRefreshMode = "PREVIEW" | "APPLY";
@@ -355,45 +356,6 @@ class SourceComponents {
     }
     return [...groups.values()].filter((group) => group.length > 1);
   }
-}
-
-async function selectCanonicalSourceId(db: D1Database, sourceIds: string[]): Promise<string> {
-  const candidates: Array<{
-    id: string;
-    signalCount: number;
-    fullText: number;
-    textLength: number;
-    createdAt: string;
-  }> = [];
-  for (const group of chunks(sourceIds, MAX_CANONICAL_SOURCE_IDS_PER_QUERY)) {
-    const placeholders = group.map(() => "?").join(", ");
-    const rows = await db.prepare(
-      `SELECT s.id, s.created_at AS createdAt,
-              ((SELECT COUNT(*) FROM user_signals us WHERE us.source_id = s.id) +
-               (SELECT COUNT(*) FROM thread_links tl WHERE tl.source_id = s.id)) AS signalCount,
-              CASE WHEN s.quality_status = 'READY' AND v.text_scope = 'FULLTEXT' THEN 1 ELSE 0 END AS fullText,
-              LENGTH(COALESCE(v.normalized_text, '')) AS textLength
-       FROM sources s
-       LEFT JOIN source_versions v ON v.id = s.active_version_id
-       WHERE s.id IN (${placeholders})`,
-    ).bind(...group).all<{
-      id: string;
-      createdAt: string;
-      signalCount: number;
-      fullText: number;
-      textLength: number;
-    }>();
-    candidates.push(...(rows.results ?? []));
-  }
-  candidates.sort((left, right) =>
-    right.signalCount - left.signalCount ||
-    right.fullText - left.fullText ||
-    right.textLength - left.textLength ||
-    left.createdAt.localeCompare(right.createdAt) ||
-    left.id.localeCompare(right.id));
-  const canonical = candidates[0];
-  if (!canonical) throw new Error("canonical_source_not_found");
-  return canonical.id;
 }
 
 async function createAutomaticLogicalMerge(
