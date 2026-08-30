@@ -73,8 +73,11 @@ export async function getSourceDeletionClaim(db: D1Database, sourceId: string): 
 }
 
 /**
- * Atomically inserts a claim or rotates an expired claim. A live claim is never
- * replaced, which makes concurrent delete requests deterministic.
+ * Atomically inserts a claim or rotates a recoverable claim. A live claim is
+ * never replaced, except for a completed R2 phase that explicitly recorded a
+ * D1-finalization failure; that state has no owner left and is safe to resume
+ * immediately. A live `R2_COMPLETE` claim with no error remains locked while
+ * its owner is performing the D1 batch.
  */
 export async function acquireSourceDeletionClaim(
   db: D1Database,
@@ -95,7 +98,9 @@ export async function acquireSourceDeletionClaim(
        lease_expires_at = excluded.lease_expires_at,
        last_error_code = NULL,
        updated_at = excluded.updated_at
-     WHERE source_deletion_claims.lease_expires_at <= excluded.updated_at`,
+     WHERE source_deletion_claims.lease_expires_at <= excluded.updated_at
+        OR (source_deletion_claims.state = 'R2_COMPLETE'
+            AND source_deletion_claims.last_error_code = 'source_delete_d1_failed')`,
   ).bind(sourceId, token, expiresIso, nowIso, nowIso).run();
 
   if (!result.meta.changes) {

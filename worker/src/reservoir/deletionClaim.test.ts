@@ -79,6 +79,39 @@ describe("source deletion claim", () => {
     expect(new Date(recorded.leaseExpiresAt).getTime()).toBe(new Date(now.getTime() + 30_000).getTime());
   });
 
+  it("keeps a live R2-complete claim during D1 finalization but retries an explicit D1 failure immediately", async () => {
+    const sourceId = `claim-d1-retry-${crypto.randomUUID()}`;
+    await insertSource(sourceId);
+    const now = new Date("2026-08-30T00:00:00.000Z");
+    const complete = await markSourceDeletionR2Complete(
+      env.DB,
+      await acquireSourceDeletionClaim(env.DB, sourceId, now),
+      new Date(now.getTime() + 1_000),
+    );
+
+    await expect(
+      acquireSourceDeletionClaim(env.DB, sourceId, new Date(now.getTime() + 2_000)),
+    ).rejects.toMatchObject({ code: "source_delete_in_progress" });
+
+    // Model a D1 failure while its lease is still live. The error marker, not
+    // lease expiry, is what makes the abandoned R2-complete purge resumable.
+    await env.DB.prepare(
+      `UPDATE source_deletion_claims
+       SET last_error_code = 'source_delete_d1_failed', lease_expires_at = ?, updated_at = ?
+       WHERE source_id = ? AND claim_token = ?`,
+    ).bind(
+      new Date(now.getTime() + 60_000).toISOString(),
+      new Date(now.getTime() + 3_000).toISOString(),
+      sourceId,
+      complete.claimToken,
+    ).run();
+
+    const retry = await acquireSourceDeletionClaim(env.DB, sourceId, new Date(now.getTime() + 4_000));
+    expect(retry.claimToken).not.toBe(complete.claimToken);
+    expect(retry.state).toBe("R2_PENDING");
+    expect(retry.lastErrorCode).toBeNull();
+  });
+
   it("asserts a claim for source-owned writes while unrelated sources remain writable", async () => {
     const sourceId = `claim-guard-${crypto.randomUUID()}`;
     const unrelatedId = `claim-unrelated-${crypto.randomUUID()}`;

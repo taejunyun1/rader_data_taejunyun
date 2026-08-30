@@ -26,7 +26,7 @@
 - Create `worker/src/reservoir/deletionClaim.test.ts`
 - Modify `worker/vitest.config.ts` only if the suite include requires it
 
-Implement the table, indexes, ownership triggers, lease-aware acquire/renew/state/error helpers, and focused tests. Verify trigger JSON predicates are safe for invalid/non-source job input. Commit only this task.
+Implement the table, indexes, ownership triggers, lease-aware acquire/renew/state/error helpers, and focused tests. Acquisition must reject a live `R2_COMPLETE` claim with no error, allow immediate rotation only when `last_error_code = 'source_delete_d1_failed'`, and retain expiry-based recovery for abandoned claims. Verify trigger JSON predicates are safe for invalid/non-source job input. Commit only this task.
 
 ## Task 2 — enqueue and source/version writer guards
 
