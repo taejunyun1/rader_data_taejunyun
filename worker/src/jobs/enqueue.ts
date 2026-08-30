@@ -1,5 +1,10 @@
 import type { DiscoveryProfile, ResearchJob, ResearchJobKind } from "@radar/shared/discovery";
 import { createResearchJob, findActiveJobByDedupeKey, markDispatchPending, setWorkflowInstanceId } from "./store";
+import {
+  assertSourceDeletionNotClaimedForResearchJobInput,
+  isSourceDeletionClaimError,
+  SourceDeletionClaimError,
+} from "../reservoir/deletionClaim";
 
 export type ResearchJobRequest =
   | { kind: "DISCOVERY_RUN"; input: { divergence: number; profile: DiscoveryProfile } }
@@ -20,6 +25,11 @@ export function dedupeKeyFor(request: ResearchJobRequest): string {
 }
 
 export async function enqueueResearchJob(env: Env, request: ResearchJobRequest, requestedBy: string, retryOf?: string | null): Promise<{ job: ResearchJob; reused: boolean }> {
+  // Resolve source ownership before dedupe. A claimed source must not be able
+  // to reuse an already-queued job as a way to sneak a new workflow into the
+  // delete window; the migration trigger remains the race-safe final guard for
+  // the insert itself.
+  await assertSourceDeletionNotClaimedForResearchJobInput(env.DB, request.input);
   const dedupeKey = dedupeKeyFor(request);
   const active = await findActiveJobByDedupeKey(env.DB, dedupeKey);
   if (active) return { job: active, reused: true };
@@ -34,6 +44,9 @@ export async function enqueueResearchJob(env: Env, request: ResearchJobRequest, 
       retryOf,
     });
   } catch (error) {
+    if (isSourceDeletionClaimError(error)) {
+      throw new SourceDeletionClaimError("source_delete_in_progress", error);
+    }
     const winner = await findActiveJobByDedupeKey(env.DB, dedupeKey);
     if (winner) return { job: winner, reused: true };
     throw error;

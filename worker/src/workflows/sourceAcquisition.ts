@@ -4,6 +4,7 @@ import { acquireRemoteSource, RemoteAcquisitionError } from "../ingestion/acquir
 import { updateIngestJob } from "../ingestion/store";
 import { activateVersion, appendAcquisitionVersion, getActiveVersion } from "../ingestion/versioning";
 import { enqueueResearchJob } from "../jobs/enqueue";
+import { isSourceDeletionClaimError } from "../reservoir/deletionClaim";
 
 export interface SourceAcquisitionJobLike {
   id: string;
@@ -105,6 +106,12 @@ export async function executeSourceAcquisitionJob(input: ExecuteSourceAcquisitio
       rawContentHash: acquired.rawContentHash,
     });
   } catch (error) {
+    // If a claim was acquired after the source-scoped put, the DB trigger can
+    // reject the version insert. Compensate the object here so that a rejected
+    // in-flight acquisition cannot become an orphan outside the deletion plan.
+    if (isSourceDeletionClaimError(error)) {
+      try { await env.ORIGINALS.delete(acquired.r2Key); } catch { /* best effort */ }
+    }
     await tryUpdateIngestJobFailed(env.DB, sourceId, "source_version_store_failed");
     throw error;
   }

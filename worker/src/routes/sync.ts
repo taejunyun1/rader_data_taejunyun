@@ -5,6 +5,10 @@ import { sha256Hex, uuid } from "../ingestion/ids";
 import { createSource } from "../ingestion/store";
 import { activateVersion, decideIncomingVersion, getActiveVersion } from "../ingestion/versioning";
 import { readJson } from "../lib/requestBody";
+import {
+  assertSourceDeletionNotClaimed,
+  isSourceDeletionClaimError,
+} from "../reservoir/deletionClaim";
 
 function asciiOnly(meta: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
@@ -26,6 +30,9 @@ sync.post("/obsidian", async (c) => {
   try {
     return await handleObsidianSync(c.env, c.executionCtx as ExecutionContext<unknown>, body);
   } catch (err) {
+    if (isSourceDeletionClaimError(err)) {
+      return c.json({ error: "source_delete_in_progress" }, 409);
+    }
     const e = err as Error;
     console.error(JSON.stringify({ level: "error", scope: "sync:obsidian", message: e.message, stack: e.stack?.slice(0, 500) }));
     return c.json({ error: "sync_failed", detail: e.message.slice(0, 200) }, 500);
@@ -87,26 +94,37 @@ async function handleObsidianSync(
   const r2Key = `originals/${existing.id}/v${nextV}-${filename.replace(/[^a-zA-Z0-9._-]+/g, "_")}`;
   const normalized = normalizeIngestText(text, "OBSIDIAN_MARKDOWN");
   const decision = decideIncomingVersion({ activeOrigin: active?.version_origin ?? null, incomingOrigin: "OBSIDIAN_SYNC" });
+  await assertSourceDeletionNotClaimed(env.DB, existing.id);
   await env.ORIGINALS.put(r2Key, text, {
     customMetadata: asciiOnly({ sourceId: existing.id, origin }),
   });
 
-  await env.DB.batch([
-    env.DB
-      .prepare(
-        `INSERT INTO source_versions
-         (id, source_id, version, r2_key, extracted_text, char_count, content_hash, normalized_text,
-          normalization_status, normalization_report_json, version_origin, parent_version_id, review_status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'READY', ?, 'OBSIDIAN_SYNC', ?, ?, ?)`
-      )
-      .bind(versionId, existing.id, nextV, r2Key, text.slice(0, 500_000), text.length, hash, normalized.normalizedText, JSON.stringify({ ...normalized.report, metadata: normalized.metadata }), active?.id ?? null, decision.reviewStatus, ts),
-    env.DB
-      .prepare("UPDATE sources SET file_hash = ?, r2_key = ?, status = 'extracted', updated_at = ? WHERE id = ?")
-      .bind(hash, decision.activateIncoming ? r2Key : active?.r2_key ?? null, ts, existing.id),
-    env.DB
-      .prepare("UPDATE processing_jobs SET status = 'extracted', error = NULL, updated_at = ? WHERE source_id = ?")
-      .bind(ts, existing.id),
-  ]);
+  try {
+    await env.DB.batch([
+      env.DB
+        .prepare(
+          `INSERT INTO source_versions
+           (id, source_id, version, r2_key, extracted_text, char_count, content_hash, normalized_text,
+            normalization_status, normalization_report_json, version_origin, parent_version_id, review_status, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'READY', ?, 'OBSIDIAN_SYNC', ?, ?, ?)`
+        )
+        .bind(versionId, existing.id, nextV, r2Key, text.slice(0, 500_000), text.length, hash, normalized.normalizedText, JSON.stringify({ ...normalized.report, metadata: normalized.metadata }), active?.id ?? null, decision.reviewStatus, ts),
+      env.DB
+        .prepare("UPDATE sources SET file_hash = ?, r2_key = ?, status = 'extracted', updated_at = ? WHERE id = ?")
+        .bind(hash, decision.activateIncoming ? r2Key : active?.r2_key ?? null, ts, existing.id),
+      env.DB
+        .prepare("UPDATE processing_jobs SET status = 'extracted', error = NULL, updated_at = ? WHERE source_id = ?")
+        .bind(ts, existing.id),
+    ]);
+  } catch (error) {
+    // The claim can be acquired after the pre-put guard. The migration trigger
+    // rejects the source-version insert; remove that just-written object so the
+    // sync attempt cannot leave an R2 key outside the deletion plan.
+    if (isSourceDeletionClaimError(error)) {
+      try { await env.ORIGINALS.delete(r2Key); } catch { /* best-effort compensation */ }
+    }
+    throw error;
+  }
 
   if (decision.activateIncoming) {
     await activateVersion(env.DB, existing.id, versionId, normalized.qualityStatus, ts);

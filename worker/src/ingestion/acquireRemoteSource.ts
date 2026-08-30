@@ -8,6 +8,10 @@ import {
   type RemoteFetchFailureReason,
 } from "./fetchRemoteDocument";
 import { sha256Hex } from "./ids";
+import {
+  assertSourceDeletionNotClaimed,
+  isSourceDeletionClaimError,
+} from "../reservoir/deletionClaim";
 
 export interface RemoteAcquisitionInput {
   sourceId: string;
@@ -74,6 +78,10 @@ export async function acquireRemoteSource(
   try {
     const remote = await fetchRemoteDocument(input.url, { fetchImpl: options.fetchImpl });
     const r2Key = buildOriginalKey(input.sourceId, input.version, input.versionId, remote.kind);
+    // Fetching may take long enough for a delete claim to be acquired. Keep
+    // this check immediately adjacent to the source-scoped put and rely on the
+    // D1 trigger/append guard for the final write boundary.
+    await assertSourceDeletionNotClaimed(env.DB, input.sourceId);
     await env.ORIGINALS.put(r2Key, remote.body);
     const rawContentHash = await sha256Hex(remote.body);
 
@@ -110,14 +118,20 @@ export async function acquireRemoteSource(
       rawContentHash,
     };
   } catch (error) {
+    // A claim error must cross the remote-fetch adapter unchanged so callers
+    // can return the stable 409 contract and perform R2 compensation. It is
+    // not a remote HTTP failure and must not be rewritten as HTTP_5XX.
+    if (isSourceDeletionClaimError(error)) throw error;
     if (error instanceof RemoteAcquisitionError) throw error;
 
     if (error instanceof RemoteFetchError) {
       if (error.code === "PDF_SIGNATURE_INVALID" && error.document) {
         try {
           const r2Key = buildOriginalKey(input.sourceId, input.version, input.versionId, "PDF");
+          await assertSourceDeletionNotClaimed(env.DB, input.sourceId);
           await env.ORIGINALS.put(r2Key, error.document.body);
-        } catch {
+        } catch (nestedError) {
+          if (isSourceDeletionClaimError(nestedError)) throw nestedError;
           throw new RemoteAcquisitionError("HTTP_5XX");
         }
       }

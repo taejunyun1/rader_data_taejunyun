@@ -8,6 +8,7 @@ import {
   type VersionReviewStatus,
 } from "@radar/shared/ingestion";
 import { sha256Hex, uuid } from "./ids";
+import { assertSourceDeletionNotClaimed } from "../reservoir/deletionClaim";
 
 export interface ActiveVersion {
   id: string;
@@ -123,6 +124,7 @@ export async function appendAcquisitionVersion(
   db: D1Database,
   input: AppendAcquisitionVersionInput,
 ): Promise<{ versionId: string; version: number; qualityStatus: QualityStatus }> {
+  await assertSourceDeletionNotClaimed(db, input.sourceId);
   const activeVersion = await getActiveVersion(db, input.sourceId);
   const incomingOrigin = input.versionOrigin ?? "REEXTRACT";
   const versionId = input.versionId ?? uuid();
@@ -249,6 +251,7 @@ function isVersionReservationConflict(error: unknown): boolean {
 }
 
 export async function activateVersion(db: D1Database, sourceId: string, versionId: string, qualityStatus: QualityStatus, now = new Date().toISOString()): Promise<void> {
+  await assertSourceDeletionNotClaimed(db, sourceId);
   const candidate = await db
     .prepare("SELECT id FROM source_versions WHERE id = ? AND source_id = ?")
     .bind(versionId, sourceId)
@@ -276,6 +279,7 @@ export async function activateVersion(db: D1Database, sourceId: string, versionI
 }
 
 export async function rejectVersion(db: D1Database, sourceId: string, versionId: string, now = new Date().toISOString()): Promise<void> {
+  await assertSourceDeletionNotClaimed(db, sourceId);
   const result = await db
     .prepare("UPDATE source_versions SET review_status = 'REJECTED', reviewed_at = ? WHERE id = ? AND source_id = ? AND review_status = 'PENDING_REVIEW'")
     .bind(now, versionId, sourceId)
