@@ -10,4 +10,4 @@ Feature: source deletion claim serialization (`2026-08-30`)
 | Visual/extraction R2 guards | visual_r2_guards | root | completed | `8e7a9c9` | worker typecheck; PDF extraction route 14/14; source-owned R2 put inventory audited |
 | Delete lifecycle/API | delete_claim_lifecycle | root + delete_guard_remediation | completed | `7ed5bc9`, `803a531`, `e06089c` | focused deletion/route/claim/version/concurrency suite 42/42; worker typecheck; merge lock + R2 heartbeat |
 | UI retry/in-progress state | reservoir_delete_ui | root | completed | `a25309d` | ReservoirView/delete dialog 56/56; web typecheck/build |
-| Docs + broad verification | root | root | completed | `pending-local-docs` | `pnpm verify` passed: typecheck, Worker 91+6 tests, Web 47 files/483 tests, production build; no remote migration/deploy/push |
+| Docs + broad verification | root | root | completed | `47af71f` | `pnpm verify` passed: typecheck, Worker 91+6 tests, Web 47 files/483 tests, production build; no remote migration/deploy/push |
