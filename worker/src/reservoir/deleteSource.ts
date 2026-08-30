@@ -465,10 +465,18 @@ async function loadDeletionPlan(db: D1Database, input: DeleteSourceInput): Promi
   };
 }
 
-async function deleteR2Keys(bucket: R2Bucket, keys: string[]): Promise<void> {
+async function deleteR2Keys(
+  bucket: R2Bucket,
+  keys: string[],
+  renewBeforeBatch?: () => Promise<void>,
+): Promise<void> {
   const batchSize = 1_000;
   try {
     for (let index = 0; index < keys.length; index += batchSize) {
+      // A large source can require several R2 requests. Keep the D1 claim
+      // alive immediately before every request so an expired lease cannot
+      // reopen the write boundary while storage deletion is still running.
+      await renewBeforeBatch?.();
       await bucket.delete(keys.slice(index, index + batchSize));
     }
   } catch (error) {
@@ -638,8 +646,11 @@ async function mergeMutation(
     statements: [
       db.prepare("UPDATE source_merge_groups SET canonical_source_id = ? WHERE id = ? AND canonical_source_id = ?")
         .bind(canonicalSourceId, plan.merge.groupId, plan.sourceId),
-      db.prepare("UPDATE source_merge_members SET role = 'MEMBER' WHERE group_id = ?")
-        .bind(plan.merge.groupId),
+      // The claimed member is deleted below; exclude it so merge-write
+      // triggers can reject all external updates involving the claimed source
+      // without blocking this finalization batch.
+      db.prepare("UPDATE source_merge_members SET role = 'MEMBER' WHERE group_id = ? AND source_id <> ?")
+        .bind(plan.merge.groupId, plan.sourceId),
       db.prepare("UPDATE source_merge_members SET role = 'CANONICAL' WHERE group_id = ? AND source_id = ?")
         .bind(plan.merge.groupId, canonicalSourceId),
       db.prepare("DELETE FROM source_merge_members WHERE group_id = ? AND source_id = ?")
@@ -669,8 +680,8 @@ function historicalMergeMutation(
       statements.push(
         db.prepare("UPDATE source_merge_groups SET canonical_source_id = ? WHERE id = ? AND canonical_source_id = ?")
           .bind(canonicalSourceId, merge.groupId, plan.sourceId),
-        db.prepare("UPDATE source_merge_members SET role = 'MEMBER' WHERE group_id = ?")
-          .bind(merge.groupId),
+        db.prepare("UPDATE source_merge_members SET role = 'MEMBER' WHERE group_id = ? AND source_id <> ?")
+          .bind(merge.groupId, plan.sourceId),
         db.prepare("UPDATE source_merge_members SET role = 'CANONICAL' WHERE group_id = ? AND source_id = ?")
           .bind(merge.groupId, canonicalSourceId),
       );
@@ -804,7 +815,9 @@ export async function deleteSourcePermanently(
     // cannot be renewed is never allowed to start storage mutation.
     claim = await renewSourceDeletionClaim(env.DB, claim);
     r2MutationStarted = true;
-    await deleteR2Keys(env.ORIGINALS, plan.r2Keys);
+    await deleteR2Keys(env.ORIGINALS, plan.r2Keys, async () => {
+      claim = await renewSourceDeletionClaim(env.DB, claim);
+    });
 
     claim = await markSourceDeletionR2Complete(env.DB, claim);
     r2Complete = true;

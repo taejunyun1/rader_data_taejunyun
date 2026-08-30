@@ -10,6 +10,7 @@ import {
   recordSourceDeletionError,
   renewSourceDeletionClaim,
 } from "./deletionClaim";
+import { createLogicalMerge } from "./mergeGroups";
 
 async function insertSource(sourceId: string): Promise<string> {
   const now = new Date().toISOString();
@@ -186,6 +187,62 @@ describe("source deletion claim", () => {
     ).rejects.toThrow(/source_deletion_in_progress/);
     await expect(
       env.DB.prepare("UPDATE visual_assets SET caption = ? WHERE id = ?").bind("mutated", `${sourceId}-asset`).run(),
+    ).rejects.toThrow(/source_deletion_in_progress/);
+  });
+
+  it("blocks merge writers that reintroduce or mutate a claimed source", async () => {
+    const sourceId = `claim-merge-${crypto.randomUUID()}`;
+    const survivorId = `claim-merge-survivor-${crypto.randomUUID()}`;
+    const existingMemberId = `claim-merge-existing-${crypto.randomUUID()}`;
+    const unclaimedMemberId = `claim-merge-unclaimed-${crypto.randomUUID()}`;
+    await insertSource(sourceId);
+    await insertSource(survivorId);
+    await insertSource(existingMemberId);
+    await insertSource(unclaimedMemberId);
+    const protectedGroupId = await createLogicalMerge(env.DB, {
+      canonicalSourceId: existingMemberId,
+      memberSourceIds: [sourceId],
+      mode: "MANUAL",
+      confidence: 1,
+      reasons: ["manual_review"],
+    });
+    const now = new Date().toISOString();
+    await acquireSourceDeletionClaim(env.DB, sourceId, new Date("2026-08-30T00:00:00.000Z"));
+
+    await expect(
+      env.DB.prepare(
+        `INSERT INTO source_merge_groups
+         (id, canonical_source_id, mode, confidence, reasons_json, created_at)
+         VALUES (?, ?, 'MANUAL', 1, '[]', ?)`,
+      ).bind(`${sourceId}-group`, sourceId, now).run(),
+    ).rejects.toThrow(/source_deletion_in_progress/);
+
+    const groupId = await createLogicalMerge(env.DB, {
+      canonicalSourceId: survivorId,
+      memberSourceIds: [unclaimedMemberId],
+      mode: "MANUAL",
+      confidence: 1,
+      reasons: ["manual_review"],
+    });
+    await expect(
+      env.DB.prepare(
+        `INSERT INTO source_merge_members (group_id, source_id, role, created_at)
+         VALUES (?, ?, 'MEMBER', ?)`,
+      ).bind(groupId, sourceId, now).run(),
+    ).rejects.toThrow(/source_deletion_in_progress/);
+
+    await expect(
+      env.DB.prepare(
+        `INSERT INTO source_duplicate_candidates
+         (id, left_source_id, right_source_id, decision, score, reasons_json, status, created_at)
+         VALUES (?, ?, ?, 'REVIEW', 0.5, '[]', 'PENDING', ?)`,
+      ).bind(`${sourceId}-candidate`, sourceId < survivorId ? sourceId : survivorId,
+        sourceId < survivorId ? survivorId : sourceId, now).run(),
+    ).rejects.toThrow(/source_deletion_in_progress/);
+
+    await expect(
+      env.DB.prepare("UPDATE source_merge_groups SET reversed_at = ? WHERE id = ?")
+        .bind(now, protectedGroupId).run(),
     ).rejects.toThrow(/source_deletion_in_progress/);
   });
 });

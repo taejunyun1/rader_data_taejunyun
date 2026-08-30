@@ -527,6 +527,71 @@ describe("source deletion D1 purge", () => {
       .bind(sourceId).first()).resolves.toBeNull();
   });
 
+  it("aborts the destructive batch before deleting children when its claim is stale", async () => {
+    const sourceId = `${crypto.randomUUID()}-stale-claim-guard`;
+    const versionId = await insertSource(sourceId, "stale claim guard");
+    let claimToken: string | undefined;
+    const staleDb = {
+      prepare: env.DB.prepare.bind(env.DB),
+      batch: vi.fn(async (statements: D1PreparedStatement[]) => {
+        const claim = await getSourceDeletionClaim(env.DB, sourceId);
+        claimToken = claim?.claimToken;
+        await env.DB.prepare(
+          `UPDATE source_deletion_claims
+           SET state = 'R2_PENDING', updated_at = ?
+           WHERE source_id = ? AND claim_token = ?`,
+        ).bind(new Date().toISOString(), sourceId, claimToken).run();
+        return env.DB.batch(statements);
+      }),
+    } as unknown as D1Database;
+
+    await expectDeletionError(
+      deleteSourcePermanently(
+        { DB: staleDb, ORIGINALS: env.ORIGINALS },
+        { sourceId, confirmTitle: "stale claim guard" },
+      ),
+      "source_delete_d1_failed",
+    );
+    expect(claimToken).toBeTruthy();
+    expect(await env.DB.prepare("SELECT id FROM sources WHERE id = ?").bind(sourceId).first()).not.toBeNull();
+    expect(await env.DB.prepare("SELECT id FROM source_versions WHERE id = ?").bind(versionId).first()).not.toBeNull();
+  });
+
+  it("renews the claim before every long R2 delete batch", async () => {
+    const sourceId = `${crypto.randomUUID()}-heartbeat`;
+    await insertSource(sourceId, "R2 heartbeat 자료");
+    const now = new Date().toISOString();
+    const versionStatements = Array.from({ length: 1_001 }, (_, index) =>
+      env.DB.prepare(
+        `INSERT INTO source_versions
+         (id, source_id, version, r2_key, normalized_text, char_count, normalization_status,
+          version_origin, review_status, text_scope, extraction_method, created_at)
+         VALUES (?, ?, ?, ?, 'heartbeat', 9, 'READY', 'REEXTRACT', 'ACTIVE', 'FULLTEXT', 'MANUAL_TEXT', ?)`,
+      ).bind(`${sourceId}-v${index + 2}`, sourceId, index + 2, `tests/delete/${sourceId}/${index}`, now),
+    );
+    await env.DB.batch(versionStatements.slice(0, 1_000));
+    await env.DB.batch(versionStatements.slice(1_000));
+
+    const leaseAtDelete: string[] = [];
+    const deleteObject = vi.fn(async () => {
+      const claim = await getSourceDeletionClaim(env.DB, sourceId);
+      if (claim) {
+        leaseAtDelete.push(claim.leaseExpiresAt);
+        // Make the test observe two distinct ISO-millisecond renewals while
+        // keeping production renewal free of arbitrary delays.
+        if (leaseAtDelete.length === 1) await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+    });
+    await deleteSourcePermanently(
+      { DB: env.DB, ORIGINALS: { delete: deleteObject } } as unknown as Pick<Env, "DB" | "ORIGINALS">,
+      { sourceId, confirmTitle: "R2 heartbeat 자료" },
+    );
+
+    expect(deleteObject).toHaveBeenCalledTimes(2);
+    expect(leaseAtDelete).toHaveLength(2);
+    expect(new Date(leaseAtDelete[1]!).getTime()).toBeGreaterThan(new Date(leaseAtDelete[0]!).getTime());
+  });
+
   it("detects a title change inside the guarded D1 batch without deleting children", async () => {
     const sourceId = `${crypto.randomUUID()}-state-change`;
     await insertSource(sourceId, "변경 전 제목");

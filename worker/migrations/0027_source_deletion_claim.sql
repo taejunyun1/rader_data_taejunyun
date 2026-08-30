@@ -519,3 +519,87 @@ WHEN json_valid(NEW.input_json)
 BEGIN
   SELECT RAISE(ABORT, 'source_deletion_in_progress');
 END;
+
+-- Merge metadata is another source-owned write surface. INSERTs and updates
+-- that assign the claimed source back into a group are rejected while the
+-- source is being purged. The final deletion batch only deletes merge rows or
+-- reassigns a claimed canonical to an unclaimed survivor, so it remains
+-- allowed; its fingerprint guard still rejects any unrelated merge rewrite.
+CREATE TRIGGER source_deletion_claim_guard_merge_groups_insert
+BEFORE INSERT ON source_merge_groups
+WHEN EXISTS (
+  SELECT 1 FROM source_deletion_claims claim
+  WHERE claim.source_id = NEW.canonical_source_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'source_deletion_in_progress');
+END;
+
+CREATE TRIGGER source_deletion_claim_guard_merge_groups_update
+BEFORE UPDATE ON source_merge_groups
+WHEN EXISTS (
+  SELECT 1 FROM source_deletion_claims claim
+  WHERE claim.source_id = NEW.canonical_source_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'source_deletion_in_progress');
+END;
+
+CREATE TRIGGER source_deletion_claim_guard_merge_group_metadata_update
+BEFORE UPDATE ON source_merge_groups
+WHEN EXISTS (
+  SELECT 1
+  FROM source_deletion_claims claim
+  JOIN source_merge_members member ON member.source_id = claim.source_id
+  WHERE member.group_id = OLD.id
+)
+AND (
+  NEW.reversed_at IS NOT OLD.reversed_at
+  OR NEW.mode IS NOT OLD.mode
+  OR NEW.confidence IS NOT OLD.confidence
+  OR NEW.reasons_json IS NOT OLD.reasons_json
+  OR NEW.canonical_source_id IS OLD.canonical_source_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'source_deletion_in_progress');
+END;
+
+CREATE TRIGGER source_deletion_claim_guard_merge_members_insert
+BEFORE INSERT ON source_merge_members
+WHEN EXISTS (
+  SELECT 1 FROM source_deletion_claims claim
+  WHERE claim.source_id = NEW.source_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'source_deletion_in_progress');
+END;
+
+CREATE TRIGGER source_deletion_claim_guard_merge_members_update
+BEFORE UPDATE ON source_merge_members
+WHEN EXISTS (
+  SELECT 1 FROM source_deletion_claims claim
+  WHERE claim.source_id = OLD.source_id OR claim.source_id = NEW.source_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'source_deletion_in_progress');
+END;
+
+CREATE TRIGGER source_deletion_claim_guard_duplicate_candidates_insert
+BEFORE INSERT ON source_duplicate_candidates
+WHEN EXISTS (
+  SELECT 1 FROM source_deletion_claims claim
+  WHERE claim.source_id = NEW.left_source_id OR claim.source_id = NEW.right_source_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'source_deletion_in_progress');
+END;
+
+CREATE TRIGGER source_deletion_claim_guard_duplicate_candidates_update
+BEFORE UPDATE ON source_duplicate_candidates
+WHEN EXISTS (
+  SELECT 1 FROM source_deletion_claims claim
+  WHERE claim.source_id IN (OLD.left_source_id, OLD.right_source_id, NEW.left_source_id, NEW.right_source_id)
+)
+BEGIN
+  SELECT RAISE(ABORT, 'source_deletion_in_progress');
+END;
