@@ -179,9 +179,11 @@ function acquisitionBlockReason(acquisition: SourceAcquisitionView, canRefetch: 
 
 function sourceDeleteErrorMessage(code: string): string {
   if (code === "source_delete_confirmation_mismatch") return "자료 제목이 변경됐습니다. 상세 화면을 다시 불러와 주세요.";
+  if (code === "source_delete_in_progress") return "이 자료의 영구 삭제가 이미 진행 중입니다. 기존 작업이 끝난 뒤 잠시 후 다시 시도해 주세요.";
   if (code === "source_delete_active_work") return "이 자료의 처리 작업이 진행 중입니다. 작업이 끝난 뒤 다시 시도해 주세요.";
   if (code === "source_delete_state_changed") return "병합 또는 자료 상태가 변경됐습니다. 상세 화면을 다시 불러와 주세요.";
-  if (code === "source_delete_r2_failed") return "원본 저장소 정리에 실패했습니다. 자료는 삭제되지 않았습니다.";
+  if (code === "source_delete_r2_failed") return "원본 저장소 정리에 실패했습니다. 삭제가 완료되지 않았습니다. 잠시 후 같은 제목으로 다시 시도해 주세요.";
+  if (code === "source_delete_d1_failed") return "자료 정리 마무리에 실패했습니다. 삭제가 완료되지 않았습니다. 잠시 후 같은 제목으로 다시 시도해 주세요.";
   if (code === "source_not_found") return "이미 삭제된 자료입니다.";
   return "자료를 삭제하지 못했습니다. 잠시 후 다시 시도해 주세요.";
 }
