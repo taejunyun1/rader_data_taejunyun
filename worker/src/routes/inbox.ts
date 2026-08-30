@@ -23,6 +23,7 @@ import { readJson } from "../lib/requestBody";
 import {
   assertSourceDeletionNotClaimed,
   isSourceDeletionClaimError,
+  isSourceVersionCommittedClaimError,
 } from "../reservoir/deletionClaim";
 
 const inbox = new Hono<{ Bindings: Env }>();
@@ -292,6 +293,7 @@ inbox.post("/:sourceId/pdf-original", async (c) => {
   const versionId = uuid();
   const rawContentHash = await sha256Hex(original);
   const r2Key = buildAcquisitionKey(sourceId, versionId, source.title);
+  let versionCommitted = false;
 
   try {
     await assertSourceDeletionNotClaimed(c.env.DB, sourceId);
@@ -320,11 +322,14 @@ inbox.post("/:sourceId/pdf-original", async (c) => {
       rawContentHash,
       extractionError: acquisition.textScope === "EMPTY" ? "pdf_text_empty" : null,
     });
+    versionCommitted = true;
     await activateVersion(c.env.DB, sourceId, result.versionId, result.qualityStatus);
     if (result.qualityStatus === "READY") await analyzeSource(c.env, sourceId);
     return c.json({ ok: true, sourceId, versionId: result.versionId, version: result.version, status: "ACTIVE", qualityStatus: result.qualityStatus });
   } catch (error) {
-    try { await c.env.ORIGINALS.delete(r2Key); } catch { /* best effort orphan cleanup */ }
+    if (!versionCommitted && !isSourceVersionCommittedClaimError(error)) {
+      try { await c.env.ORIGINALS.delete(r2Key); } catch { /* best effort orphan cleanup */ }
+    }
     if (isSourceDeletionClaimError(error)) return c.json({ error: "source_delete_in_progress" }, 409);
     const message = (error as Error).message.slice(0, 200);
     return c.json({ error: message || "pdf_original_recovery_failed" }, 500);
@@ -412,7 +417,7 @@ inbox.post("/:sourceId/reextract", async (c) => {
         parentVersionId: active?.id ?? null,
       });
     } catch (error) {
-      if (isSourceDeletionClaimError(error)) {
+      if (isSourceDeletionClaimError(error) && !isSourceVersionCommittedClaimError(error)) {
         try { await c.env.ORIGINALS.delete(r2Key); } catch { /* best effort */ }
       }
       throw error;
@@ -575,7 +580,7 @@ inbox.post("/retry/:sourceId", async (c) => {
         parentVersionId: active?.id ?? null,
       });
     } catch (error) {
-      if (isSourceDeletionClaimError(error)) {
+      if (isSourceDeletionClaimError(error) && !isSourceVersionCommittedClaimError(error)) {
         try { await c.env.ORIGINALS.delete(r2Key); } catch { /* best effort */ }
       }
       throw error;
@@ -587,14 +592,27 @@ inbox.post("/retry/:sourceId", async (c) => {
     await c.env.DB.prepare("UPDATE processing_jobs SET retry_count = retry_count + 1 WHERE source_id = ?").bind(sourceId).run();
     return c.json({ ok: true, versionId: result.versionId, version: result.version, qualityStatus: result.qualityStatus });
   } catch (err) {
+    // A deletion claim is a public conflict, not a failed retry that can be
+    // reported as HTTP 200. Keep the claim code stable and do not leak D1/R2
+    // implementation details through the legacy retry payload.
+    if (isSourceDeletionClaimError(err)) {
+      return c.json({ error: "source_delete_in_progress" }, 409);
+    }
     const message = (err as Error).message.slice(0, 300);
-    await c.env.DB
-      .prepare(
-        `UPDATE processing_jobs SET status = 'failed', error = ?, retry_count = retry_count + 1, updated_at = ?
-         WHERE source_id = ?`
-      )
-      .bind(message, new Date().toISOString(), sourceId)
-      .run();
+    try {
+      await c.env.DB
+        .prepare(
+          `UPDATE processing_jobs SET status = 'failed', error = ?, retry_count = retry_count + 1, updated_at = ?
+           WHERE source_id = ?`
+        )
+        .bind(message, new Date().toISOString(), sourceId)
+        .run();
+    } catch (statusError) {
+      if (isSourceDeletionClaimError(statusError)) {
+        return c.json({ error: "source_delete_in_progress" }, 409);
+      }
+      throw statusError;
+    }
     return c.json({ ok: false, error: message });
   }
 });
@@ -719,7 +737,7 @@ async function insertVersion(env: Env, input: InsertVersionInput): Promise<Inser
       env.DB.prepare("UPDATE sources SET updated_at = ? WHERE id = ?").bind(ts, input.sourceId),
     ]);
   } catch (error) {
-    if (isSourceDeletionClaimError(error)) {
+    if (isSourceDeletionClaimError(error) && !isSourceVersionCommittedClaimError(error)) {
       try { await env.ORIGINALS.delete(r2Key); } catch { /* best effort orphan cleanup */ }
     }
     throw error;

@@ -25,11 +25,18 @@ export interface SourceDeletionClaimRef {
 
 export class SourceDeletionClaimError extends Error {
   readonly code: SourceDeletionClaimErrorCode;
+  /**
+   * Internal coordination state only.  A source-version row may already have
+   * committed before a later activation step observes the deletion claim. In
+   * that case callers must not delete the R2 object as if the insert failed.
+   */
+  readonly sourceVersionCommitted: boolean;
 
-  constructor(code: SourceDeletionClaimErrorCode, cause?: unknown) {
+  constructor(code: SourceDeletionClaimErrorCode, cause?: unknown, options?: { sourceVersionCommitted?: boolean }) {
     super(code, cause === undefined ? undefined : { cause });
     this.name = "SourceDeletionClaimError";
     this.code = code;
+    this.sourceVersionCommitted = options?.sourceVersionCommitted ?? false;
   }
 }
 
@@ -313,4 +320,14 @@ export async function assertSourceDeletionNotClaimedForResearchJobInput(db: D1Da
 export function isSourceDeletionClaimError(error: unknown): boolean {
   if (error instanceof SourceDeletionClaimError && error.code === "source_delete_in_progress") return true;
   return error instanceof Error && error.message.includes(SOURCE_DELETION_CLAIM_ERROR);
+}
+
+/**
+ * Returns true only for an internal claim error raised after a source version
+ * row was committed. This is deliberately not part of the HTTP payload.
+ */
+export function isSourceVersionCommittedClaimError(error: unknown): boolean {
+  return error instanceof SourceDeletionClaimError
+    && error.sourceVersionCommitted
+    && isSourceDeletionClaimError(error);
 }

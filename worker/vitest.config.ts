@@ -21,7 +21,7 @@ export default defineConfig({
     })),
   ],
   test: {
-    include: ["test/aiCallSettlement.test.ts", "test/backfillDiscovery.test.ts", "test/bulkScale.test.ts", "test/jobDispatchConcurrency.test.ts", "test/requestBodyLimits.test.ts", "test/scheduledDispatch.test.ts", "test/sourceVersionIntegrity.test.ts", "src/discovery/recommendations.test.ts", "src/ingestion/dedup.test.ts", "src/ingestion/matching.test.ts", "src/ingestion/store.test.ts", "src/reservoir/canonicalSource.test.ts", "src/reservoir/deleteSource.test.ts", "src/reservoir/deletionClaim.test.ts", "src/reservoir/mergeGroups.test.ts", "src/reservoir/refresh.test.ts", "src/routes/reservoir.test.ts"],
+    include: ["test/aiCallSettlement.test.ts", "test/backfillDiscovery.test.ts", "test/bulkScale.test.ts", "test/jobDispatchConcurrency.test.ts", "test/requestBodyLimits.test.ts", "test/scheduledDispatch.test.ts", "test/sourceVersionIntegrity.test.ts", "src/discovery/recommendations.test.ts", "src/ingestion/dedup.test.ts", "src/ingestion/matching.test.ts", "src/ingestion/store.test.ts", "src/ingestion/versioning.test.ts", "src/reservoir/canonicalSource.test.ts", "src/reservoir/deleteSource.test.ts", "src/reservoir/deletionClaim.test.ts", "src/reservoir/mergeGroups.test.ts", "src/reservoir/refresh.test.ts", "src/routes/reservoir.test.ts"],
     exclude: ["test/settingsBackfillRoute.test.ts"],
     setupFiles: ["./test/helpers/runtime.ts"],
     fileParallelism: false,

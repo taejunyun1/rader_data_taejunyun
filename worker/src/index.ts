@@ -17,6 +17,7 @@ import visualExtractionRoute from "./routes/visualExtraction";
 import { verifyAccessAssertion, extractAssertion, type AccessIdentity } from "./lib/access";
 import { HttpError, jsonError, requestId } from "./lib/httpErrors";
 import { runScheduledCron } from "./operations/scheduled";
+import { isSourceDeletionClaimError } from "./reservoir/deletionClaim";
 
 type AppEnv = { Bindings: Env; Variables: { identity?: AccessIdentity } };
 
@@ -101,6 +102,7 @@ app.notFound((c) => c.json({ error: "not_found" }, 404));
 app.onError((err, c) => {
   const id = c.req.header("X-Request-ID") ?? requestId(c);
   console.error(JSON.stringify({ level: "error", requestId: id, message: err.message, stack: err.stack }));
+  if (isSourceDeletionClaimError(err)) return jsonError(c, 409, "source_delete_in_progress");
   if (err instanceof HttpError) return jsonError(c, err.status, err.code, err.details);
   return jsonError(c, 500, "internal_error");
 });
