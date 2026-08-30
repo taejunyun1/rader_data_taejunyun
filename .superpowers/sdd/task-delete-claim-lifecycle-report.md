@@ -18,8 +18,10 @@
 
 - `pnpm --filter @radar/worker typecheck` — passed.
 - `git diff --check` — passed.
-- Focused Vitest could not start in the restricted sandbox: Wrangler attempted to write `/Users/taejun-yun/.wrangler/logs` and listen on `127.0.0.1`, both denied with `EPERM`. Run the focused suite from an approved test environment.
+- Focused deletion/route/claim/version Vitest — passed: 5 files, 39 tests.
+- The focused suite required the approved local Wrangler/Miniflare test environment because the restricted sandbox denied Wrangler log writes and loopback binding.
+- Follow-up test remediation — fixed the claim cleanup assertion to query `source_id` (the schema key) and aligned the late visual enqueue race with the stable `source_delete_state_changed` contract while confirming the source remains intact.
 
 ## Commit
 
-`18b4ace 260830: delete claim lifecycle 통합`
+`7ed5bc9 260830: delete claim lifecycle 통합`

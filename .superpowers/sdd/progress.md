@@ -8,6 +8,6 @@ Feature: source deletion claim serialization (`2026-08-30`)
 | Claim schema/helper/DB guards | claim_schema | claim_semantics_fix | completed | `260830: D1 실패 claim 즉시 재시도 정합성 보완` | deletionClaim focused 7/7; live R2_COMPLETE lock + immediate D1 retry condition |
 | Enqueue + source/version guards | enqueue_guard | root | completed | `260830: source version guard race 보완` | focused versioning/deletionClaim 8/8; worker typecheck |
 | Visual/extraction R2 guards | visual_r2_guards | root | completed | `d9e4a2f` | worker typecheck; PDF extraction route 14/14; existing visual asset suite 72/73 (one fixture lacks claim table) |
-| Delete lifecycle/API | delete_claim_lifecycle | root (pending) | completed | `18b4ace` | worker typecheck; focused Vitest blocked by sandbox Wrangler listen/log permissions |
+| Delete lifecycle/API | delete_claim_lifecycle | root (pending) | completed | `7ed5bc9` | worker typecheck; focused delete/route/claim/version suite 39/39; lifecycle assertion follow-up in current commit |
 | UI retry/in-progress state | pending | pending | pending | — | — |
 | Docs + broad verification | root | root | pending | — | — |

@@ -523,7 +523,7 @@ describe("source deletion D1 purge", () => {
       .bind(sourceId).first()).resolves.toEqual({ state: "R2_COMPLETE", last_error_code: "source_delete_d1_failed" });
     await expect(deleteSourcePermanently(env, { sourceId, confirmTitle: "D1 실패 자료" }))
       .resolves.toMatchObject({ deletedSourceId: sourceId });
-    await expect(env.DB.prepare("SELECT id FROM source_deletion_claims WHERE source_id = ?")
+    await expect(env.DB.prepare("SELECT source_id FROM source_deletion_claims WHERE source_id = ?")
       .bind(sourceId).first()).resolves.toBeNull();
   });
 
@@ -630,7 +630,7 @@ describe("source deletion D1 purge", () => {
         { DB: staleDb, ORIGINALS: env.ORIGINALS },
         { sourceId, confirmTitle: "배치 직전 시각 작업" },
       ),
-      "source_delete_active_work",
+      "source_delete_state_changed",
     );
     expect(await env.DB.prepare("SELECT id FROM sources WHERE id = ?").bind(sourceId).first()).not.toBeNull();
   });
