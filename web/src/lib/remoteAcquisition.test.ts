@@ -1262,6 +1262,18 @@ function makeAcquisitionEnv(input: {
   const contentType = input.contentType ?? "text/html";
   const body = input.body ?? new TextEncoder().encode("<html></html>").buffer;
   return {
+    DB: {
+      prepare() {
+        return {
+          bind() {
+            return this;
+          },
+          async first() {
+            return null;
+          },
+        };
+      },
+    },
     ORIGINALS: {
       put: async (key: string, value: ArrayBuffer | Blob | string) => {
         if (input.put) return input.put(key, value);
