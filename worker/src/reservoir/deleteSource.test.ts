@@ -2,6 +2,10 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import { createLogicalMerge, reverseLogicalMerge } from "./mergeGroups";
 import {
+  acquireSourceDeletionClaim,
+  getSourceDeletionClaim,
+} from "./deletionClaim";
+import {
   deleteSourcePermanently,
   getSourceDeletionPreview,
   SourceDeletionError,
@@ -216,6 +220,24 @@ describe("source deletion preflight", () => {
     expect(deleteObject).toHaveBeenCalledWith(expect.arrayContaining([sourceKey, `tests/delete/${sourceId}/visual`, `tests/delete/${sourceId}/temp`]));
     expect(await env.DB.prepare("SELECT id FROM sources WHERE id = ?").bind(sourceId).first()).not.toBeNull();
     expect(await env.DB.prepare("SELECT id FROM visual_assets WHERE parent_source_id = ?").bind(sourceId).first()).not.toBeNull();
+    await expect(env.DB.prepare("SELECT state, last_error_code FROM source_deletion_claims WHERE source_id = ?")
+      .bind(sourceId).first()).resolves.toEqual({ state: "R2_PENDING", last_error_code: "source_delete_r2_failed" });
+    await expect(env.DB.prepare(
+      `INSERT INTO source_versions (id, source_id, version, created_at) VALUES (?, ?, 2, ?)`,
+    ).bind(`${sourceId}-blocked-version`, sourceId, new Date().toISOString()).run())
+      .rejects.toThrow(/source_deletion_in_progress/);
+  });
+
+  it("returns a stable conflict while another live delete claim owns the source", async () => {
+    const sourceId = `${crypto.randomUUID()}-claim-conflict`;
+    await insertSource(sourceId, "삭제 중인 자료");
+    await acquireSourceDeletionClaim(env.DB, sourceId);
+
+    await expectDeletionError(
+      deleteSourcePermanently(env, { sourceId, confirmTitle: "삭제 중인 자료" }),
+      "source_delete_in_progress",
+    );
+    await expect(getSourceDeletionClaim(env.DB, sourceId)).resolves.toMatchObject({ state: "R2_PENDING" });
   });
 });
 
@@ -497,6 +519,77 @@ describe("source deletion D1 purge", () => {
       "source_delete_d1_failed",
     );
     expect(await env.DB.prepare("SELECT id FROM sources WHERE id = ?").bind(sourceId).first()).not.toBeNull();
+    await expect(env.DB.prepare("SELECT state, last_error_code FROM source_deletion_claims WHERE source_id = ?")
+      .bind(sourceId).first()).resolves.toEqual({ state: "R2_COMPLETE", last_error_code: "source_delete_d1_failed" });
+    await expect(deleteSourcePermanently(env, { sourceId, confirmTitle: "D1 실패 자료" }))
+      .resolves.toMatchObject({ deletedSourceId: sourceId });
+    await expect(env.DB.prepare("SELECT source_id FROM source_deletion_claims WHERE source_id = ?")
+      .bind(sourceId).first()).resolves.toBeNull();
+  });
+
+  it("aborts the destructive batch before deleting children when its claim is stale", async () => {
+    const sourceId = `${crypto.randomUUID()}-stale-claim-guard`;
+    const versionId = await insertSource(sourceId, "stale claim guard");
+    let claimToken: string | undefined;
+    const staleDb = {
+      prepare: env.DB.prepare.bind(env.DB),
+      batch: vi.fn(async (statements: D1PreparedStatement[]) => {
+        const claim = await getSourceDeletionClaim(env.DB, sourceId);
+        claimToken = claim?.claimToken;
+        await env.DB.prepare(
+          `UPDATE source_deletion_claims
+           SET state = 'R2_PENDING', updated_at = ?
+           WHERE source_id = ? AND claim_token = ?`,
+        ).bind(new Date().toISOString(), sourceId, claimToken).run();
+        return env.DB.batch(statements);
+      }),
+    } as unknown as D1Database;
+
+    await expectDeletionError(
+      deleteSourcePermanently(
+        { DB: staleDb, ORIGINALS: env.ORIGINALS },
+        { sourceId, confirmTitle: "stale claim guard" },
+      ),
+      "source_delete_d1_failed",
+    );
+    expect(claimToken).toBeTruthy();
+    expect(await env.DB.prepare("SELECT id FROM sources WHERE id = ?").bind(sourceId).first()).not.toBeNull();
+    expect(await env.DB.prepare("SELECT id FROM source_versions WHERE id = ?").bind(versionId).first()).not.toBeNull();
+  });
+
+  it("renews the claim before every long R2 delete batch", async () => {
+    const sourceId = `${crypto.randomUUID()}-heartbeat`;
+    await insertSource(sourceId, "R2 heartbeat 자료");
+    const now = new Date().toISOString();
+    const versionStatements = Array.from({ length: 1_001 }, (_, index) =>
+      env.DB.prepare(
+        `INSERT INTO source_versions
+         (id, source_id, version, r2_key, normalized_text, char_count, normalization_status,
+          version_origin, review_status, text_scope, extraction_method, created_at)
+         VALUES (?, ?, ?, ?, 'heartbeat', 9, 'READY', 'REEXTRACT', 'ACTIVE', 'FULLTEXT', 'MANUAL_TEXT', ?)`,
+      ).bind(`${sourceId}-v${index + 2}`, sourceId, index + 2, `tests/delete/${sourceId}/${index}`, now),
+    );
+    await env.DB.batch(versionStatements.slice(0, 1_000));
+    await env.DB.batch(versionStatements.slice(1_000));
+
+    const leaseAtDelete: string[] = [];
+    const deleteObject = vi.fn(async () => {
+      const claim = await getSourceDeletionClaim(env.DB, sourceId);
+      if (claim) {
+        leaseAtDelete.push(claim.leaseExpiresAt);
+        // Make the test observe two distinct ISO-millisecond renewals while
+        // keeping production renewal free of arbitrary delays.
+        if (leaseAtDelete.length === 1) await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+    });
+    await deleteSourcePermanently(
+      { DB: env.DB, ORIGINALS: { delete: deleteObject } } as unknown as Pick<Env, "DB" | "ORIGINALS">,
+      { sourceId, confirmTitle: "R2 heartbeat 자료" },
+    );
+
+    expect(deleteObject).toHaveBeenCalledTimes(2);
+    expect(leaseAtDelete).toHaveLength(2);
+    expect(new Date(leaseAtDelete[1]!).getTime()).toBeGreaterThan(new Date(leaseAtDelete[0]!).getTime());
   });
 
   it("detects a title change inside the guarded D1 batch without deleting children", async () => {
@@ -602,7 +695,7 @@ describe("source deletion D1 purge", () => {
         { DB: staleDb, ORIGINALS: env.ORIGINALS },
         { sourceId, confirmTitle: "배치 직전 시각 작업" },
       ),
-      "source_delete_active_work",
+      "source_delete_state_changed",
     );
     expect(await env.DB.prepare("SELECT id FROM sources WHERE id = ?").bind(sourceId).first()).not.toBeNull();
   });
@@ -613,31 +706,34 @@ describe("source deletion D1 purge", () => {
     await insertSource(sourceId, "배치 직전 새 버전", sourceKey);
     const injectedVersionId = `${sourceId}-v2`;
     const injectedKey = `tests/delete/${sourceId}/injected-v2`;
+    let injectionBlocked = false;
     const staleDb = {
       prepare: env.DB.prepare.bind(env.DB),
       batch: vi.fn(async (statements: D1PreparedStatement[]) => {
         const now = new Date().toISOString();
-        await env.DB.prepare(
-          `INSERT INTO source_versions
-           (id, source_id, version, r2_key, normalized_text, char_count, normalization_status,
-            version_origin, review_status, text_scope, extraction_method, created_at)
-           VALUES (?, ?, 2, ?, 'new version', 11, 'READY', 'REEXTRACT', 'ACTIVE', 'FULLTEXT', 'MANUAL_TEXT', ?)`,
-        ).bind(injectedVersionId, sourceId, injectedKey, now).run();
-        await env.ORIGINALS.put(injectedKey, "injected version");
+        try {
+          await env.DB.prepare(
+            `INSERT INTO source_versions
+             (id, source_id, version, r2_key, normalized_text, char_count, normalization_status,
+              version_origin, review_status, text_scope, extraction_method, created_at)
+             VALUES (?, ?, 2, ?, 'new version', 11, 'READY', 'REEXTRACT', 'ACTIVE', 'FULLTEXT', 'MANUAL_TEXT', ?)`,
+          ).bind(injectedVersionId, sourceId, injectedKey, now).run();
+          await env.ORIGINALS.put(injectedKey, "injected version");
+        } catch (error) {
+          injectionBlocked = error instanceof Error && error.message.includes("source_deletion_in_progress");
+        }
         return env.DB.batch(statements);
       }),
     } as unknown as D1Database;
 
-    await expectDeletionError(
-      deleteSourcePermanently(
-        { DB: staleDb, ORIGINALS: env.ORIGINALS },
-        { sourceId, confirmTitle: "배치 직전 새 버전" },
-      ),
-      "source_delete_state_changed",
-    );
-    expect(await env.DB.prepare("SELECT id FROM sources WHERE id = ?").bind(sourceId).first()).not.toBeNull();
-    expect(await env.DB.prepare("SELECT id FROM source_versions WHERE id = ?").bind(injectedVersionId).first()).not.toBeNull();
-    expect(await env.ORIGINALS.get(injectedKey)).not.toBeNull();
+    await expect(deleteSourcePermanently(
+      { DB: staleDb, ORIGINALS: env.ORIGINALS },
+      { sourceId, confirmTitle: "배치 직전 새 버전" },
+    )).resolves.toMatchObject({ deletedSourceId: sourceId });
+    expect(injectionBlocked).toBe(true);
+    expect(await env.DB.prepare("SELECT id FROM sources WHERE id = ?").bind(sourceId).first()).toBeNull();
+    expect(await env.DB.prepare("SELECT id FROM source_versions WHERE id = ?").bind(injectedVersionId).first()).toBeNull();
+    expect(await env.ORIGINALS.get(injectedKey)).toBeNull();
   });
 
   it("rejects an R2-backed dependency added between the dependency and key snapshots", async () => {
@@ -645,6 +741,7 @@ describe("source deletion D1 purge", () => {
     const sourceKey = `tests/delete/${sourceId}/source`;
     const versionId = await insertSource(sourceId, "배치 직전 시각 의존성", sourceKey);
     let injectedFixture: Awaited<ReturnType<typeof insertVisualDeletionFixture>> | undefined;
+    let injectionBlocked = false;
     let dependencySnapshotLoaded = false;
     let injectedKeyWasEnumerated = false;
     const staleDb = new Proxy(env.DB, {
@@ -677,7 +774,12 @@ describe("source deletion D1 purge", () => {
                         const result = await boundTarget.first();
                         if (!dependencySnapshotLoaded) {
                           dependencySnapshotLoaded = true;
-                          injectedFixture = await insertVisualDeletionFixture(sourceId, versionId);
+                          try {
+                            injectedFixture = await insertVisualDeletionFixture(sourceId, versionId);
+                          } catch (error) {
+                            injectionBlocked = error instanceof Error
+                              && error.message.includes("source_deletion_in_progress");
+                          }
                         }
                         return result;
                       };
@@ -699,33 +801,19 @@ describe("source deletion D1 purge", () => {
       },
     });
 
-    await expectDeletionError(
-      deleteSourcePermanently(
-        { DB: staleDb, ORIGINALS: env.ORIGINALS },
-        { sourceId, confirmTitle: "배치 직전 시각 의존성" },
-      ),
-      "source_delete_state_changed",
-    );
-    expect(injectedFixture).toBeDefined();
-    expect(injectedKeyWasEnumerated).toBe(true);
-    expect(await env.DB.prepare("SELECT id FROM sources WHERE id = ?").bind(sourceId).first()).not.toBeNull();
-    expect(await env.DB.prepare("SELECT id FROM visual_assets WHERE id = ?")
-      .bind(injectedFixture?.assetId).first()).not.toBeNull();
+    await expect(deleteSourcePermanently(
+      { DB: staleDb, ORIGINALS: env.ORIGINALS },
+      { sourceId, confirmTitle: "배치 직전 시각 의존성" },
+    )).resolves.toMatchObject({ deletedSourceId: sourceId });
+    expect(injectionBlocked).toBe(true);
+    expect(injectedFixture).toBeUndefined();
+    expect(injectedKeyWasEnumerated).toBe(false);
+    expect(await env.DB.prepare("SELECT id FROM sources WHERE id = ?").bind(sourceId).first()).toBeNull();
+    expect(await env.DB.prepare("SELECT id FROM visual_assets WHERE parent_source_id = ?")
+      .bind(sourceId).first()).toBeNull();
     expect(await env.DB.prepare("SELECT id FROM visual_extraction_runs WHERE parent_source_id = ?")
-      .bind(sourceId).first()).not.toBeNull();
-    for (const [table, id] of [
-      ["visual_asset_versions", `${injectedFixture?.assetId}-v1`],
-      ["visual_analyses", `${injectedFixture?.assetId}-analysis`],
-      ["visual_embeddings", `${injectedFixture?.assetId}-embedding`],
-      ["visual_relations", `${injectedFixture?.assetId}-relation`],
-      ["visual_asset_operations", `${injectedFixture?.assetId}-operation`],
-      ["visual_extraction_units", `${sourceId}-unit`],
-    ]) {
-      expect(await env.DB.prepare(`SELECT id FROM ${table} WHERE id = ?`).bind(id).first(), table).not.toBeNull();
-    }
-    expect(await env.ORIGINALS.get(sourceKey)).not.toBeNull();
-    expect(await env.ORIGINALS.get(injectedFixture?.visualKey ?? "")).not.toBeNull();
-    expect(await env.ORIGINALS.get(injectedFixture?.tempKey ?? "")).not.toBeNull();
+      .bind(sourceId).first()).toBeNull();
+    expect(await env.ORIGINALS.get(sourceKey)).toBeNull();
   });
 
   it("deletes visual descendants and all existing R2 objects", async () => {

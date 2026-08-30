@@ -10,6 +10,7 @@ import { fetchRemoteImage, RemoteImageFetchError } from "./fetchImage";
 import { buildLinkOnlyVisualDraft, filterVisualCandidate, unavailableVisualDecision, type ExistingVisualFingerprint } from "./filter";
 import { createVisualExtractionVisionPersistence, ExtractionStore } from "./store";
 import { buildPdfVisionPrompt, parsePdfPageCandidates, type PdfPageCandidate } from "./pdf";
+import { assertSourceDeletionNotClaimed, isSourceDeletionClaimError } from "../../reservoir/deletionClaim";
 import { withAiCallLedger } from "../../lib/aiCallLedger";
 import {
   createVisualExtractionVisionGate,
@@ -462,6 +463,7 @@ async function runHtmlVisualExtraction(env: Env, input: RunVisualExtractionInput
         contentHash: fetched.contentHash,
       });
     } catch (error) {
+      if (isSourceDeletionClaimError(error)) throw error;
       failedUnits += 1;
       counts.unavailable += 1;
       const errorCode = error instanceof RemoteImageFetchError ? error.code : "visual_candidate_failed";
@@ -610,7 +612,8 @@ async function runPdfVisualExtraction(env: Env, input: RunVisualExtractionInput,
             persisted = await persistPdfDuplicateMetadata(env, source, unit, candidate, rightsStatus, rightsBasis, index, decision, contentHash, perceptualHash);
           }
           existingAssets.push({ assetId: persisted.assetId, contentHash, perceptualHash });
-        } catch {
+        } catch (error) {
+          if (isSourceDeletionClaimError(error)) throw error;
           pageFailed = true;
           counts.unavailable += 1;
           logVisualExtractionDiagnostic({
@@ -628,6 +631,7 @@ async function runPdfVisualExtraction(env: Env, input: RunVisualExtractionInput,
       }
 
     } catch (error) {
+      if (isSourceDeletionClaimError(error)) throw error;
       pageFailed = true;
       counts.unavailable += 1;
       failedUnits += 1;
@@ -963,6 +967,7 @@ async function persistHtmlLinkOnlyVisual(
   },
   visionGate: VisualExtractionVisionGate,
 ): Promise<VisualExtractionVisionBlockReason | null> {
+  await assertSourceDeletionNotClaimed(env.DB, source.sourceId);
   const existing = await findExistingCandidate(env.DB, source.sourceVersionId, "WEB_EMBED", input.candidate.candidateKey);
   const draft = buildLinkOnlyVisualDraft({
     parentSourceId: source.sourceId,
@@ -1022,6 +1027,7 @@ async function persistPdfLinkOnlyVisual(
   visionGate: VisualExtractionVisionGate,
   researchJobId?: string,
 ): Promise<{ assetId: string; visionFallback: VisualExtractionVisionBlockReason | null }> {
+  await assertSourceDeletionNotClaimed(env.DB, source.sourceId);
   const candidateKey = buildPdfCandidateKey(unit.unitNumber, candidate, index);
   const existing = await findExistingCandidate(env.DB, source.sourceVersionId, "PDF_PAGE_CROP", candidateKey);
   if (existing && !existing.versionId) return { assetId: existing.assetId, visionFallback: null };
@@ -1145,6 +1151,7 @@ async function persistPdfTransformCandidate(
   contentHash: string,
   perceptualHash: string,
 ): Promise<{ assetId: string }> {
+  await assertSourceDeletionNotClaimed(env.DB, source.sourceId);
   const candidateKey = buildPdfCandidateKey(unit.unitNumber, candidate, index);
   const existing = await findExistingCandidate(env.DB, source.sourceVersionId, "PDF_PAGE_CROP", candidateKey);
   if (existing) {

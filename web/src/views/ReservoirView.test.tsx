@@ -345,9 +345,50 @@ describe("ReservoirView", () => {
     await userEvent.type(within(dialog).getByLabelText("확인을 위해 자료 제목 입력"), "자료 A");
     await userEvent.click(within(dialog).getByRole("button", { name: "영구 삭제" }));
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(
-      "원본 저장소 정리에 실패했습니다. 자료는 삭제되지 않았습니다.",
+      "원본 저장소 정리에 실패했습니다. 삭제가 완료되지 않았습니다. 잠시 후 같은 제목으로 다시 시도해 주세요.",
     );
     expect(screen.getByText("시스템이 정리한 내용")).toBeInTheDocument();
+  });
+
+  it("keeps the confirmation modal open and explains that another delete is in progress", async () => {
+    deleteResult = { status: 409, body: { error: "source_delete_in_progress" } };
+    render(<ReservoirView />);
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+    await userEvent.click(screen.getByRole("button", { name: "자료 삭제" }));
+    const dialog = screen.getByRole("dialog", { name: "자료 영구 삭제" });
+    const input = within(dialog).getByLabelText("확인을 위해 자료 제목 입력");
+    await userEvent.type(input, "자료 A");
+    await userEvent.click(within(dialog).getByRole("button", { name: "영구 삭제" }));
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      "이 자료의 영구 삭제가 이미 진행 중입니다. 기존 작업이 끝난 뒤 잠시 후 다시 시도해 주세요.",
+    );
+    expect(screen.getByText("시스템이 정리한 내용")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "자료 영구 삭제" })).toBeInTheDocument();
+    expect(input).toHaveValue("자료 A");
+    expect(within(dialog).getByRole("button", { name: "영구 삭제" })).toBeEnabled();
+  });
+
+  it("keeps a D1 finalization failure retryable in the same modal", async () => {
+    deleteResult = { status: 500, body: { error: "source_delete_d1_failed" } };
+    render(<ReservoirView />);
+    await userEvent.click(await screen.findByRole("button", { name: /자료 A/ }));
+    await userEvent.click(screen.getByRole("button", { name: "자료 삭제" }));
+    const dialog = screen.getByRole("dialog", { name: "자료 영구 삭제" });
+    const input = within(dialog).getByLabelText("확인을 위해 자료 제목 입력");
+    await userEvent.type(input, "자료 A");
+    await userEvent.click(within(dialog).getByRole("button", { name: "영구 삭제" }));
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      "자료 정리 마무리에 실패했습니다. 삭제가 완료되지 않았습니다. 잠시 후 같은 제목으로 다시 시도해 주세요.",
+    );
+    expect(input).toHaveValue("자료 A");
+    expect(screen.getByText("시스템이 정리한 내용")).toBeInTheDocument();
+
+    deleteResult = { status: 200, body: { deletedSourceId: "source-1", merge: null } };
+    await userEvent.click(within(dialog).getByRole("button", { name: "영구 삭제" }));
+    expect(await screen.findByText("자료를 영구 삭제했습니다.")).toBeInTheDocument();
+    expect(screen.getByText("읽을 자료를 선택하세요")).toBeInTheDocument();
   });
 
   it("returns to a refreshed list when the source was already deleted", async () => {

@@ -2906,6 +2906,9 @@ function createVisualAssetRouteFixture() {
       origin TEXT,
       input_format TEXT
     );
+    CREATE TABLE source_deletion_claims (
+      source_id TEXT PRIMARY KEY
+    );
     CREATE TABLE source_versions (
       id TEXT PRIMARY KEY,
       source_id TEXT NOT NULL REFERENCES sources(id),

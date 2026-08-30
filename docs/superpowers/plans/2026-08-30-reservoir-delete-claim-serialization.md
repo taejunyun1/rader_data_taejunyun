@@ -26,7 +26,7 @@
 - Create `worker/src/reservoir/deletionClaim.test.ts`
 - Modify `worker/vitest.config.ts` only if the suite include requires it
 
-Implement the table, indexes, ownership triggers, lease-aware acquire/renew/state/error helpers, and focused tests. Verify trigger JSON predicates are safe for invalid/non-source job input. Commit only this task.
+Implement the table, indexes, ownership triggers, lease-aware acquire/renew/state/error helpers, and focused tests. Acquisition must reject a live `R2_COMPLETE` claim with no error, allow immediate rotation only when `last_error_code = 'source_delete_d1_failed'`, and retain expiry-based recovery for abandoned claims. Verify trigger JSON predicates are safe for invalid/non-source job input. Commit only this task.
 
 ## Task 2 — enqueue and source/version writer guards
 
@@ -40,6 +40,20 @@ Implement the table, indexes, ownership triggers, lease-aware acquire/renew/stat
 - Add/extend focused worker tests
 
 Resolve source ownership from direct `sourceId`, `sourceVersionId`/`versionId`, and visual asset inputs. Guard before R2 puts and D1 writes; map claim conflicts to stable errors. Test both direct and duplicate/re-import paths plus unrelated-source writes. Commit only this task.
+
+### Task 2 remediation — append batch boundary and public conflict mapping
+
+The first Task 2 implementation still left `appendAcquisitionVersion()` with
+two D1 calls: the `source_versions` insert and the `sources.updated_at` update.
+That allowed a claim acquired at the boundary to leave a committed version row
+behind even though the caller observed a claim error. The remediation must:
+
+1. execute the version insert and source metadata update in one `D1Database.batch()` transaction, so a claim-trigger abort rolls back both statements;
+2. retain an internal `sourceVersionCommitted` marker when a later activation step observes a claim, so R2 compensation runs only for an uncommitted version;
+3. map trigger errors and legacy inbox-retry claim failures to the stable public `409 { error: "source_delete_in_progress" }` contract from `app.onError` and the retry route catch;
+4. add a boundary regression test asserting no `source_versions` row and no source metadata change after a late claim.
+
+Do not expose the marker, claim token, lease, trigger text, or SQL details in API responses.
 
 ## Task 3 — visual/extraction worker R2 and dependency guards
 

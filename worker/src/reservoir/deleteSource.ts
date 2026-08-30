@@ -1,4 +1,15 @@
 import { selectCanonicalSourceId } from "./canonicalSource";
+import {
+  acquireSourceDeletionClaim,
+  assertSourceDeletionClaimOwned,
+  isSourceDeletionClaimError,
+  markSourceDeletionR2Complete,
+  recordSourceDeletionError,
+  releaseSourceDeletionClaim,
+  renewSourceDeletionClaim,
+  SourceDeletionClaimError,
+  type SourceDeletionClaim,
+} from "./deletionClaim";
 
 export type SourceDeletionMergeRole = "NONE" | "CANONICAL" | "MEMBER";
 export type SourceDeletionErrorCode =
@@ -6,6 +17,7 @@ export type SourceDeletionErrorCode =
   | "source_delete_confirmation_mismatch"
   | "source_delete_active_work"
   | "source_delete_state_changed"
+  | "source_delete_in_progress"
   | "source_delete_r2_failed"
   | "source_delete_d1_failed";
 
@@ -382,6 +394,45 @@ async function loadHistoricalMergeFingerprint(db: D1Database, sourceId: string):
   return row?.fingerprint ?? "[]";
 }
 
+/**
+ * Validate the destructive confirmation before creating any lock metadata.
+ * The claim is deliberately acquired only after this read so a typo cannot
+ * leave an operational lock behind.
+ */
+async function validateSourceDeletionInput(
+  db: D1Database,
+  input: DeleteSourceInput,
+): Promise<void> {
+  const source = await db.prepare("SELECT id, title FROM sources WHERE id = ?")
+    .bind(input.sourceId).first<{ id: string; title: string }>();
+  if (!source) throw new SourceDeletionError("source_not_found");
+  if (source.title !== input.confirmTitle) {
+    throw new SourceDeletionError("source_delete_confirmation_mismatch");
+  }
+}
+
+function mapClaimError(error: unknown, fallback: SourceDeletionErrorCode): SourceDeletionError {
+  if (error instanceof SourceDeletionClaimError && error.code === "source_delete_in_progress") {
+    return new SourceDeletionError("source_delete_in_progress", error);
+  }
+  return new SourceDeletionError(fallback, error);
+}
+
+async function recordDeletionFailure(
+  db: D1Database,
+  claim: SourceDeletionClaim,
+  code: "source_delete_r2_failed" | "source_delete_d1_failed",
+): Promise<void> {
+  // The original R2/D1 error is more useful to the caller than a secondary
+  // lease bookkeeping failure. The claim helper intentionally keeps this
+  // best-effort: if the worker dies here the lease expiry remains recoverable.
+  try {
+    await recordSourceDeletionError(db, claim, code);
+  } catch {
+    // Preserve the original failure and never release a claim after R2 work.
+  }
+}
+
 async function loadDeletionPlan(db: D1Database, input: DeleteSourceInput): Promise<SourceDeletionPlan> {
   const source = await db.prepare("SELECT id, title FROM sources WHERE id = ?")
     .bind(input.sourceId).first<{ id: string; title: string }>();
@@ -414,10 +465,18 @@ async function loadDeletionPlan(db: D1Database, input: DeleteSourceInput): Promi
   };
 }
 
-async function deleteR2Keys(bucket: R2Bucket, keys: string[]): Promise<void> {
+async function deleteR2Keys(
+  bucket: R2Bucket,
+  keys: string[],
+  renewBeforeBatch?: () => Promise<void>,
+): Promise<void> {
   const batchSize = 1_000;
   try {
     for (let index = 0; index < keys.length; index += batchSize) {
+      // A large source can require several R2 requests. Keep the D1 claim
+      // alive immediately before every request so an expired lease cannot
+      // reopen the write boundary while storage deletion is still running.
+      await renewBeforeBatch?.();
       await bucket.delete(keys.slice(index, index + batchSize));
     }
   } catch (error) {
@@ -435,7 +494,14 @@ function mergeFingerprint(merge: ActiveMergeSnapshot | null): string {
   });
 }
 
-async function assertPlanStillCurrent(db: D1Database, plan: SourceDeletionPlan): Promise<void> {
+async function assertPlanStillCurrent(
+  db: D1Database,
+  plan: SourceDeletionPlan,
+  claim?: SourceDeletionClaim,
+): Promise<void> {
+  if (claim) {
+    await assertSourceDeletionClaimOwned(db, claim);
+  }
   const source = await db.prepare("SELECT title FROM sources WHERE id = ?")
     .bind(plan.sourceId).first<{ title: string }>();
   const currentMerge = await loadActiveMergeSnapshot(db, plan.sourceId);
@@ -456,10 +522,20 @@ async function assertPlanStillCurrent(db: D1Database, plan: SourceDeletionPlan):
 function deletionGuard(
   db: D1Database,
   plan: SourceDeletionPlan,
+  claim: SourceDeletionClaim,
 ): D1PreparedStatement {
+  const claimGuard = `EXISTS (
+    SELECT 1 FROM source_deletion_claims
+    WHERE source_id = ?
+      AND claim_token = ?
+      AND state = 'R2_COMPLETE'
+      AND lease_expires_at > ?
+  )`;
   if (!plan.merge) {
     return db.prepare(
       `SELECT CASE WHEN
+         ${claimGuard}
+         AND
          EXISTS (SELECT 1 FROM sources WHERE id = ? AND title = ?)
          AND (${SOURCE_DEPENDENCY_SNAPSHOT_QUERY}) = ?
          AND NOT EXISTS (${ACTIVE_WORK_QUERY})
@@ -471,6 +547,9 @@ function deletionGuard(
          AND (${HISTORICAL_MERGE_FINGERPRINT_QUERY}) = ?
        THEN 1 ELSE json('source_delete_guard_failed') END AS valid`,
     ).bind(
+      plan.sourceId,
+      claim.claimToken,
+      new Date().toISOString(),
       plan.sourceId,
       plan.title,
       plan.sourceId,
@@ -488,6 +567,8 @@ function deletionGuard(
   }
   return db.prepare(
     `SELECT CASE WHEN
+       ${claimGuard}
+       AND
        EXISTS (SELECT 1 FROM sources WHERE id = ? AND title = ?)
        AND (${SOURCE_DEPENDENCY_SNAPSHOT_QUERY}) = ?
        AND NOT EXISTS (${ACTIVE_WORK_QUERY})
@@ -505,6 +586,9 @@ function deletionGuard(
        AND (${HISTORICAL_MERGE_FINGERPRINT_QUERY}) = ?
      THEN 1 ELSE json('source_delete_guard_failed') END AS valid`,
   ).bind(
+    plan.sourceId,
+    claim.claimToken,
+    new Date().toISOString(),
     plan.sourceId,
     plan.title,
     plan.sourceId,
@@ -562,8 +646,11 @@ async function mergeMutation(
     statements: [
       db.prepare("UPDATE source_merge_groups SET canonical_source_id = ? WHERE id = ? AND canonical_source_id = ?")
         .bind(canonicalSourceId, plan.merge.groupId, plan.sourceId),
-      db.prepare("UPDATE source_merge_members SET role = 'MEMBER' WHERE group_id = ?")
-        .bind(plan.merge.groupId),
+      // The claimed member is deleted below; exclude it so merge-write
+      // triggers can reject all external updates involving the claimed source
+      // without blocking this finalization batch.
+      db.prepare("UPDATE source_merge_members SET role = 'MEMBER' WHERE group_id = ? AND source_id <> ?")
+        .bind(plan.merge.groupId, plan.sourceId),
       db.prepare("UPDATE source_merge_members SET role = 'CANONICAL' WHERE group_id = ? AND source_id = ?")
         .bind(plan.merge.groupId, canonicalSourceId),
       db.prepare("DELETE FROM source_merge_members WHERE group_id = ? AND source_id = ?")
@@ -593,8 +680,8 @@ function historicalMergeMutation(
       statements.push(
         db.prepare("UPDATE source_merge_groups SET canonical_source_id = ? WHERE id = ? AND canonical_source_id = ?")
           .bind(canonicalSourceId, merge.groupId, plan.sourceId),
-        db.prepare("UPDATE source_merge_members SET role = 'MEMBER' WHERE group_id = ?")
-          .bind(merge.groupId),
+        db.prepare("UPDATE source_merge_members SET role = 'MEMBER' WHERE group_id = ? AND source_id <> ?")
+          .bind(merge.groupId, plan.sourceId),
         db.prepare("UPDATE source_merge_members SET role = 'CANONICAL' WHERE group_id = ? AND source_id = ?")
           .bind(merge.groupId, canonicalSourceId),
       );
@@ -610,8 +697,9 @@ function historicalMergeMutation(
 async function deleteD1Records(
   db: D1Database,
   plan: SourceDeletionPlan,
+  claim: SourceDeletionClaim,
 ): Promise<DeleteSourceMergeResult | null> {
-  await assertPlanStillCurrent(db, plan);
+  await assertPlanStillCurrent(db, plan, claim);
   const merge = await mergeMutation(db, plan);
   const historicalMerge = historicalMergeMutation(db, plan);
   const sourceId = plan.sourceId;
@@ -619,7 +707,10 @@ async function deleteD1Records(
     WHERE parent_source_id = ?
        OR parent_version_id IN (SELECT id FROM source_versions WHERE source_id = ?)`;
   const statements: D1PreparedStatement[] = [
-    deletionGuard(db, plan),
+    // Keep this as the first statement in the transaction. It proves that
+    // this exact attempt still owns the R2-complete claim immediately before
+    // any source-owned row is removed.
+    deletionGuard(db, plan, claim),
     db.prepare("UPDATE discovery_candidates SET source_id = NULL WHERE source_id = ?").bind(sourceId),
     db.prepare(
       `DELETE FROM visual_relations
@@ -665,6 +756,12 @@ async function deleteD1Records(
     return merge.result;
   } catch (error) {
     if (error instanceof SourceDeletionError) throw error;
+    // A non-route writer that raced this batch is stopped by the migration
+    // trigger. Treat that as a stale guarded batch; the claim remains held
+    // and the caller can safely retry after the failed attempt is recorded.
+    if (isSourceDeletionClaimError(error)) {
+      throw new SourceDeletionError("source_delete_state_changed", error);
+    }
     try {
       if (await hasActiveWork(db, plan.sourceId)) {
         throw new SourceDeletionError("source_delete_active_work", error);
@@ -694,9 +791,65 @@ export async function deleteSourcePermanently(
   env: Pick<Env, "DB" | "ORIGINALS">,
   input: DeleteSourceInput,
 ): Promise<DeleteSourceResult> {
-  const plan = await loadDeletionPlan(env.DB, input);
-  await assertPlanStillCurrent(env.DB, plan);
-  await deleteR2Keys(env.ORIGINALS, plan.r2Keys);
-  const merge = await deleteD1Records(env.DB, plan);
-  return { deletedSourceId: plan.sourceId, merge };
+  // Confirm the exact title before creating a lock. If this request is a
+  // typo, it must have no operational side effects.
+  await validateSourceDeletionInput(env.DB, input);
+
+  let claim: SourceDeletionClaim;
+  try {
+    claim = await acquireSourceDeletionClaim(env.DB, input.sourceId);
+  } catch (error) {
+    throw mapClaimError(error, "source_delete_d1_failed");
+  }
+
+  let r2MutationStarted = false;
+  let r2Complete = false;
+  try {
+    // All mutable dependency snapshots are collected only after the claim is
+    // held. New versions, visual descendants, and jobs are then blocked by
+    // both the route guard and migration triggers.
+    const plan = await loadDeletionPlan(env.DB, input);
+    await assertPlanStillCurrent(env.DB, plan, claim);
+
+    // Renew immediately before crossing the D1/R2 boundary. A claim that
+    // cannot be renewed is never allowed to start storage mutation.
+    claim = await renewSourceDeletionClaim(env.DB, claim);
+    r2MutationStarted = true;
+    await deleteR2Keys(env.ORIGINALS, plan.r2Keys, async () => {
+      claim = await renewSourceDeletionClaim(env.DB, claim);
+    });
+
+    claim = await markSourceDeletionR2Complete(env.DB, claim);
+    r2Complete = true;
+    // Extend the lease for the bounded final batch and prove that the same
+    // token is still active before constructing any merge mutation.
+    claim = await renewSourceDeletionClaim(env.DB, claim);
+    const merge = await deleteD1Records(env.DB, plan, claim);
+    return { deletedSourceId: plan.sourceId, merge };
+  } catch (error) {
+    if (!r2MutationStarted) {
+      // Only read-only preflight failures release the claim. If release fails,
+      // the lease remains recoverable and no writer can repopulate the source.
+      try {
+        await releaseSourceDeletionClaim(env.DB, claim);
+      } catch {
+        // Preserve the original preflight error.
+      }
+      if (error instanceof SourceDeletionClaimError) {
+        throw mapClaimError(error, "source_delete_d1_failed");
+      }
+      throw error;
+    }
+
+    const failureCode = !r2Complete || (
+      error instanceof SourceDeletionError && error.code === "source_delete_r2_failed"
+    )
+      ? "source_delete_r2_failed"
+      : "source_delete_d1_failed";
+    await recordDeletionFailure(env.DB, claim, failureCode);
+    if (error instanceof SourceDeletionClaimError) {
+      throw mapClaimError(error, failureCode);
+    }
+    throw error;
+  }
 }

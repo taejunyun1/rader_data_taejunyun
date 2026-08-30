@@ -20,6 +20,11 @@ import { activateVersion, appendAcquisitionVersion, decideIncomingVersion, getAc
 import { enqueueResearchJob } from "../jobs/enqueue";
 import { verifiedRequester } from "../lib/httpErrors";
 import { readJson } from "../lib/requestBody";
+import {
+  assertSourceDeletionNotClaimed,
+  isSourceDeletionClaimError,
+  isSourceVersionCommittedClaimError,
+} from "../reservoir/deletionClaim";
 
 const inbox = new Hono<{ Bindings: Env }>();
 
@@ -288,8 +293,10 @@ inbox.post("/:sourceId/pdf-original", async (c) => {
   const versionId = uuid();
   const rawContentHash = await sha256Hex(original);
   const r2Key = buildAcquisitionKey(sourceId, versionId, source.title);
+  let versionCommitted = false;
 
   try {
+    await assertSourceDeletionNotClaimed(c.env.DB, sourceId);
     await c.env.ORIGINALS.put(r2Key, original, {
       httpMetadata: { contentType: body?.contentType?.trim() || "application/pdf" },
       customMetadata: {
@@ -315,11 +322,15 @@ inbox.post("/:sourceId/pdf-original", async (c) => {
       rawContentHash,
       extractionError: acquisition.textScope === "EMPTY" ? "pdf_text_empty" : null,
     });
+    versionCommitted = true;
     await activateVersion(c.env.DB, sourceId, result.versionId, result.qualityStatus);
     if (result.qualityStatus === "READY") await analyzeSource(c.env, sourceId);
     return c.json({ ok: true, sourceId, versionId: result.versionId, version: result.version, status: "ACTIVE", qualityStatus: result.qualityStatus });
   } catch (error) {
-    try { await c.env.ORIGINALS.delete(r2Key); } catch { /* best effort orphan cleanup */ }
+    if (!versionCommitted && !isSourceVersionCommittedClaimError(error)) {
+      try { await c.env.ORIGINALS.delete(r2Key); } catch { /* best effort orphan cleanup */ }
+    }
+    if (isSourceDeletionClaimError(error)) return c.json({ error: "source_delete_in_progress" }, 409);
     const message = (error as Error).message.slice(0, 200);
     return c.json({ error: message || "pdf_original_recovery_failed" }, 500);
   }
@@ -389,20 +400,28 @@ inbox.post("/:sourceId/reextract", async (c) => {
   if (acquisition) {
     const versionId = uuid();
     const r2Key = buildAcquisitionKey(sourceId, versionId, source.title);
+    await assertSourceDeletionNotClaimed(c.env.DB, sourceId);
     await c.env.ORIGINALS.put(r2Key, original, { customMetadata: { sourceId, versionId, origin: "REEXTRACT" } });
-    result = await appendAcquisitionVersion(c.env.DB, {
-      versionId,
-      sourceId,
-      r2Key,
-      extractedText,
-      inputFormat: source.input_format as InputFormat,
-      textScope: acquisition.textScope,
-      extractionMethod: acquisition.extractionMethod,
-      finalUrl: acquiredFinalUrl,
-      acquiredAt: new Date().toISOString(),
-      versionOrigin: "REEXTRACT",
-      parentVersionId: active?.id ?? null,
-    });
+    try {
+      result = await appendAcquisitionVersion(c.env.DB, {
+        versionId,
+        sourceId,
+        r2Key,
+        extractedText,
+        inputFormat: source.input_format as InputFormat,
+        textScope: acquisition.textScope,
+        extractionMethod: acquisition.extractionMethod,
+        finalUrl: acquiredFinalUrl,
+        acquiredAt: new Date().toISOString(),
+        versionOrigin: "REEXTRACT",
+        parentVersionId: active?.id ?? null,
+      });
+    } catch (error) {
+      if (isSourceDeletionClaimError(error) && !isSourceVersionCommittedClaimError(error)) {
+        try { await c.env.ORIGINALS.delete(r2Key); } catch { /* best effort */ }
+      }
+      throw error;
+    }
     const activeAfter = await getActiveVersion(c.env.DB, sourceId);
     reviewStatus = activeAfter?.id === result.versionId ? "ACTIVE" : "PENDING_REVIEW";
     if (result.qualityStatus === "READY" && activeAfter?.id === result.versionId) await analyzeSource(c.env, sourceId);
@@ -543,20 +562,29 @@ inbox.post("/retry/:sourceId", async (c) => {
     const acquisition = classifyAcquiredText(page.text, "URL_HTML", "HTML_STATIC");
     const versionId = uuid();
     const r2Key = buildAcquisitionKey(sourceId, versionId, source.title);
+    await assertSourceDeletionNotClaimed(c.env.DB, sourceId);
     await c.env.ORIGINALS.put(r2Key, page.html, { customMetadata: { sourceId, versionId, origin: "REEXTRACT" } });
-    const result = await appendAcquisitionVersion(c.env.DB, {
-      versionId,
-      sourceId,
-      r2Key,
-      extractedText: page.text,
-      inputFormat: "URL_HTML",
-      textScope: acquisition.textScope,
-      extractionMethod: acquisition.extractionMethod,
-      finalUrl: page.finalUrl,
-      acquiredAt: new Date().toISOString(),
-      versionOrigin: "REEXTRACT",
-      parentVersionId: active?.id ?? null,
-    });
+    let result: Awaited<ReturnType<typeof appendAcquisitionVersion>>;
+    try {
+      result = await appendAcquisitionVersion(c.env.DB, {
+        versionId,
+        sourceId,
+        r2Key,
+        extractedText: page.text,
+        inputFormat: "URL_HTML",
+        textScope: acquisition.textScope,
+        extractionMethod: acquisition.extractionMethod,
+        finalUrl: page.finalUrl,
+        acquiredAt: new Date().toISOString(),
+        versionOrigin: "REEXTRACT",
+        parentVersionId: active?.id ?? null,
+      });
+    } catch (error) {
+      if (isSourceDeletionClaimError(error) && !isSourceVersionCommittedClaimError(error)) {
+        try { await c.env.ORIGINALS.delete(r2Key); } catch { /* best effort */ }
+      }
+      throw error;
+    }
     const activeAfter = await getActiveVersion(c.env.DB, sourceId);
     if (result.qualityStatus === "READY" && activeAfter?.id === result.versionId) {
       await analyzeSource(c.env, sourceId);
@@ -564,14 +592,27 @@ inbox.post("/retry/:sourceId", async (c) => {
     await c.env.DB.prepare("UPDATE processing_jobs SET retry_count = retry_count + 1 WHERE source_id = ?").bind(sourceId).run();
     return c.json({ ok: true, versionId: result.versionId, version: result.version, qualityStatus: result.qualityStatus });
   } catch (err) {
+    // A deletion claim is a public conflict, not a failed retry that can be
+    // reported as HTTP 200. Keep the claim code stable and do not leak D1/R2
+    // implementation details through the legacy retry payload.
+    if (isSourceDeletionClaimError(err)) {
+      return c.json({ error: "source_delete_in_progress" }, 409);
+    }
     const message = (err as Error).message.slice(0, 300);
-    await c.env.DB
-      .prepare(
-        `UPDATE processing_jobs SET status = 'failed', error = ?, retry_count = retry_count + 1, updated_at = ?
-         WHERE source_id = ?`
-      )
-      .bind(message, new Date().toISOString(), sourceId)
-      .run();
+    try {
+      await c.env.DB
+        .prepare(
+          `UPDATE processing_jobs SET status = 'failed', error = ?, retry_count = retry_count + 1, updated_at = ?
+           WHERE source_id = ?`
+        )
+        .bind(message, new Date().toISOString(), sourceId)
+        .run();
+    } catch (statusError) {
+      if (isSourceDeletionClaimError(statusError)) {
+        return c.json({ error: "source_delete_in_progress" }, 409);
+      }
+      throw statusError;
+    }
     return c.json({ ok: false, error: message });
   }
 });
@@ -677,22 +718,30 @@ async function insertVersion(env: Env, input: InsertVersionInput): Promise<Inser
     : decideIncomingVersion({ activeOrigin: input.activeOrigin, incomingOrigin: input.versionOrigin });
   const ts = new Date().toISOString();
 
+  await assertSourceDeletionNotClaimed(env.DB, input.sourceId);
   await env.ORIGINALS.put(r2Key, input.original, {
     customMetadata: { sourceId: input.sourceId, version: String(version), origin: input.origin },
   });
-  await env.DB.batch([
-    env.DB.prepare(
-      `INSERT INTO source_versions
-       (id, source_id, version, r2_key, extracted_text, char_count, content_hash, normalized_text,
-        normalization_status, normalization_report_json, version_origin, parent_version_id, review_status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'READY', ?, ?, ?, ?, ?)`
-    ).bind(
-      versionId, input.sourceId, version, r2Key, extractedText, extractedText.length, contentHash,
-      normalized.normalizedText, JSON.stringify({ ...normalized.report, metadata: { ...normalized.metadata, ...(input.metadata ?? {}) } }),
-      input.versionOrigin, input.parentVersionId, decision.reviewStatus, ts
-    ),
-    env.DB.prepare("UPDATE sources SET updated_at = ? WHERE id = ?").bind(ts, input.sourceId),
-  ]);
+  try {
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO source_versions
+         (id, source_id, version, r2_key, extracted_text, char_count, content_hash, normalized_text,
+          normalization_status, normalization_report_json, version_origin, parent_version_id, review_status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'READY', ?, ?, ?, ?, ?)`
+      ).bind(
+        versionId, input.sourceId, version, r2Key, extractedText, extractedText.length, contentHash,
+        normalized.normalizedText, JSON.stringify({ ...normalized.report, metadata: { ...normalized.metadata, ...(input.metadata ?? {}) } }),
+        input.versionOrigin, input.parentVersionId, decision.reviewStatus, ts
+      ),
+      env.DB.prepare("UPDATE sources SET updated_at = ? WHERE id = ?").bind(ts, input.sourceId),
+    ]);
+  } catch (error) {
+    if (isSourceDeletionClaimError(error) && !isSourceVersionCommittedClaimError(error)) {
+      try { await env.ORIGINALS.delete(r2Key); } catch { /* best effort orphan cleanup */ }
+    }
+    throw error;
+  }
   return { versionId, version, reviewStatus: decision.reviewStatus, activateIncoming: decision.activateIncoming, qualityStatus: normalized.qualityStatus };
 }
 

@@ -35,7 +35,9 @@ Acquisition is one atomic D1 operation:
 
 - no row: insert a new `R2_PENDING` claim;
 - live `R2_PENDING` row: return `source_delete_in_progress`;
-- expired `R2_PENDING` row or `R2_COMPLETE` row: atomically rotate the token and lease so a retry can resume;
+- live `R2_COMPLETE` row with no error: return `source_delete_in_progress` while its owner is performing the D1 batch;
+- live `R2_COMPLETE` row with `last_error_code = source_delete_d1_failed`: atomically rotate the token and lease so the failed finalization can be retried immediately;
+- an expired claim remains recoverable regardless of state/error;
 - the claim is never silently replaced while another live lease owns it.
 
 The claim helper owns token generation, lease renewal, state transitions, and bounded error recording. Callers never construct claim SQL themselves.

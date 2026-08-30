@@ -13,6 +13,10 @@ import { findDuplicate } from "./dedup";
 import { uuid, sha256Hex } from "./ids";
 import { normalizeDoi, normalizeUrl, titleNorm } from "./normalize";
 import { activateVersion, getActiveVersion } from "./versioning";
+import {
+  assertSourceDeletionNotClaimed,
+  isSourceDeletionClaimError,
+} from "../reservoir/deletionClaim";
 
 export interface CreateSourceInput {
   kind: SourceKind;
@@ -285,6 +289,10 @@ async function appendReimportedVersion(
   stagedOriginalKey: string | null,
 ): Promise<CreateSourceResult> {
   assertPdfOriginal(input);
+  // This is the source-owned branch of createSource. The initial intake object
+  // is intentionally staged before identity lookup, but no source-scoped R2
+  // object or D1 version may be created while its owner is being deleted.
+  await assertSourceDeletionNotClaimed(env.DB, sourceId);
   const source = await env.DB.prepare("SELECT title FROM sources WHERE id = ?").bind(sourceId).first<{ title: string }>();
   if (!source) throw new Error("source_not_found");
   const row = await env.DB.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM source_versions WHERE source_id = ?")
@@ -312,31 +320,41 @@ async function appendReimportedVersion(
   const normalizedContentHash = await sha256Hex(normalized.normalizedText);
   const versionContentHash = await sha256Hex(text || input.original);
 
-  await env.DB.batch([
-    env.DB.prepare(
-      `INSERT INTO source_versions
-       (id, source_id, version, r2_key, extracted_text, char_count, content_hash, raw_content_hash, normalized_content_hash, normalized_text,
-        normalization_status, normalization_report_json, version_origin, parent_version_id, review_status, created_at,
-        text_scope, extraction_method, extraction_error, content_type, final_url, acquired_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'READY', ?, ?,
-        (SELECT active_version_id FROM sources WHERE id = ?), 'ACTIVE', ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(
-      versionId, sourceId, version, r2Key, text, text.length, versionContentHash, rawContentHash, normalizedContentHash,
-      normalized.normalizedText, JSON.stringify(normalized.report), input.versionOrigin ?? "INITIAL_INGEST", sourceId, ts,
-      textScope, extractionMethod, input.extractionError ?? null, input.contentType ?? null, input.finalUrl ?? null, input.acquiredAt ?? ts,
-    ),
-    env.DB.prepare("UPDATE sources SET origins_json = ?, updated_at = ? WHERE id = ?")
-      .bind(await appendOrigin(env.DB, sourceId, input.origin), ts, sourceId),
-    env.DB.prepare(
-      `INSERT INTO processing_jobs (id, source_id, stage, status, error, retry_count, created_at, updated_at)
-       VALUES (?, ?, 'ingest', ?, NULL, 0, ?, ?)`
-    ).bind(uuid(), sourceId, text ? "extracted" : "stored", ts, ts),
-    env.DB.prepare(
-      `INSERT INTO user_signals (id, source_id, action, weight, context, created_at)
-       VALUES (?, ?, 'import', 1.0, ?, ?)`
-    ).bind(uuid(), sourceId, JSON.stringify({ origin: input.origin, version: versionId }), ts),
-    ...identityStatements(env.DB, sourceId, input, rawContentHash, ts, "refresh"),
-  ]);
+  try {
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO source_versions
+         (id, source_id, version, r2_key, extracted_text, char_count, content_hash, raw_content_hash, normalized_content_hash, normalized_text,
+          normalization_status, normalization_report_json, version_origin, parent_version_id, review_status, created_at,
+          text_scope, extraction_method, extraction_error, content_type, final_url, acquired_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'READY', ?, ?,
+          (SELECT active_version_id FROM sources WHERE id = ?), 'ACTIVE', ?, ?, ?, ?, ?, ?, ?)`
+      ).bind(
+        versionId, sourceId, version, r2Key, text, text.length, versionContentHash, rawContentHash, normalizedContentHash,
+        normalized.normalizedText, JSON.stringify(normalized.report), input.versionOrigin ?? "INITIAL_INGEST", sourceId, ts,
+        textScope, extractionMethod, input.extractionError ?? null, input.contentType ?? null, input.finalUrl ?? null, input.acquiredAt ?? ts,
+      ),
+      env.DB.prepare("UPDATE sources SET origins_json = ?, updated_at = ? WHERE id = ?")
+        .bind(await appendOrigin(env.DB, sourceId, input.origin), ts, sourceId),
+      env.DB.prepare(
+        `INSERT INTO processing_jobs (id, source_id, stage, status, error, retry_count, created_at, updated_at)
+         VALUES (?, ?, 'ingest', ?, NULL, 0, ?, ?)`
+      ).bind(uuid(), sourceId, text ? "extracted" : "stored", ts, ts),
+      env.DB.prepare(
+        `INSERT INTO user_signals (id, source_id, action, weight, context, created_at)
+         VALUES (?, ?, 'import', 1.0, ?, ?)`
+      ).bind(uuid(), sourceId, JSON.stringify({ origin: input.origin, version: versionId }), ts),
+      ...identityStatements(env.DB, sourceId, input, rawContentHash, ts, "refresh"),
+    ]);
+  } catch (error) {
+    // A claim can be acquired after the pre-put check but before the batch.
+    // The trigger rejects the D1 insert; remove the just-created object so the
+    // rejected version cannot leave an orphaned source-scoped R2 key.
+    if (isSourceDeletionClaimError(error) && r2Key) {
+      try { await env.ORIGINALS.delete(r2Key); } catch { /* best-effort compensation */ }
+    }
+    throw error;
+  }
   await activateVersion(env.DB, sourceId, versionId, qualityStatus, ts);
   return { sourceId, duplicateOf: sourceId, title: source.title, qualityStatus, activeVersionId: versionId };
 }
@@ -406,6 +424,7 @@ async function deleteCreatedOriginals(env: Env, r2Key: string | null, previewKey
 }
 
 async function recordReimport(env: Env, sourceId: string, field: string, origin: string): Promise<void> {
+  await assertSourceDeletionNotClaimed(env.DB, sourceId);
   const ts = nowIso();
   const row = await env.DB.prepare("SELECT origins_json FROM sources WHERE id = ?")
     .bind(sourceId)
@@ -436,6 +455,7 @@ export async function updateIngestJob(
   status: IngestProcessingStatus,
   error: string | null,
 ): Promise<void> {
+  await assertSourceDeletionNotClaimed(db, sourceId);
   const now = nowIso();
   const existing = await db.prepare(
     "SELECT id FROM processing_jobs WHERE source_id = ? ORDER BY updated_at DESC, created_at DESC LIMIT 1",
