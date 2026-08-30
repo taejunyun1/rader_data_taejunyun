@@ -641,6 +641,23 @@ describe("ReservoirView", () => {
     expect(screen.queryByText(/검색 결과 1개/)).not.toBeInTheDocument();
   });
 
+  it("keeps the search result context when a result is opened", async () => {
+    pendingSearch = Promise.resolve(new Response(JSON.stringify({
+      hits: [{ sourceId: "source-1", title: "검색된 자료 A", matched: "title", snippet: "사진" }],
+    })));
+    render(<ReservoirView />);
+
+    const search = screen.getByPlaceholderText("제목, 저자, 질문으로 검색");
+    await userEvent.type(search, "사진");
+    await userEvent.click(screen.getByRole("button", { name: "검색" }));
+    expect(await screen.findByText(/검색 결과 1개/)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /검색된 자료 A/ }));
+
+    expect(await screen.findByText("시스템 해석")).toBeInTheDocument();
+    expect(screen.getByText(/검색 결과 1개/)).toBeInTheDocument();
+  });
+
   it("invalidates a pending search when an empty search clears it", async () => {
     let resolveSearch: (response: Response) => void = () => undefined;
     pendingSearch = new Promise((resolve) => { resolveSearch = resolve; });

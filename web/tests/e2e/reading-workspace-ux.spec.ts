@@ -42,6 +42,7 @@ async function installWorkspaceFixture(page: Page) {
       const item = items.find((entry) => url.pathname.endsWith(entry.id)) ?? items[0]!;
       return route.fulfill({ json: {
         source: { ...item, provenanceClass: "SOURCE" },
+        deletion: { sourceId: item.id, title: item.title, mergeRole: "NONE", mergeMemberCount: 0 },
         acquisition: { textScope: "FULLTEXT", extractionMethod: "HTML_STATIC", qualityStatus: "READY", charCount: 2400, acquisitionLabel: "원문 저장됨 · 2,400자", canDeepAnalyze: true, originalTextUrl: `${url.pathname}/original-text` },
         analysis: {
           summary: `${item.title} 요약 ${detailParagraph.repeat(12)}`,

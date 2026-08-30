@@ -305,6 +305,7 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
     setKindFilter(next.kind);
     setTopicFilter(next.topic);
     setDecisionFilter(next.decision);
+    setSearchHits(null);
     return next;
   }, []);
 
@@ -410,7 +411,6 @@ export default function ReservoirView({ onJobCreated, focusSourceId, focusExtrac
     setDetailLoading(true);
     setDecisionOpen(false);
     setDetailError("");
-    setSearchHits(null);
     setDecisionError("");
     setDeepBlock(null);
     try {
