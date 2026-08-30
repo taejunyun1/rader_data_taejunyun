@@ -208,6 +208,12 @@ JSON(전체 덤프) / Markdown(자료별) / CSV(목록) + R2 원본 zip. Setting
 에러/빈 상태 UX, 재처리, 버전 diff 뷰(작업노트 versioning), 라이트하우스급 기본 품질. README(셀프 세팅 가이드).
 **Scope: M**
 
+### Task 6.3: Reservoir 영구 삭제 직렬화·복구 경계
+
+저장소에서 자료를 영구 삭제할 때 `source_deletion_claims`로 source별 단일 실행을 보장한다. 정확한 제목 확인 후 claim을 획득하고, claim이 유지되는 동안 source 소유 D1/R2 writer와 병합·중복 후보 writer를 route 검사와 D1 trigger로 차단한다. R2 원본·시각·임시 객체를 먼저 삭제하고, 1,000개 단위 heartbeat로 lease를 갱신한 뒤 동일 claim token·제목·의존성·활성 작업·병합 fingerprint를 검증하는 원자적 D1 batch를 실행한다. R2 실패와 D1 실패는 서로 다른 retry 상태로 남기며, preflight 실패만 claim을 해제한다. 삭제 확인 dialog는 진행 중·R2 실패·D1 실패를 구분하고 재시도 입력을 보존한다.
+
+**AC**: 동시 삭제 요청 중 하나만 R2/D1 mutation을 수행하고 나머지는 HTTP 409 `source_delete_in_progress`를 받는다. R2 실패 시 D1 행이 남고 claim이 보존되며, D1 실패 시 R2 완료 상태와 `source_delete_d1_failed`가 남아 즉시 재시도할 수 있다. claim 중 새 version/visual/extraction/job/merge writer가 차단되고, stale claim guard가 자식 행을 삭제하지 않는다. `0027_source_deletion_claim.sql`은 development에서 검증하되 운영 D1 migration과 배포는 별도 승인 단계로 실행한다. **Scope: M**
+
 **Checkpoint P6(최종)**: 스펙 V0 필수 범위 전 항목 데모 — Inbox/Reservoir/Radar/Distill/Reading Queue/Research Gap/Critic/Counter/검색/시그널/Settings + Export.
 
 ## 리스크

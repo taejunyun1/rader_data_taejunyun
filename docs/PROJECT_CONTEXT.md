@@ -1,6 +1,6 @@
 # Research Radar — 내부 참조 가이드
 
-최종 정리: 2026-08-23
+최종 정리: 2026-08-30
 
 이 문서는 다음 작업자가 프로젝트의 기획 의도, 현재 구현, 운영 원칙을 빠르게 이어받기 위한 요약본이다. 요구사항을 새로 정의하지 않으며, 제품 결정은 아래 Source of Truth 문서를 따른다.
 
@@ -43,7 +43,7 @@ Research Radar는 사진작가 윤태준의 개인 연구 편집 도구다. 챗�
 - `worker/`: Hono API, cron, D1/R2/Workers AI/AI Gateway
 - `web/`: Vite + React SPA
 - `shared/`: Worker와 Web의 공통 타입
-- `worker/migrations/0001~0026`: 초기 스키마, Queue 검증, V1 기능, topic, snapshot synthesis, 수신 자료 버전·정규화 검수, inbox exclusions, distill counter 옵션, research jobs/discovery lanes, `discovery_candidates.source_id` + `discovery_field_signals`, 원격 원문 provenance + `SOURCE_ACQUISITION`, `ai_budget_reservations`
+- `worker/migrations/0001~0028`: 초기 스키마, Queue 검증, V1 기능, topic, snapshot synthesis, 수신 자료 버전·정규화 검수, inbox exclusions, distill counter 옵션, research jobs/discovery lanes, `discovery_candidates.source_id` + `discovery_field_signals`, 원격 원문 provenance + `SOURCE_ACQUISITION`, `ai_budget_reservations`, source deletion claim/쓰기 가드, 삭제 자료의 Radar 집계 경계
 - 배포 대상: `radar.taejunyun.com`
 - 패키지 매니저: `pnpm@11.21.0`
 
@@ -63,6 +63,19 @@ Research Radar는 사진작가 윤태준의 개인 연구 편집 도구다. 챗�
 | Export | JSON/Markdown/CSV 및 R2 원본 백업 | V0 필수 |
 
 저장소 상세의 `자료 삭제`는 앱 전역 `/api/*` 인증 미들웨어를 통과한다. 프로덕션/운영 요청은 Cloudflare Access 검증 또는 CLI 인증을 거쳐야 하고, 삭제 route의 production defense-in-depth guard가 인증 주체를 다시 확인한다. `development`·`test` 환경에서만 local identity bypass가 명시적으로 허용된다. 제목을 정확히 재입력하는 절차는 실행 확인이며 유일한 접근 통제가 아니다. 선택 source가 소유한 source/version/analysis/index/visual D1 행과 R2 원본·시각·임시 객체를 제거한다. 활성 research/visual 작업이 있거나 R2 정리에 실패하면 D1을 변경하지 않는다. 병합 구성원 삭제는 선택 자료에만 적용하고, 대표 삭제 시 기존 대표 선정 규칙으로 남은 구성원을 승격한다. Discovery 후보와 과거 Distill/snapshot/job 결과는 보존하며 후보의 nullable `source_id` 연결만 해제한다. 삭제한 source를 포함한 착즙 결과는 현재 레이더의 집계·서사 입력·직접 읽기에서 제외하고, 이미 저장된 레이더 snapshot은 이력으로 남기되 `invalidated_at`을 기록해 메인 레이더에서 숨긴다. 이 동작은 휴지통이나 `ignore` 판단과 다르며 복구할 수 없다.
+
+### 3-2. 영구 삭제 claim 직렬화 (2026-08-30)
+
+영구 삭제는 `worker/migrations/0027_source_deletion_claim.sql`의 `source_deletion_claims`를 기준으로 한 번에 하나의 삭제 시도만 허용한다. `source_id`가 primary key이며 `claim_token`, `R2_PENDING`/`R2_COMPLETE` 상태, 5분 lease, 마지막 실패 코드(`source_delete_r2_failed`·`source_delete_d1_failed`)를 보존한다.
+
+- 정확한 제목 확인은 claim 생성보다 먼저 수행한다. 활성 claim은 HTTP 409 `source_delete_in_progress`로 거절하며, 만료 claim과 R2 완료 후 D1 실패 claim만 재시도할 수 있다.
+- claim을 획득한 뒤 source/version/visual/extraction/job 및 병합 메타데이터에 대한 route 선행 검사와 D1 trigger를 함께 적용한다. 새 버전·시각 객체·작업·중복/병합 후보가 삭제 중인 source를 다시 참조하면 `source_deletion_in_progress`로 중단된다.
+- R2 원본·시각·추출 임시 객체 삭제 전과 1,000개 단위 배치 전에 lease를 갱신한다. R2 실패는 `R2_PENDING` claim과 재시도 경계를 남기고 D1을 실행하지 않는다.
+- R2 정리가 완료되면 `R2_COMPLETE`로 전환하고 동일 token·제목·의존성·활성 작업·현재/과거 병합 fingerprint를 첫 D1 statement에서 원자적으로 검증한다. 검증 실패는 삭제 batch 전체를 중단하며 source/자식 행을 남긴다. 병합 대표 재지정은 삭제 batch가 직접 수행하는 경우에만 허용된다.
+- D1 batch 실패는 `source_delete_d1_failed`로 기록하고 claim을 유지해 같은 제목으로 즉시 재시도할 수 있게 한다. 성공 시 source 소유 D1 행과 claim을 함께 제거한다. preflight(스토리지 변경 전) 실패만 claim을 해제한다.
+- UI는 진행 중·R2 실패·D1 실패를 구분해 표시하고, 실패 시 제목 입력과 삭제 dialog를 유지해 재시도할 수 있게 한다.
+
+0027 migration은 코드와 로컬 테스트에 포함되어 있으나, 이 작업에서는 운영 D1에 적용하지 않았다. 0028의 Radar 집계 경계도 같은 이유로 운영 반영 전 migration 검토가 필요하다. 배포 시 코드 배포와 원격 migration 적용을 별도 승인·실행해야 한다.
 
 삭제 순서는 의도적으로 R2 정리가 D1 batch보다 먼저다. R2 삭제가 성공한 뒤 D1 batch가 실패하면 `source_delete_d1_failed`로 보고하며, D1 내부 변경은 atomic하게 유지된다. 이 경우 성공한 R2 삭제를 다른 저장소에서 rollback하거나 복원하지 않으므로 R2 객체는 삭제된 상태로 남는다.
 
