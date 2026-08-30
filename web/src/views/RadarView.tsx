@@ -8,7 +8,7 @@ import StatusMessage from "../components/ui/StatusMessage";
 
 interface Synthesis { period: RadarPeriod; narrative: string; sections: { heading: string; items: string[] }[]; biasWatch: string[]; costUsd: number; }
 interface QueueItem { id: string; title: string; sourceUrl: string | null; verified: number; whyRead: string | null; }
-interface DistillSession { id: string; createdAt: string; }
+interface DistillSession { id: string; createdAt: string; sourceCount?: number | null; activeSourceCount?: number | null; }
 
 const PERIODS: { value: RadarPeriod; label: string }[] = [{ value: "WEEKLY", label: "이번 주" }, { value: "MONTHLY", label: "이번 달" }, { value: "YEARLY", label: "올해" }];
 const OBJECT_LABELS: Record<string, string> = { observation: "관찰", recommendation: "추천", reason: "이유", evidence: "근거", direction: "방향", note: "메모", question: "질문", summary: "요약", text: "내용", overRepeating: "반복되는 영역" };
@@ -62,7 +62,7 @@ export default function RadarView({ onNavigate, onJobCreated, focusPeriod, onFoc
   }, [focusPeriod, onFocusConsumed]);
 
   useEffect(() => { fetch(`/api/radar/stats?period=${period}`).then((response) => response.json() as Promise<{ stats?: RadarStats }>).then((data) => setStats(data.stats ?? null)).catch(() => setStats(null)); }, [period]);
-  useEffect(() => { fetch("/api/reservoir/topics").then((response) => response.json() as Promise<{ topics?: { topic: string; count: number }[] }>).then((data) => setTopics(data.topics ?? [])).catch(() => undefined); fetch("/api/radar/snapshots").then((response) => response.json() as Promise<{ snapshots?: { period: RadarPeriod; synthesis: unknown }[] }>).then((data) => setSynthesis(normalizeSynthesis(data.snapshots?.find((snapshot) => snapshot.period === period && snapshot.synthesis)?.synthesis, period))).catch(() => setSynthesis(null)); fetch("/api/distill/sessions").then((response) => response.json() as Promise<{ sessions?: DistillSession[] }>).then(async (data) => { const latest = data.sessions?.[0]; if (!latest) return; const detail = await fetch(`/api/distill/sessions/${latest.id}`); if (!detail.ok) return; const result = await detail.json() as { readingQueue?: QueueItem[] }; setQueue((result.readingQueue ?? []).filter((item) => item.verified && item.sourceUrl).slice(0, 3)); }).catch(() => undefined); }, [period]);
+  useEffect(() => { fetch("/api/reservoir/topics").then((response) => response.json() as Promise<{ topics?: { topic: string; count: number }[] }>).then((data) => setTopics(data.topics ?? [])).catch(() => undefined); fetch("/api/radar/snapshots").then((response) => response.json() as Promise<{ snapshots?: { period: RadarPeriod; synthesis: unknown }[] }>).then((data) => setSynthesis(normalizeSynthesis(data.snapshots?.find((snapshot) => snapshot.period === period && snapshot.synthesis)?.synthesis, period))).catch(() => setSynthesis(null)); fetch("/api/distill/sessions").then((response) => response.json() as Promise<{ sessions?: DistillSession[] }>).then(async (data) => { const latest = data.sessions?.find((session) => session.activeSourceCount == null || (session.sourceCount != null && session.sourceCount > 0 && session.activeSourceCount === session.sourceCount)); if (!latest) { setQueue([]); return; } const detail = await fetch(`/api/distill/sessions/${latest.id}`); if (!detail.ok) return; const result = await detail.json() as { readingQueue?: QueueItem[] }; setQueue((result.readingQueue ?? []).filter((item) => item.verified && item.sourceUrl).slice(0, 3)); }).catch(() => undefined); }, [period]);
 
   async function runSynthesis() {
     setBusy(true);

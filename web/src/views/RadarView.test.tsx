@@ -35,4 +35,23 @@ describe("RadarView", () => {
     await userEvent.click(screen.getByRole("button", { name: "이번 달" }));
     expect(screen.queryByText("저장된 서사")).not.toBeInTheDocument();
   });
+
+  it("skips a distill session whose sources were deleted from the reservoir", async () => {
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith("/api/radar/stats")) return Promise.resolve(new Response(JSON.stringify({ stats: { newSources: 0, newKeywords: [], newQuestions: [], signalCounts: {}, topKeptSources: [], distillRuns: 0, gapsRaised: 0, readingQueueSize: 1, kindBreakdown: {} } })));
+      if (url === "/api/reservoir/topics") return Promise.resolve(new Response(JSON.stringify({ topics: [] })));
+      if (url === "/api/radar/snapshots") return Promise.resolve(new Response(JSON.stringify({ snapshots: [] })));
+      if (url === "/api/distill/sessions") return Promise.resolve(new Response(JSON.stringify({ sessions: [
+        { id: "deleted-session", createdAt: "2026-08-30", sourceCount: 1, activeSourceCount: 0 },
+        { id: "active-session", createdAt: "2026-08-29", sourceCount: 1, activeSourceCount: 1 },
+      ] })));
+      if (url === "/api/distill/sessions/active-session") return Promise.resolve(new Response(JSON.stringify({ readingQueue: [{ id: "active-queue", title: "활성 자료 읽기", verified: 1, sourceUrl: "https://example.com/active", whyRead: "현재 저장소 자료와 연결됨" }] })));
+      return Promise.resolve(new Response(JSON.stringify({ ok: true })));
+    }));
+
+    render(<RadarView onNavigate={vi.fn()} />);
+
+    expect(await screen.findByText("활성 자료 읽기 ↗")).toBeInTheDocument();
+  });
 });

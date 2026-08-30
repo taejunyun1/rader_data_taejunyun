@@ -706,11 +706,17 @@ async function deleteD1Records(
   const ownedAssets = `SELECT id FROM visual_assets
     WHERE parent_source_id = ?
        OR parent_version_id IN (SELECT id FROM source_versions WHERE source_id = ?)`;
+  const invalidatedAt = new Date().toISOString();
   const statements: D1PreparedStatement[] = [
     // Keep this as the first statement in the transaction. It proves that
     // this exact attempt still owns the R2-complete claim immediately before
     // any source-owned row is removed.
     deletionGuard(db, plan, claim),
+    db.prepare(
+      `UPDATE radar_snapshots
+       SET invalidated_at = COALESCE(invalidated_at, ?)
+       WHERE created_at <= ?`,
+    ).bind(invalidatedAt, invalidatedAt),
     db.prepare("UPDATE discovery_candidates SET source_id = NULL WHERE source_id = ?").bind(sourceId),
     db.prepare(
       `DELETE FROM visual_relations

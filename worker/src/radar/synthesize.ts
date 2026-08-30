@@ -1,5 +1,5 @@
 import type { RadarPeriod } from "@radar/shared";
-import { computeStats, windowFor } from "./snapshot";
+import { computeStats, liveDistillSessionFilter, windowFor } from "./snapshot";
 import { callOpenAi } from "../lib/openai";
 import type { RadarSynthesis, SynthesisSection } from "./types";
 
@@ -36,7 +36,9 @@ export async function synthesizeRadar(env: Env, period: RadarPeriod, researchJob
   const stats = await computeStats(env.DB, startIso, endIso);
 
   const recentDistills = await env.DB.prepare(
-    `SELECT output_json FROM distill_sessions WHERE created_at >= ? ORDER BY created_at DESC LIMIT 3`
+    `SELECT output_json FROM distill_sessions session
+     WHERE session.created_at >= ? AND ${liveDistillSessionFilter("session")}
+     ORDER BY session.created_at DESC LIMIT 3`
   )
     .bind(startIso)
     .all<{ output_json: string }>();
@@ -54,7 +56,9 @@ export async function synthesizeRadar(env: Env, period: RadarPeriod, researchJob
     .join("\n---\n");
 
   const keywordsAllTime = await env.DB.prepare(
-    `SELECT keyword, COUNT(*) AS n FROM keywords GROUP BY keyword ORDER BY n DESC LIMIT 20`
+    `SELECT k.keyword, COUNT(*) AS n FROM keywords k
+     JOIN sources s ON s.id = k.source_id
+     GROUP BY k.keyword ORDER BY n DESC LIMIT 20`
   ).all<{ keyword: string; n: number }>();
 
   const prompt = `You are Radar, the periodic synthesis layer of Research Radar — a research companion for a photographer-researcher (photography, image theory, machine vision, media art). You read signal statistics and produce the ${period} research radar report.

@@ -14,6 +14,22 @@ export interface SnapshotStats {
   kindBreakdown: Record<string, number>;
 }
 
+export function liveDistillSessionFilter(alias: string): string {
+  return `(
+    ${alias}.sources_used_json IS NULL
+    OR (
+      json_valid(${alias}.sources_used_json)
+      AND json_array_length(CASE WHEN json_valid(${alias}.sources_used_json) THEN ${alias}.sources_used_json ELSE '[]' END) > 0
+      AND NOT EXISTS (
+        SELECT 1
+        FROM json_each(CASE WHEN json_valid(${alias}.sources_used_json) THEN ${alias}.sources_used_json ELSE '[]' END) used
+        LEFT JOIN sources active_source ON active_source.id = json_extract(used.value, '$.id')
+        WHERE active_source.id IS NULL
+      )
+    )
+  )`;
+}
+
 export function windowFor(period: RadarPeriod, now = new Date()): { start: Date; end: Date } {
   const end = now;
   const start = new Date(now);
@@ -31,22 +47,30 @@ export async function computeStats(db: D1Database, startIso: string, endIso: str
 
   const kw = await db
     .prepare(
-      `SELECT keyword, COUNT(*) AS n FROM keywords WHERE created_at >= ? AND created_at <= ?
-       GROUP BY keyword ORDER BY n DESC LIMIT 10`
+      `SELECT k.keyword, COUNT(*) AS n FROM keywords k
+       JOIN sources s ON s.id = k.source_id
+       WHERE k.created_at >= ? AND k.created_at <= ?
+       GROUP BY k.keyword ORDER BY n DESC LIMIT 10`
     )
     .bind(startIso, endIso)
     .all<{ keyword: string; n: number }>();
 
   const qs = await db
     .prepare(
-      `SELECT question FROM questions WHERE created_at >= ? AND created_at <= ? ORDER BY created_at DESC LIMIT 8`
+      `SELECT q.question FROM questions q
+       JOIN sources s ON s.id = q.source_id
+       WHERE q.created_at >= ? AND q.created_at <= ?
+       ORDER BY q.created_at DESC LIMIT 8`
     )
     .bind(startIso, endIso)
     .all<{ question: string }>();
 
   const sigs = await db
     .prepare(
-      `SELECT action, COUNT(*) AS n FROM user_signals WHERE created_at >= ? AND created_at <= ? GROUP BY action`
+      `SELECT us.action, COUNT(*) AS n FROM user_signals us
+       JOIN sources s ON s.id = us.source_id
+       WHERE us.created_at >= ? AND us.created_at <= ?
+       GROUP BY us.action`
     )
     .bind(startIso, endIso)
     .all<{ action: string; n: number }>();
@@ -61,17 +85,31 @@ export async function computeStats(db: D1Database, startIso: string, endIso: str
     .all<{ title: string; kind: string }>();
 
   const distills = await db
-    .prepare("SELECT COUNT(*) AS n FROM distill_sessions WHERE created_at >= ? AND created_at <= ?")
+    .prepare(
+      `SELECT COUNT(*) AS n FROM distill_sessions session
+       WHERE session.created_at >= ? AND session.created_at <= ?
+         AND ${liveDistillSessionFilter("session")}`
+    )
     .bind(startIso, endIso)
     .first<{ n: number }>();
 
   const gaps = await db
-    .prepare("SELECT COUNT(*) AS n FROM research_gaps WHERE created_at >= ? AND created_at <= ?")
+    .prepare(
+      `SELECT COUNT(*) AS n FROM research_gaps gap
+       JOIN distill_sessions session ON session.id = gap.distill_session_id
+       WHERE gap.created_at >= ? AND gap.created_at <= ?
+         AND ${liveDistillSessionFilter("session")}`
+    )
     .bind(startIso, endIso)
     .first<{ n: number }>();
 
   const queue = await db
-    .prepare("SELECT COUNT(*) AS n FROM reading_queue WHERE created_at >= ? AND created_at <= ?")
+    .prepare(
+      `SELECT COUNT(*) AS n FROM reading_queue item
+       JOIN distill_sessions session ON session.id = item.distill_session_id
+       WHERE item.created_at >= ? AND item.created_at <= ?
+         AND ${liveDistillSessionFilter("session")}`
+    )
     .bind(startIso, endIso)
     .first<{ n: number }>();
 

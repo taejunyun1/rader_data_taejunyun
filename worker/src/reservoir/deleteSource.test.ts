@@ -286,12 +286,20 @@ describe("source deletion D1 purge", () => {
          (id, left_source_id, right_source_id, decision, score, reasons_json, status, created_at)
          VALUES (?, ?, ?, 'REVIEW', 0.9, '[]', 'PENDING', ?)`,
       ).bind(`${sourceId}-duplicate`, sourceId, otherSourceId, now),
+      env.DB.prepare(
+        `INSERT INTO radar_snapshots
+         (id, period, window_start, window_end, stats_json, synthesis_json, created_at)
+         VALUES (?, 'WEEKLY', ?, ?, '{}', '{"narrative":"삭제 전 서사"}', ?)`,
+      ).bind(`${sourceId}-snapshot`, now, now, now),
     ]);
 
     const result = await deleteSourcePermanently(env, { sourceId, confirmTitle: title });
 
     expect(result).toEqual({ deletedSourceId: sourceId, merge: null });
     expect(await env.DB.prepare("SELECT id FROM sources WHERE id = ?").bind(sourceId).first()).toBeNull();
+    await expect(env.DB.prepare("SELECT invalidated_at FROM radar_snapshots WHERE id = ?")
+      .bind(`${sourceId}-snapshot`).first<{ invalidated_at: string | null }>())
+      .resolves.toMatchObject({ invalidated_at: expect.any(String) });
     for (const table of [
       "source_versions", "source_analysis", "keywords", "questions", "fragments", "thread_links",
       "user_signals", "processing_jobs", "source_embeddings", "source_identity_keys", "source_fingerprints",

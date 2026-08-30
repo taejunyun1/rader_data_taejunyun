@@ -65,9 +65,19 @@ distill.post("/verify-queue/:id", async (c) => {
 
 distill.get("/sessions", async (c) => {
   const rows = await c.env.DB.prepare(
-    `SELECT id, redistill_of AS redistillOf, counter_enabled AS counterEnabled, cost_usd AS costUsd, model_version AS modelVersion,
-            prompt_version AS promptVersion, created_at AS createdAt
-     FROM distill_sessions ORDER BY created_at DESC LIMIT 30`
+    `SELECT session.id, session.redistill_of AS redistillOf, session.counter_enabled AS counterEnabled,
+            session.cost_usd AS costUsd, session.model_version AS modelVersion,
+            session.prompt_version AS promptVersion, session.created_at AS createdAt,
+            CASE WHEN session.sources_used_json IS NULL THEN NULL
+                 WHEN json_valid(session.sources_used_json) THEN json_array_length(session.sources_used_json)
+                 ELSE 0 END AS sourceCount,
+            CASE WHEN session.sources_used_json IS NULL THEN NULL
+                 ELSE (
+                   SELECT COUNT(*)
+                   FROM json_each(CASE WHEN json_valid(session.sources_used_json) THEN session.sources_used_json ELSE '[]' END) used
+                   JOIN sources active_source ON active_source.id = json_extract(used.value, '$.id')
+                 ) END AS activeSourceCount
+     FROM distill_sessions session ORDER BY session.created_at DESC LIMIT 30`
   ).all<Record<string, unknown>>();
   return c.json({ sessions: rows.results ?? [] });
 });

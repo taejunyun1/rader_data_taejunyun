@@ -7,6 +7,7 @@ import {
   type DiscoveryProfile,
   type DiscoveryRecommendationSource,
 } from "@radar/shared/discovery";
+import { liveDistillSessionFilter } from "../radar/snapshot";
 
 export type CandidateRecommendation = Omit<DiscoveryKeywordRecommendation, "selected">;
 
@@ -98,9 +99,10 @@ function parse(value: string | null | undefined): Record<string, unknown> | null
 
 async function recentKeywords(db: D1Database): Promise<string[]> {
   const rows = await db.prepare(
-    `SELECT keyword, COUNT(*) AS n FROM keywords
-     WHERE created_at >= datetime('now', '-30 days')
-     GROUP BY keyword ORDER BY n DESC, keyword ASC LIMIT 8`
+    `SELECT k.keyword, COUNT(*) AS n FROM keywords k
+     JOIN sources s ON s.id = k.source_id
+     WHERE k.created_at >= datetime('now', '-30 days')
+     GROUP BY k.keyword ORDER BY n DESC, k.keyword ASC LIMIT 8`
   ).all<{ keyword: string }>();
   return (rows.results ?? []).map((row) => row.keyword);
 }
@@ -128,8 +130,15 @@ export async function buildDiscoveryRecommendations(
   const [momentum, homepage, distillRows, gaps, sources] = await Promise.all([
     recentKeywords(db),
     homepageKeywords(db),
-    db.prepare("SELECT output_json, counter_output_json, critic_output_json FROM distill_sessions ORDER BY created_at DESC LIMIT 8").all<{ output_json: string | null; counter_output_json: string | null; critic_output_json: string | null }>(),
-    db.prepare("SELECT gap_text FROM research_gaps ORDER BY created_at DESC LIMIT 8").all<{ gap_text: string }>(),
+    db.prepare(`SELECT session.output_json, session.counter_output_json, session.critic_output_json
+                FROM distill_sessions session
+                WHERE ${liveDistillSessionFilter("session")}
+                ORDER BY session.created_at DESC LIMIT 8`).all<{ output_json: string | null; counter_output_json: string | null; critic_output_json: string | null }>(),
+    db.prepare(`SELECT gap.gap_text
+                FROM research_gaps gap
+                JOIN distill_sessions session ON session.id = gap.distill_session_id
+                WHERE ${liveDistillSessionFilter("session")}
+                ORDER BY gap.created_at DESC LIMIT 8`).all<{ gap_text: string }>(),
     db.prepare("SELECT topics FROM sources WHERE topics IS NOT NULL ORDER BY created_at DESC LIMIT 500").all<{ topics: string }>(),
   ]);
 
