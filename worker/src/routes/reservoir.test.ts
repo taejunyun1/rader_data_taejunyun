@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
 import reservoir from "./reservoir";
+import { acquireSourceDeletionClaim } from "../reservoir/deletionClaim";
 
 const app = new Hono<{
   Bindings: Env;
@@ -221,5 +222,15 @@ describe("reservoir permanent deletion route", () => {
     );
     expect(response.status).toBe(502);
     expect(await response.json()).toEqual({ error: "source_delete_r2_failed" });
+  });
+
+  it("maps a live deletion claim to a retryable 409 conflict", async () => {
+    const sourceId = `${crypto.randomUUID()}-route-claim`;
+    await insertSource({ id: sourceId, title: "삭제 잠금 자료" });
+    await acquireSourceDeletionClaim(env.DB, sourceId);
+
+    const response = await deleteRequest(`/api/reservoir/${sourceId}`, { confirmTitle: "삭제 잠금 자료" });
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "source_delete_in_progress" });
   });
 });
