@@ -1,4 +1,5 @@
 import { sha256Hex, uuid } from "../ingestion/ids";
+import { assertSourceDeletionNotClaimedForVisualAsset } from "../reservoir/deletionClaim";
 import { getOriginalVisualVersion, getVisualAsset, getVisualVersion } from "./store";
 import { imageDHash, VISUAL_HASH_METHOD } from "./perceptualHash";
 import type { NormalizedVisualBbox } from "@radar/shared";
@@ -91,6 +92,7 @@ export async function transformVisualAsset(env: Env, visualAssetId: string, prof
   const capsuleVersionId = uuid();
   const capsuleKey = `visuals/${visualAssetId}/capsule/1.webp`;
   const capsuleHash = await sha256Hex(capsuleBytes);
+  await assertSourceDeletionNotClaimedForVisualAsset(env.DB, visualAssetId);
   await env.ORIGINALS.put(capsuleKey, capsuleBytes, {
     httpMetadata: { contentType: "image/webp" },
     customMetadata: { visualAssetId, variant: "CAPSULE", profile },

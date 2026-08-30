@@ -8,6 +8,7 @@ import type {
   VisualRelationSummary,
 } from "@radar/shared";
 import { sha256Hex, uuid } from "../ingestion/ids";
+import { assertSourceDeletionNotClaimed } from "../reservoir/deletionClaim";
 import type { CreatePersonalVisualInput, VisualAssetRow, VisualAssetVersionRow } from "./contracts";
 import { extensionForVisualType, safeVisualFilename } from "./contracts";
 
@@ -166,6 +167,10 @@ export async function createPersonalVisual(
   const extension = extensionForVisualType(input.contentType, filename);
   const r2Key = `visuals/${id}/original/1.${extension}`;
   const assignmentStatus = input.parentSourceId ? "ASSIGNED" : "UNASSIGNED";
+
+  if (input.parentSourceId) {
+    await assertSourceDeletionNotClaimed(env.DB, input.parentSourceId);
+  }
 
   await env.ORIGINALS.put(r2Key, input.bytes, {
     httpMetadata: { contentType: input.contentType },

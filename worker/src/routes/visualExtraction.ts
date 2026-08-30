@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { enqueueResearchJob } from "../jobs/enqueue";
 import { findVisualExtractionJobByRun } from "../jobs/store";
 import { ExtractionStore } from "../visual/extraction/store";
+import { assertSourceDeletionNotClaimed } from "../reservoir/deletionClaim";
 import type { VisualExtractionRunSummary } from "@radar/shared";
 import type { InputFormat } from "@radar/shared/ingestion";
 import { verifiedRequester } from "../lib/httpErrors";
@@ -214,6 +215,7 @@ visualExtraction.put("/pdf/runs/:runId/pages/:pageNumber", async (c) => {
   if (!requestedHash || computedHash !== requestedHash) return c.json({ error: "pdf_page_hash_mismatch" }, 400);
 
   const key = `visual-temp/${runId}/page-${pageNumber}.webp`;
+  await assertSourceDeletionNotClaimed(c.env.DB, sourceId);
   await c.env.ORIGINALS.put(key, bytes, {
     httpMetadata: { contentType: "image/webp" },
     customMetadata: { sourceId, versionId, runId, pageNumber: String(pageNumber) },
