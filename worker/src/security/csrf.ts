@@ -9,10 +9,12 @@ function secret(env: SecretEnv): string {
 
 function encode(value: string): string { return btoa(unescape(encodeURIComponent(value))).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", ""); }
 function decode(value: string): string { return decodeURIComponent(escape(atob(value.replaceAll("-", "+").replaceAll("_", "/") + "=".repeat((4 - value.length % 4) % 4)))); }
+function encodeBytes(value: Uint8Array): string { return btoa(String.fromCharCode(...value)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", ""); }
+function decodeBytes(value: string): Uint8Array { return Uint8Array.from(atob(value.replaceAll("-", "+").replaceAll("_", "/") + "=".repeat((4 - value.length % 4) % 4)), (char) => char.charCodeAt(0)); }
 
 async function sign(env: SecretEnv, value: string): Promise<string> {
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret(env)), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
-  return encode(String.fromCharCode(...new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value)))));
+  return encodeBytes(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value))));
 }
 
 export async function issueCsrfToken(env: SecretEnv, actorSub: string, now = Date.now()): Promise<{ token: string; expiresAt: string }> {
@@ -29,6 +31,6 @@ export async function verifyCsrfToken(env: SecretEnv, actorSub: string, token: s
     const dot = body.lastIndexOf(".");
     if (dot <= 0 || body.slice(0, dot) !== actorSub || Number(body.slice(dot + 1)) < now) return false;
     const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret(env)), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
-    return crypto.subtle.verify("HMAC", key, new Uint8Array(Array.from(atob(signature.replaceAll("-", "+").replaceAll("_", "/") + "=".repeat((4 - signature.length % 4) % 4)), (c) => c.charCodeAt(0))), new TextEncoder().encode(body));
+    return crypto.subtle.verify("HMAC", key, decodeBytes(signature), new TextEncoder().encode(body));
   } catch { return false; }
 }
