@@ -31,16 +31,17 @@ describe("strict public payload contract", () => {
     expect(validateCurrentResearchPayload({ ...validExploring, content: { ...content, keywords: ["x".repeat(81)] } })).toBeNull();
     expect(validateCurrentResearchPayload({ ...validExploring, content: { ...content, researchMaterials: [{ title: "x", author: null, year: null, url: "http://localhost/x" }] } })).toBeNull();
     expect(validateCurrentResearchPayload({ ...validExploring, content: { ...content, researchMaterials: [{ title: "x", author: null, year: null, url: "https://example.com/a" }] } })).toEqual(expect.objectContaining({ state: "EXPLORING" }));
-    for (const url of ["https://example.local/x", "https://10.0.0.1/x", "https://172.16.0.1/x", "https://192.168.1.1/x", "https://127.0.0.1/x", "https://[::1]/x", "https://[fc00::1]/x", "https://[fe80::1]/x"]) {
+    for (const url of ["https://example.local/x", "https://8.8.8.8/x", "https://10.0.0.1/x", "https://172.16.0.1/x", "https://192.168.1.1/x", "https://127.0.0.1/x", "https://[2001:4860:4860::8888]/x", "https://[::1]/x", "https://[fc00::1]/x", "https://[fe80::1]/x"]) {
       expect(validateCurrentResearchPayload({ ...validExploring, content: { ...content, researchMaterials: [{ title: "x", author: null, year: null, url }] } })).toBeNull();
     }
   });
 
   it("rejects invalid calendar timestamps and serialized payloads over 64 KiB", () => {
     expect(validateCurrentResearchPayload({ ...validExploring, distilledAt: "2026-02-31T00:00:00.000Z" })).toBeNull();
-    const oversized = { ...validExploring, content: { ...content, thoughts: ["x".repeat(600), "y".repeat(600), "z".repeat(600)] } };
-    expect(validateCurrentResearchPayload(oversized)).toEqual(oversized);
-    expect(validateCurrentResearchStorageWrapper({ storageRevision: "00000000-0000-4000-8000-000000000000", payload: oversized })).toEqual({ storageRevision: "00000000-0000-4000-8000-000000000000", payload: oversized });
+    const oversized = { ...validExploring, content: { ...content, thoughts: ["x".repeat(70_000)] } };
+    expect(JSON.stringify(oversized).length).toBeGreaterThan(64 * 1024);
+    expect(validateCurrentResearchPayload(oversized)).toBeNull();
+    expect(validateCurrentResearchStorageWrapper({ storageRevision: "00000000-0000-4000-8000-000000000000", payload: oversized })).toBeNull();
   });
 
   it("pins the canonical UTF-8 bytes and SHA-256 digest independently", async () => {

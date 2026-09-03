@@ -40,14 +40,13 @@ export function validateCurrentResearchPayload(value: unknown): CurrentResearchP
   if (utf8Bytes(v) > 64 * 1024) return null;
   return v as unknown as ExploringCurrentResearchPayload;
 }
-export function validateCurrentResearchStorageWrapper(value: unknown): CurrentResearchStorageWrapper | null { if (!value || typeof value !== "object" || Array.isArray(value)) return null; const v = value as Record<string, unknown>; if (!keys(v, ["payload", "storageRevision"]) || typeof v.storageRevision !== "string" || !/^\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b$/i.test(v.storageRevision) || !validateCurrentResearchPayload(v.payload) || utf8Bytes(v) > 64 * 1024) return null; return v as unknown as CurrentResearchStorageWrapper; }
+export function validateCurrentResearchStorageWrapper(value: unknown): CurrentResearchStorageWrapper | null { if (!value || typeof value !== "object" || Array.isArray(value)) return null; const v = value as Record<string, unknown>; if (!keys(v, ["payload", "storageRevision"]) || typeof v.storageRevision !== "string" || !/^\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b$/i.test(v.storageRevision) || !validateCurrentResearchPayload(v.payload)) return null; return v as unknown as CurrentResearchStorageWrapper; }
 
 function utf8Bytes(value: unknown): number { return new TextEncoder().encode(JSON.stringify(value)).byteLength; }
 function privateHost(hostname: string): boolean {
   const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (h === "localhost" || h.endsWith(".local") || h === "::" || h === "::1" || h.startsWith("fc") || h.startsWith("fd") || h.startsWith("fe8") || h.startsWith("fe9") || h.startsWith("fea") || h.startsWith("feb")) return true;
   const octets = h.split(".").map(Number);
-  if (octets.length !== 4 || octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return h === "::" || h === "::1" || h.startsWith("fc") || h.startsWith("fd") || h.startsWith("fe8") || h.startsWith("fe9") || h.startsWith("fea") || h.startsWith("feb") || h.startsWith("::ffff:10.") || h.startsWith("::ffff:192.168.") || h.startsWith("::ffff:127.") || h.startsWith("::ffff:172.16.");
-  const a = octets[0]!, b = octets[1]!;
-  return a === 0 || a === 10 || a === 127 || a === 169 && b === 254 || a === 172 && b >= 16 && b <= 31 || a === 192 && b === 168;
+  if (octets.length !== 4 || octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return h.includes(":");
+  return true;
 }
