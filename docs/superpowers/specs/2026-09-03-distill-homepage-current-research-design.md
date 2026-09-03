@@ -366,7 +366,9 @@ Cloudflare Pages 프런트엔드는 기존 `VITE_READING_STATS_API_URL` base URL
 
 일반 철회는 감사·복구를 위해 private history를 보존한다. 민감정보가 실수로 공개된 경우의 hard purge도 publish/withdraw/source-delete와 같은 singleton lease, owner/generation guard, current ETag CAS를 사용한다. UI가 아닌 운영 runbook에서 별도 사용자 승인과 정확한 `publicationId`를 요구한다.
 
-runbook은 대상 행을 `PURGING`으로 전환한 뒤 current를 다시 읽는다. 대상이 current이면 tombstone으로, 아니면 같은 payload와 새 `storageRevision`으로 조건부 PUT하며, current가 없으면 null tombstone을 만든다. 이 fencing 뒤 대상 publication prefix의 모든 history event를 삭제하고 목록이 0건인지 검증한다. 마지막으로 `payload_json`을 비우고 `PURGED`로 전환하며 내용 없는 `HARD_PURGE` 감사 event만 남긴다. 중간 실패는 `PURGING` 상태에서 같은 runbook으로 재개한다. 같은 Distill session은 이후 공개할 수 없으므로 stale republish가 새 history를 만들 수 없다.
+hard purge는 대상 Distill session에 영구적인 비공개 R2 purge marker를 먼저 기록하고, 해당 session의 모든 sibling publication ID prefix를 범위로 삼는다. runbook은 관련 원장 행을 `PURGING`으로 전환한 뒤 current를 다시 읽어 fencing한다. current가 대상 publication이면 tombstone으로, 다른 publication이면 그 payload와 새 `storageRevision`으로 조건부 PUT하며, current가 없으면 해당 범위의 non-null publication ID/hash를 가진 tombstone을 만든다. source-delete fencing에서 current와 publication/event 이력이 모두 전혀 없을 때만 null-ID/hash tombstone을 `If-None-Match: *`로 처음 만들 수 있다. 이력이 하나라도 있는데 식별 가능한 current가 없으면 `publication_ledger_unavailable`로 fail closed한다.
+
+marker가 있는 동안 모든 publish/republish는 해당 session에 대해 거절되고, runbook은 `PURGING` 상태에서 재개된다. marker 기록 후 대상 session의 모든 sibling history event를 열거·삭제하고, 목록이 0건인지 관찰한다. 최소 60초 뒤 두 번째 독립 관찰에서도 0건이어야만 `payload_json`을 비우고 관련 행을 `PURGED`로 전환하며 내용 없는 `HARD_PURGE` 감사 event만 남긴다. 두 관찰 사이에 late history PUT이 발견되면 다시 `PURGING`으로 남겨 삭제·관찰을 반복한다. marker-bearing `PURGED` 행은 recurring audit/sweep가 재검사하며, 누락 object나 sibling copy가 발견되면 다시 purge한다. 이 marker·session-wide scope·two-pass zero rule로 delayed/concurrent R2 PUT이 purge 뒤 공개 object를 resurrect하는 것을 방지한다.
 
 ## 10. 홈페이지 전환 범위
 

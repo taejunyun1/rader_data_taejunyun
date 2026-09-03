@@ -91,6 +91,13 @@ OpenAlex API — 학술 Discovery 기본 소스 + Reading Queue 존재 검증
 - e-flux는 현재 공식 피드가 갱신되지 않아 검색 링크로 유지하며 HTML 페이지를 크롤링하지 않는다.
 - 미술관 작품·소장품 API는 별도 향후 설계 범위다.
 
+### 현재 연구 발행 결정 (2026-09-03)
+
+- 홈페이지의 `현재 연구`는 사용자가 최신 **발행 가능 Distill**을 읽기 전용 preview로 확인하고 명시적으로 승인한 경우에만 갱신한다. Distill 완료만으로 자동 발행하지 않으며, 한 번에 하나의 current edition만 유지한다. 공개 상태는 별도 입력 없이 자동으로 `EXPLORING`이 된다.
+- 공개본은 private 전용 R2 bucket `radar-publications`에 저장하고, 홈페이지 Worker는 고정 current key만 읽는다. 홈페이지에는 strict allowlist projection만 전달하며 Critic/Counter, raw source·원문, 내부 ID·비용·모델 정보와 방문자 반응 기반 승격은 공개하지 않는다.
+- 이 release에서는 최종 결과물 입력이나 연구 종결 처리를 제공하지 않는다. 기존 `읽을거리`와 legacy reaction 데이터는 첫 전환에서 보존하며 별도 정리 전까지 삭제하지 않는다.
+- hard purge는 영구 session purge marker와 session-wide sibling enumeration/purge를 사용한다. marker-bearing 상태는 `PURGING`으로 유지하고, 두 번의 history zero 관찰을 최소 60초 간격으로 통과한 뒤에만 `PURGED`로 확정한다. marker-bearing `PURGED`는 recurring audit/sweep가 재검사한다. source-delete에서 current가 없을 때 null-ID/hash tombstone은 publication/event 이력이 모두 없을 때만 허용하며, hard purge에서 current가 없거나 scoped current가 `EXPLORING`이면 범위 안의 non-null publication ID/hash tombstone을 사용한다. 이력이 있으나 식별할 수 없으면 `publication_ledger_unavailable`로 fail closed한다.
+
 ### Discovery Keep 원문 수집·심층 읽기 품질 규칙 (2026-08-23)
 
 - `CANDIDATE`를 사용자가 Keep할 때만 `METADATA_ONLY` source version을 만든다. 읽을 수 있는 HTTP(S) 주소가 있으면 `SOURCE_ACQUISITION` job을 등록하고, 없으면 `LINK_ONLY`로 남긴다. 자동 후보 생성만으로 원문 수집이나 Reservoir 분석을 시작하지 않는다.
