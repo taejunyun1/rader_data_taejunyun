@@ -5,6 +5,7 @@ import { cleanupExpiredVisualExtractionTemps } from "../visual/cleanup";
 import { createWeeklySnapshotIfDue } from "../radar/snapshot";
 import { reconcileDispatchPendingJobs } from "./reconcileJobs";
 import { releaseStaleAiCallReservations } from "../lib/aiCallLedger";
+import { reconcileHomepagePublications } from "./reconcileHomepagePublications";
 import { beginSystemRun, finishSystemRun, type SystemRun } from "./systemRuns";
 
 export const VISUAL_TEMP_CLEANUP_CRON = "0 * * * *";
@@ -59,6 +60,7 @@ export async function runScheduledCron(env: Env, cron: string, now = new Date())
       await runTask("visual-temp-cleanup", () => cleanupExpiredVisualExtractionTemps(env)),
       await runTask("job-reconciliation", () => reconcileDispatchPendingJobs(env)),
       await runTask("ai-reservation-reconciliation", () => releaseStaleAiCallReservations(env.DB)),
+      await runTask("homepage-publication-reconciliation", () => reconcileHomepagePublications(env)),
     ]
     : cron === HOMEPAGE_READING_CRON
       ? [await runTask("homepage-reading", () => syncHomepageReading(env))]
