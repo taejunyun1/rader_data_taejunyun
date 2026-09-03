@@ -34,7 +34,7 @@ function paramLine(p: DistillContext["params"]): string {
   ].join("\n");
 }
 
-export function distillPrompt(ctx: DistillContext, variant: PromptVariant = "distill-v1"): string {
+export function distillPrompt(ctx: DistillContext, variant: PromptVariant = DEFAULT_PROMPT_VARIANT): string {
   const terse = variant === "distill-v2-terse";
   const layered = variant === "distill-v3-layered";
   const sources = ctx.sources

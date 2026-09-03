@@ -20,5 +20,6 @@ export default defineConfig({
     css: true,
     restoreMocks: true,
     exclude: ["**/node_modules/**", "tests/e2e/**"],
+    include: ["src/**/*.test.{ts,tsx}"],
   },
 });

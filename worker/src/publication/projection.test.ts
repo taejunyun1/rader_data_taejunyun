@@ -54,6 +54,27 @@ describe("public projection primitives", () => {
     await expect(hashHomepageProjection("2026-09-03T00:00:00.000Z", content)).resolves.toMatch(/^[a-f0-9]{64}$/);
     await expect(hashHomepageProjection("2026-09-03T00:00:00.000Z", content)).resolves.toBe(await hashHomepageProjection("2026-09-03T00:00:00.000Z", content));
   });
+
+  it("keeps layered detail notes out of the homepage projection", async () => {
+    const now = new Date().toISOString();
+    const sourceId = `projection-layered-source-${crypto.randomUUID()}`;
+    await env.DB.prepare(`INSERT INTO sources (id, kind, title, canonical_url, reliability, status, created_at, updated_at) VALUES (?, 'WEB', '자료', 'https://example.com/layered', 'DISCOVERY', 'indexed', ?, ?)`).bind(sourceId, now, now).run();
+    const base = session(`projection-layered-base-${crypto.randomUUID()}`, [{ id: sourceId, title: "자료" }]);
+    const layered = {
+      ...base,
+      id: `projection-layered-detail-${crypto.randomUUID()}`,
+      output: output({ details: {
+        thoughts: [{ summaryIndex: 0, rationale: "내부 근거", sourceIds: [sourceId], uncertainty: "불확실성", nextCheck: "다음 확인" }],
+        questions: [], researchGaps: [], researchDirections: [], artworkDirections: [],
+      } }),
+    };
+    const [baseDraft, layeredDraft] = await Promise.all([
+      buildHomepageProjection(env.DB, base),
+      buildHomepageProjection(env.DB, layered),
+    ]);
+    expect(layeredDraft.content).toEqual(baseDraft.content);
+    expect(layeredDraft.content).not.toHaveProperty("details");
+  });
 });
 
 describe("public Distill selection and material join", () => {

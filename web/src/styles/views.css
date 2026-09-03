@@ -161,6 +161,23 @@
 .distill-section { scroll-margin-top: 92px; margin-top: 34px; padding-top: 4px; }
 .distill-section__heading { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
 .distill-copy { margin: 8px 0; font-size: 14px; line-height: 1.75; }
+.distill-detail-intro { margin: 0 0 12px; color: var(--color-muted); font-size: 11px; line-height: 1.6; }
+.distill-summary-item + .distill-summary-item { margin-top: 18px; }
+.distill-detail-disclosure { margin-top: 9px; }
+.distill-detail-disclosure__toggle { padding: 0; border: 0; background: transparent; color: var(--color-accent); font-size: 11px; font-weight: 700; cursor: pointer; }
+.distill-detail-disclosure__toggle:hover { text-decoration: underline; }
+.distill-detail-disclosure__content { margin-top: 10px; padding: 12px 14px; border-left: 2px solid var(--color-accent); background: var(--color-soft); }
+.distill-detail-content { display: grid; gap: 12px; }
+.distill-detail-content__fields { display: grid; gap: 8px; margin: 0; }
+.distill-detail-content__fields > div { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 10px; }
+.distill-detail-content__fields dt, .distill-detail-content__sources > p { color: var(--color-muted); font-size: 10px; font-weight: 700; }
+.distill-detail-content__fields dd { margin: 0; font-size: 12px; line-height: 1.6; }
+.distill-detail-content__sources { padding-top: 10px; border-top: 1px solid var(--color-line); }
+.distill-detail-content__sources > p { margin: 0 0 6px; }
+.distill-detail-content__sources ul { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.distill-detail-content__sources li { font-size: 10px; }
+.distill-detail-content__sources button { padding: 0; border: 0; background: transparent; color: var(--color-accent); font: inherit; text-decoration: underline; cursor: pointer; }
+.distill-detail-content__sources span { color: var(--color-muted); }
 .queue-card { display: flex; justify-content: space-between; gap: 16px; padding: 15px 0; border-top: 1px solid var(--color-line); }
 .queue-card h3 { margin: 0; font-size: 14px; line-height: 1.45; }
 .queue-card h3 a { color: var(--color-ink); }

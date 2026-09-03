@@ -11,6 +11,10 @@ const context: DistillContext = {
 };
 
 describe("layered Distill prompt", () => {
+  it("uses the layered variant when no prompt variant is supplied", () => {
+    expect(distillPrompt(context)).toContain('"details"');
+  });
+
   it("requests summary-indexed details from the source allowlist", () => {
     const variant: PromptVariant = "distill-v3-layered";
     const prompt = distillPrompt(context, variant);
