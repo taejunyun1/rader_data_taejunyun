@@ -21,6 +21,7 @@ type LedgerRow = {
   pending_action: "PUBLISH" | "REPUBLISH" | "WITHDRAW" | null; pending_actor_sub: string | null; pending_event_at: string | null;
   created_at: string; updated_at: string; approved_at: string | null; first_published_at: string | null;
   last_published_at: string | null; superseded_at: string | null; withdrawn_at: string | null;
+  purge_requested_at: string | null;
 };
 
 function iso(value: string): string { const time = Date.parse(value); if (!Number.isFinite(time)) throw new Error("publication_event_time_invalid"); return new Date(time).toISOString(); }
@@ -57,7 +58,7 @@ export async function beginPublishing(db: D1Database, lease: PublicationLease, i
       VALUES (?,?, 'PUBLISHING',NULL,?,?, 'PUBLISH',?,?,?,?)`).bind(id, input.sessionId, input.contentHash, input.actorSub, input.actorSub, eventAt, now, now).run();
     if (!result.meta.changes) throw new Error("publication_ledger_unavailable");
     row = await getRow(db, id);
-  } else if (row.status === "FAILED" && !row.pending_action) {
+  } else if (["FAILED", "WITHDRAWN", "SUPERSEDED"].includes(row.status) && !row.pending_action) {
     const eventAt = await allocatePublicationEventAt(db, lease, row.id, requestedAt);
     const action = row.first_published_at ? "REPUBLISH" : "PUBLISH";
     await requireLease(db, lease);
@@ -93,17 +94,19 @@ export async function finalizePublished(db: D1Database, lease: PublicationLease,
   const row = await getRow(db, payload.publicationId);
   if (!row || !row.pending_action || (row.pending_action !== "PUBLISH" && row.pending_action !== "REPUBLISH") || row.content_hash !== payload.contentHash || row.pending_event_at !== payload.updatedAt || (row.first_published_at ?? row.pending_event_at) !== payload.publishedAt) throw new Error("publication_intent_mismatch");
   const eventAt = row.pending_event_at;
+  const action = row.pending_action === "PUBLISH" ? "PUBLISH" : "REPUBLISH";
   const now = new Date().toISOString();
   await requireLease(db, lease);
-  const result = await db.prepare(`UPDATE homepage_publications SET status='PUBLISHED',payload_json=?,approved_by_sub=pending_actor_sub,approved_at=pending_event_at,
-      first_published_at=COALESCE(first_published_at,pending_event_at),last_published_at=pending_event_at,pending_action=NULL,pending_actor_sub=NULL,pending_event_at=NULL,error_code=NULL,updated_at=? WHERE id=? AND pending_action IS NOT NULL`).bind(JSON.stringify(payload), now, payload.publicationId).run();
-  if (!result.meta.changes) throw new Error("publication_ledger_unavailable");
+  const results = await db.batch([
+    db.prepare("INSERT OR IGNORE INTO homepage_publication_events(id,publication_id,action,actor_sub,occurred_at) VALUES(?,?,?,?,?)").bind(crypto.randomUUID(), payload.publicationId, action, row.pending_actor_sub ?? "system:reconciler", eventAt),
+    db.prepare(`UPDATE homepage_publications SET status='PUBLISHED',payload_json=?,approved_by_sub=pending_actor_sub,approved_at=pending_event_at,
+      first_published_at=COALESCE(first_published_at,pending_event_at),last_published_at=pending_event_at,pending_action=NULL,pending_actor_sub=NULL,pending_event_at=NULL,error_code=NULL,updated_at=? WHERE id=? AND pending_action IS NOT NULL`).bind(JSON.stringify(payload), now, payload.publicationId),
+  ]);
+  if (!results[1]?.meta.changes) throw new Error("publication_ledger_unavailable");
   if (input.previousPublicationId && input.previousPublicationId !== payload.publicationId) {
     await requireLease(db, lease);
     await db.prepare("UPDATE homepage_publications SET status='SUPERSEDED',superseded_at=?,updated_at=? WHERE id=? AND status='PUBLISHED'").bind(eventAt, now, input.previousPublicationId).run();
   }
-  await requireLease(db, lease);
-  await db.prepare("INSERT OR IGNORE INTO homepage_publication_events(id,publication_id,action,actor_sub,occurred_at) VALUES(?,?,?,?,?)").bind(crypto.randomUUID(), payload.publicationId, row.pending_action === "PUBLISH" ? "PUBLISH" : "REPUBLISH", row.pending_actor_sub ?? "system:reconciler", eventAt).run();
 }
 
 export async function markPublicationFailed(db: D1Database, lease: PublicationLease, publicationId: string, errorCode: string): Promise<void> {
@@ -118,10 +121,11 @@ export async function finalizeWithdrawn(db: D1Database, lease: PublicationLease,
   if (!row || row.pending_action !== "WITHDRAW" || !row.pending_event_at) throw new Error("publication_intent_mismatch");
   const eventAt = row.pending_event_at;
   await requireLease(db, lease);
-  const result = await db.prepare("UPDATE homepage_publications SET status='WITHDRAWN',withdrawn_by_sub=pending_actor_sub,withdrawn_at=pending_event_at,pending_action=NULL,pending_actor_sub=NULL,pending_event_at=NULL,updated_at=? WHERE id=? AND pending_action='WITHDRAW'").bind(new Date().toISOString(), input.publicationId).run();
-  if (!result.meta.changes) throw new Error("publication_ledger_unavailable");
-  await requireLease(db, lease);
-  await db.prepare("INSERT OR IGNORE INTO homepage_publication_events(id,publication_id,action,actor_sub,occurred_at) VALUES(?,?,?,?,?)").bind(crypto.randomUUID(), input.publicationId, "WITHDRAW", row.pending_actor_sub ?? "system:reconciler", eventAt).run();
+  const results = await db.batch([
+    db.prepare("INSERT OR IGNORE INTO homepage_publication_events(id,publication_id,action,actor_sub,occurred_at) VALUES(?,?,?,?,?)").bind(crypto.randomUUID(), input.publicationId, "WITHDRAW", row.pending_actor_sub ?? "system:reconciler", eventAt),
+    db.prepare("UPDATE homepage_publications SET status='WITHDRAWN',withdrawn_by_sub=pending_actor_sub,withdrawn_at=pending_event_at,pending_action=NULL,pending_actor_sub=NULL,pending_event_at=NULL,updated_at=? WHERE id=? AND pending_action='WITHDRAW'").bind(new Date().toISOString(), input.publicationId),
+  ]);
+  if (!results[1]?.meta.changes) throw new Error("publication_ledger_unavailable");
 }
 
 export async function reconcileLedgerToCurrent(db: D1Database, lease: PublicationLease, current: CurrentPublicationSnapshot): Promise<ReconcileResult> {
@@ -130,9 +134,10 @@ export async function reconcileLedgerToCurrent(db: D1Database, lease: Publicatio
   let repaired = 0; let failed = 0;
   for (const row of rows.results ?? []) {
     if (row.status === "PUBLISHING") {
-      const matches = current.exists && current.wrapper.payload.state === "EXPLORING" && current.wrapper.payload.publicationId === row.id && current.wrapper.payload.contentHash === row.content_hash;
+      const candidate = current.exists && current.wrapper.payload.state === "EXPLORING" ? current.wrapper.payload : null;
+      const matches = Boolean(candidate && candidate.publicationId === row.id && candidate.contentHash === row.content_hash);
       await requireLease(db, lease);
-      if (matches) { await db.prepare("UPDATE homepage_publications SET status='PUBLISHED',payload_json=?,first_published_at=COALESCE(first_published_at,?),last_published_at=?,pending_action=NULL,pending_actor_sub=NULL,pending_event_at=NULL,updated_at=? WHERE id=?").bind(JSON.stringify(current.wrapper.payload), current.wrapper.payload.publishedAt, current.wrapper.payload.updatedAt, new Date().toISOString(), row.id).run(); repaired++; }
+      if (matches && candidate) { await db.prepare("UPDATE homepage_publications SET status='PUBLISHED',payload_json=?,first_published_at=COALESCE(first_published_at,?),last_published_at=?,pending_action=NULL,pending_actor_sub=NULL,pending_event_at=NULL,updated_at=? WHERE id=?").bind(JSON.stringify(candidate), candidate.publishedAt, candidate.updatedAt, new Date().toISOString(), row.id).run(); repaired++; }
       else { await db.prepare("UPDATE homepage_publications SET status='FAILED',error_code='reconcile_current_mismatch',updated_at=? WHERE id=?").bind(new Date().toISOString(), row.id).run(); failed++; }
     }
   }
@@ -146,6 +151,7 @@ export async function publicationStateForSessions(db: D1Database, sessionIds: st
   const placeholders = sessionIds.map(() => "?").join(",");
   const rows = await db.prepare(`SELECT * FROM homepage_publications WHERE distill_session_id IN (${placeholders}) ORDER BY updated_at DESC`).bind(...sessionIds).all<LedgerRow>();
   for (const row of rows.results ?? []) {
+    if (out.get(row.distill_session_id) === "PURGING" || out.get(row.distill_session_id) === "PURGED") continue;
     if (row.status === "PURGING" || row.status === "PURGED") out.set(row.distill_session_id, row.status);
     else if (current?.exists && current.wrapper.payload.state === "EXPLORING" && current.wrapper.payload.publicationId === row.id && current.wrapper.payload.contentHash === row.content_hash) out.set(row.distill_session_id, "CURRENT");
     else if (row.status === "SUPERSEDED" || row.status === "WITHDRAWN" || row.status === "FAILED") out.set(row.distill_session_id, row.status);
