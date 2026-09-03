@@ -6,6 +6,7 @@ export interface HomepagePublicationPanelProps {
   loading: boolean;
   previewPending: boolean;
   feedback: { kind: "status" | "error"; message: string } | null;
+  availabilityNote?: string | null;
   publishTriggerRef: RefObject<HTMLButtonElement | null>;
   withdrawTriggerRef: RefObject<HTMLButtonElement | null>;
   onOpenPreview(): void;
@@ -18,6 +19,7 @@ export default function HomepagePublicationPanel({
   loading,
   previewPending,
   feedback,
+  availabilityNote,
   publishTriggerRef,
   withdrawTriggerRef,
   onOpenPreview,
@@ -37,7 +39,7 @@ export default function HomepagePublicationPanel({
     {!loading && action && <div className="homepage-publication-panel__actions">
       <div className="homepage-publication-panel__state" role="status" aria-live="polite">
         <strong>{action.label}</strong>
-        {action.kind === "OLD" && <span>가장 최근에 완료된 Distill만 공개할 수 있습니다.</span>}
+        {action.kind === "OLD" && <span>{availabilityNote ?? "가장 최근에 완료된 Distill만 공개할 수 있습니다."}</span>}
       </div>
       {action.enabled && <button ref={publishTriggerRef} type="button" className="ui-button" aria-label="홈페이지로 내보내기" disabled={previewPending} onClick={onOpenPreview}>{action.kind === "UPDATE" ? "새 결과로 업데이트" : "홈페이지에 반영"}</button>}
       {action.kind === "CURRENT" && <button ref={withdrawTriggerRef} type="button" className="ui-button-danger-outline" disabled={previewPending} onClick={onOpenWithdraw}>홈페이지 공개 철회</button>}

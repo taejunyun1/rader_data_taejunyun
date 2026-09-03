@@ -70,7 +70,7 @@ describe("homepage publication service", () => {
 
   it("keeps status readable when the newest Distill exceeds public projection limits", async () => {
     await env.PUBLICATIONS.delete("homepage/current-research.json");
-    const at = "2026-09-03T00:00:00.000Z";
+    const at = "2099-09-03T00:00:00.000Z";
     const sourceId = crypto.randomUUID();
     const sessionId = crypto.randomUUID();
     await env.DB.prepare("INSERT INTO sources (id,kind,title,canonical_url,reliability,status,created_at,updated_at) VALUES (?, 'WEB', '자료', 'https://example.com/limit', 'DISCOVERY', 'indexed', ?, ?)").bind(sourceId, at, at).run();

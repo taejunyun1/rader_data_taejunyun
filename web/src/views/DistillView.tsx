@@ -221,6 +221,22 @@ export default function DistillView({ onJobCreated, focusSessionId, onFocusConsu
     if (!data || !publicationStatus) return null;
     return deriveHomepagePublicationAction({ sessionId: data.session.id, sessionState: data.session.homepagePublicationState ?? "NONE", status: publicationStatus });
   }, [data, publicationStatus]);
+  const publicationAvailabilityNote = useMemo(() => {
+    if (!data || !publicationStatus || publicationStatus.latestPublishable !== null || sessions[0]?.id !== data.session.id) return null;
+    const output = data.session.output;
+    if (!output) return "최신 Distill에 홈페이지로 공개할 연구 내용이 없습니다.";
+    const limits: Array<{ label: string; count: number; limit: number }> = [
+      { label: "키워드", count: output.keywords.length, limit: 6 },
+      { label: "생각의 조각", count: output.thoughts_fragments.length, limit: 3 },
+      { label: "질문", count: output.questions.length, limit: 3 },
+      { label: "연구 방향", count: output.research_directions.length, limit: 2 },
+      { label: "작업 방향", count: output.artwork_directions.length, limit: 2 },
+    ];
+    const over = limits.filter((item) => item.count > item.limit).map((item) => `${item.label} ${item.count}/${item.limit}`);
+    return over.length > 0
+      ? `최신 Distill이 홈페이지 공개 상한을 초과했습니다 (${over.join(" · ")}).`
+      : "최신 Distill을 홈페이지 공개 형식으로 변환할 수 없습니다.";
+  }, [data, publicationStatus, sessions]);
   const outline = SECTIONS.filter((section) => section.id === "keywords" ? output?.keywords.length : section.id === "thoughts" ? output?.thoughts_fragments.length : section.id === "questions" ? output?.questions.length : section.id === "reading-queue" ? data?.readingQueue.length : section.id === "research-gaps" ? data?.researchGaps.length : section.id === "directions" ? output?.research_directions.length : section.id === "artwork" ? output?.artwork_directions.length : Boolean(output?.small_experiment)).map((section) => ({ ...section, count: section.id === "keywords" ? output?.keywords.length : section.id === "reading-queue" ? data?.readingQueue.length : undefined }));
 
   return <div className="view-stack">
@@ -229,7 +245,7 @@ export default function DistillView({ onJobCreated, focusSessionId, onFocusConsu
     {msg && <p className="reservoir-message" role="status">{msg}</p>}
     {sessions.length > 1 && <div className="session-strip" aria-label="착즙 기록">{sessions.slice(0, 6).map((session) => <button key={session.id} className="filter-button" onClick={() => void openSession(session.id)}>{new Date(session.createdAt).toLocaleDateString("ko-KR")} {session.redistillOf ? "↻" : ""}</button>)}</div>}
     {!data || !output ? <StatusMessage kind="empty" title="아직 착즙 결과가 없습니다" description="저장소의 자료를 바탕으로 첫 착즙을 시작하세요." /> : <div className="distill-document-layout"><DocumentOutline sections={[...outline, { id: "counter", label: "정면 반대 관점" }]} /><main className="distill-document"><p className="document-meta">생성 {new Date(data.session.createdAt).toLocaleString("ko-KR")} · 사용 모델 {data.session.modelVersion} · 비용 ${data.session.costUsd.toFixed(4)} · 자료 {data.session.sourcesUsed?.length ?? 0}개 · {data.session.counterEnabled === false ? "반대 관점 제외" : "반대 관점 포함"}</p>
-      <HomepagePublicationPanel action={publicationAction} loading={publicationStatusLoading} previewPending={previewPending} feedback={publicationFeedback ?? (publicationStatusError ? { kind: "error", message: publicationStatusError } : null)} publishTriggerRef={publishTriggerRef} withdrawTriggerRef={withdrawTriggerRef} onOpenPreview={() => void openHomepagePreview()} onOpenWithdraw={openHomepageWithdrawal} onRetryStatus={() => void loadPublicationStatus(data.session.id, generationRef.current)} />
+      <HomepagePublicationPanel action={publicationAction} loading={publicationStatusLoading} previewPending={previewPending} feedback={publicationFeedback ?? (publicationStatusError ? { kind: "error", message: publicationStatusError } : null)} availabilityNote={publicationAvailabilityNote} publishTriggerRef={publishTriggerRef} withdrawTriggerRef={withdrawTriggerRef} onOpenPreview={() => void openHomepagePreview()} onOpenWithdraw={openHomepageWithdrawal} onRetryStatus={() => void loadPublicationStatus(data.session.id, generationRef.current)} />
       {output.keywords.length > 0 && <section id="keywords" className="distill-section"><p className="reading-section__label">키워드</p><div className="reading-keywords">{output.keywords.map((keyword) => <span key={keyword}>{keyword}</span>)}</div></section>}
       {output.thoughts_fragments.length > 0 && <section id="thoughts" className="distill-section"><p className="reading-section__label">생각의 조각</p>{output.thoughts_fragments.map((item) => <p className="distill-copy" key={item}>{item}</p>)}</section>}
       {output.questions.length > 0 && <section id="questions" className="distill-section"><p className="reading-section__label">질문</p>{output.questions.map((item, index) => <p className="reading-question" key={item}><span>{String(index + 1).padStart(2, "0")}</span>{item}</p>)}</section>}

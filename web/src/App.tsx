@@ -41,6 +41,8 @@ export default function App() {
   const consumeFocus = useCallback((key: "distillSessionId" | "radarPeriod" | "reservoirSourceId") => {
     setFocus((current) => ({ ...current, [key]: undefined }));
   }, []);
+  const consumeDistillFocus = useCallback(() => consumeFocus("distillSessionId"), [consumeFocus]);
+  const consumeRadarFocus = useCallback(() => consumeFocus("radarPeriod"), [consumeFocus]);
 
   const stopPdfTask = useCallback((task: PdfPreparationTask) => {
     stopPdfVisualExtractionTask(task.sourceId, task.sourceVersionId);
@@ -73,9 +75,9 @@ export default function App() {
 
   return (
     <AppShell view={view} onNavigate={setView} usage={usage} jobs={jobs} pdfTasks={pdfTasks} onStopPdfTask={stopPdfTask} onResumePdfTask={resumePdfTask} onDismissJob={dismiss} onRetryJob={retry} onResult={openJobResult}>
-      {view === "RADAR" && <RadarView onNavigate={setView} onJobCreated={refresh} focusPeriod={focus.radarPeriod} onFocusConsumed={() => consumeFocus("radarPeriod")} />}
+      {view === "RADAR" && <RadarView onNavigate={setView} onJobCreated={refresh} focusPeriod={focus.radarPeriod} onFocusConsumed={consumeRadarFocus} />}
       {view === "INBOX" && <InboxView />}
-      {view === "DISTILL" && <DistillView onJobCreated={refresh} focusSessionId={focus.distillSessionId} onFocusConsumed={() => consumeFocus("distillSessionId")} />}
+      {view === "DISTILL" && <DistillView onJobCreated={refresh} focusSessionId={focus.distillSessionId} onFocusConsumed={consumeDistillFocus} />}
       {view === "RESERVOIR" && <ReservoirView jobs={jobs} onJobCreated={refresh} focusSourceId={focus.reservoirSourceId} focusExtractionRunId={focus.reservoirExtractionRunId} onFocusConsumed={consumeReservoirFocus} />}
       {view === "DISCOVER" && <DiscoverView onNavigate={setView} onOpenReservoir={openReservoirSource} jobs={jobs} onJobCreated={refresh} />}
       {view === "USAGE" && <UsageView />}

@@ -1,5 +1,5 @@
 import type { CurrentResearchContent, CurrentResearchMaterial } from "@radar/shared";
-import { assertSourceDeletionNotClaimed, SourceDeletionClaimError } from "../reservoir/deletionClaim";
+import { SourceDeletionClaimError } from "../reservoir/deletionClaim";
 import { parseCriticOutput, parseDistillOutput, type CriticOutput, type DistillOutput } from "../distill/outputSchema";
 
 const MAX_PAYLOAD_BYTES = 64 * 1024;
@@ -124,21 +124,21 @@ function parseSession(row: SessionRow): PublishableDistillSession | null {
 }
 
 async function sourcesAreLive(db: D1Database, sourcesUsed: Array<{ id: string; title: string }>): Promise<boolean> {
-  for (const source of sourcesUsed) {
-    const found = await db.prepare("SELECT id FROM sources WHERE id = ?").bind(source.id).first<{ id: string }>();
-    if (!found) return false;
-  }
-  return true;
+  const ids = [...new Set(sourcesUsed.map((source) => source.id))];
+  if (ids.length === 0) return false;
+  const placeholders = ids.map(() => "?").join(",");
+  const rows = await db.prepare(`SELECT id FROM sources WHERE id IN (${placeholders})`).bind(...ids).all<{ id: string }>();
+  return new Set((rows.results ?? []).map((row) => row.id)).size === ids.length;
 }
 
 async function assertNoSourceDeletionClaim(db: D1Database, sourcesUsed: Array<{ id: string; title: string }>): Promise<void> {
-  try {
-    for (const source of sourcesUsed) await assertSourceDeletionNotClaimed(db, source.id);
-  } catch (error) {
-    if (error instanceof SourceDeletionClaimError && error.code === "source_delete_in_progress") {
-      throw new PublicProjectionError("source_delete_in_progress");
-    }
-    throw error;
+  const ids = [...new Set(sourcesUsed.map((source) => source.id))];
+  if (ids.length === 0) return;
+  const placeholders = ids.map(() => "?").join(",");
+  const row = await db.prepare(`SELECT source_id FROM source_deletion_claims WHERE source_id IN (${placeholders}) LIMIT 1`).bind(...ids).first<{ source_id: string }>();
+  if (row) {
+    const error = new SourceDeletionClaimError("source_delete_in_progress");
+    throw new PublicProjectionError("source_delete_in_progress", error.message);
   }
 }
 
