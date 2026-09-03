@@ -20,4 +20,9 @@ beforeAll(async () => {
   await runtimeEnv.ORIGINALS.put(probeKey, "ok");
   const probe = await runtimeEnv.ORIGINALS.get(probeKey);
   expect(await probe?.text()).toBe("ok");
+
+  const publicationProbeKey = "tests/runtime/publications-probe.txt";
+  await runtimeEnv.PUBLICATIONS.put(publicationProbeKey, "ok");
+  const publicationProbe = await runtimeEnv.PUBLICATIONS.get(publicationProbeKey);
+  expect(await publicationProbe?.text()).toBe("ok");
 });
