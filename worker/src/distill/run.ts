@@ -15,6 +15,7 @@ import {
   type DistillOutput,
   type PromptVariant,
 } from "./prompts";
+import { parseCriticOutput, parseCounterOutput, parseDistillOutput } from "./outputSchema";
 
 export type DistillRunResult =
   | { ok: true; sessionId: string; costUsd: number; budgetUsedPct: number; queueItemIds: string[]; distillOutput: DistillOutput }
@@ -24,20 +25,9 @@ function asValidated<T>(raw: unknown, kind: "distill"): DistillOutput | null;
 function asValidated(raw: unknown, kind: "critic"): CriticOutput | null;
 function asValidated(raw: unknown, kind: "counter"): CounterOutput | null;
 function asValidated(raw: unknown, kind: string): unknown {
-  if (!raw || typeof raw !== "object") return null;
-  if (kind === "distill") {
-    const d = raw as Partial<DistillOutput>;
-    if (Array.isArray(d.keywords) && Array.isArray(d.research_directions)) return d as DistillOutput;
-    return null;
-  }
-  if (kind === "critic") {
-    const c = raw as Partial<CriticOutput>;
-    if (Array.isArray(c.warnings)) return c as CriticOutput;
-    return null;
-  }
-  const k = raw as Partial<CounterOutput>;
-  if (Array.isArray(k.axes) || Array.isArray(k.suggestions)) return k as CounterOutput;
-  return null;
+  if (kind === "distill") return parseDistillOutput(raw);
+  if (kind === "critic") return parseCriticOutput(raw);
+  return parseCounterOutput(raw);
 }
 
 export async function runDistill(
@@ -60,7 +50,7 @@ export async function runDistill(
       .first<{ output_json: string }>();
     if (parent?.output_json) {
       try {
-        parentOutput = JSON.parse(parent.output_json) as DistillOutput;
+        parentOutput = parseDistillOutput(JSON.parse(parent.output_json));
       } catch {
         parentOutput = null;
       }

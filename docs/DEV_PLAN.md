@@ -216,6 +216,25 @@ JSON(전체 덤프) / Markdown(자료별) / CSV(목록) + R2 원본 zip. Setting
 
 **Checkpoint P6(최종)**: 스펙 V0 필수 범위 전 항목 데모 — Inbox/Reservoir/Radar/Distill/Reading Queue/Research Gap/Critic/Counter/검색/시그널/Settings + Export.
 
+## Phase 7 — 홈페이지 `현재 연구` 발행
+
+2026-09-03 확정 의존성 그래프:
+
+```text
+contract → projection → ledger/lease → R2 CAS → internal API/CSRF → source-delete/hard-purge interlock
+                                      ├→ legacy-preservation pipeline ─┐
+                                      └→ homepage fixed-key endpoint ─┼→ UI cutover → operations verification
+reaction cutoff ──────────────────────────────────────────────────────┘
+```
+
+계약과 Radar–홈페이지 backend boundary가 확정된 뒤 `legacy-preservation pipeline`과 `homepage fixed-key endpoint`는 서로 독립적으로 진행할 수 있다. 두 경로와 reaction cutoff가 모두 완료되기 전에는 UI cutover와 operations verification을 수행하지 않는다. 이 그래프는 Tasks 15–18의 병렬 가능성을 보존하며 허위의 전체 직렬 의존성을 만들지 않는다.
+
+- **Task 7.1 계약·projection**: Distill output과 `CurrentResearchPayload` strict schema, allowlist projection, preview/publish 동일 builder를 고정한다.
+- **Task 7.2 ledger/lease·R2 CAS**: D1 publication ledger와 singleton lease, history-first/current-last conditional PUT, reconciliation을 구현한다.
+- **Task 7.3 internal API/CSRF**: Access 보호 preview/publish/withdraw/status와 same-origin/HMAC CSRF 경계를 구현한다.
+- **Task 7.4 source-delete/hard-purge interlock**: source deletion claim, purge marker, sibling enumeration, `PURGING` 재개, 60초 간격 two-pass zero audit, missing-current tombstone 및 recurring sweep를 연결한다.
+- **Task 7.5 병렬 경로·cutover**: legacy reading seed 보존 pipeline, 홈페이지 fixed-key reader, reaction cutoff를 각각 완료하고, 이후에만 `현재 연구` UI와 운영 검증을 전환한다.
+
 ## 리스크
 
 | 리스크 | 영향 | 완화 |

@@ -45,6 +45,10 @@
     {
       "binding": "EXPORTS",
       "bucket_name": "reservoir-exports"
+    },
+    {
+      "binding": "PUBLICATIONS",
+      "bucket_name": "radar-publications"
     }
   ],
   "ai": {

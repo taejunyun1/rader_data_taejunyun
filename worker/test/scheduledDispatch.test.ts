@@ -25,6 +25,7 @@ describe("scheduled dispatch contract", () => {
     const first = await runScheduledCron(env as Env, VISUAL_TEMP_CLEANUP_CRON, now);
     const second = await runScheduledCron(env as Env, VISUAL_TEMP_CLEANUP_CRON, now);
     expect(first.status).toBe("SUCCEEDED");
+    expect(first.tasks).toHaveProperty("homepage-publication-reconciliation");
     expect(second.status).toBe("SKIPPED");
     const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM system_runs WHERE kind = 'VISUAL_TEMP_CLEANUP' AND window_key = '2026-08-28T04'").first<{ n: number }>();
     expect(row?.n).toBe(1);

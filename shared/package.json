@@ -9,7 +9,8 @@
     "./ingestion": "./src/ingestion.ts",
     "./discoveryRun": "./src/discoveryRun.ts",
     "./fieldSignals": "./src/fieldSignals.ts",
-    "./visualAnalysis": "./src/visualAnalysis.ts"
+    "./visualAnalysis": "./src/visualAnalysis.ts",
+    "./homepagePublication": "./src/homepagePublication.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
