@@ -111,7 +111,9 @@ function parseSourcesUsed(value: unknown): Array<{ id: string; title: string }> 
 function parseSession(row: SessionRow): PublishableDistillSession | null {
   const output = parseDistillOutput(parseJson(row.outputJson));
   const sourcesUsed = parseSourcesUsed(parseJson(row.sourcesUsedJson));
-  if (!output || !sourcesUsed) return null;
+  // A Distill without provenance cannot be published as a current research
+  // edition, even when the stored output itself is schema-valid.
+  if (!output || !sourcesUsed || sourcesUsed.length === 0) return null;
   return {
     id: row.id,
     createdAt: row.createdAt,
