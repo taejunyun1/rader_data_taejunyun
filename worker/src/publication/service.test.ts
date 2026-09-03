@@ -67,4 +67,15 @@ describe("homepage publication service", () => {
     });
     await Promise.all(deferred);
   });
+
+  it("keeps status readable when the newest Distill exceeds public projection limits", async () => {
+    await env.PUBLICATIONS.delete("homepage/current-research.json");
+    const at = "2026-09-03T00:00:00.000Z";
+    const sourceId = crypto.randomUUID();
+    const sessionId = crypto.randomUUID();
+    await env.DB.prepare("INSERT INTO sources (id,kind,title,canonical_url,reliability,status,created_at,updated_at) VALUES (?, 'WEB', '자료', 'https://example.com/limit', 'DISCOVERY', 'indexed', ?, ?)").bind(sourceId, at, at).run();
+    const output = { keywords: Array.from({ length: 7 }, (_, index) => `키워드 ${index}`), thoughts_fragments: ["생각 1", "생각 2", "생각 3", "생각 4"], questions: ["질문"], read_next: [], research_gaps: [], research_directions: ["방향"], artwork_directions: [] };
+    await env.DB.prepare("INSERT INTO distill_sessions (id,sources_used_json,output_json,created_at) VALUES (?,?,?,?)").bind(sessionId, JSON.stringify([{ id: sourceId, title: "자료" }]), JSON.stringify(output), at).run();
+    await expect(getHomepagePublicationStatus(env, () => undefined)).resolves.toMatchObject({ current: { state: "NONE" }, latestPublishable: null });
+  });
 });

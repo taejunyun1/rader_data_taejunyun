@@ -1,6 +1,6 @@
 import type { CurrentResearchPayload, HomepagePreviewResponse, HomepagePublishResponse, HomepagePublicationStatusResponse, HomepageWithdrawResponse } from "@radar/shared";
 import { acquirePublicationLeaseController, createD1PublicationLeaseBackend, type PublicationLeaseController } from "./lease";
-import { buildHomepageProjection, loadLatestPublishableDistill, loadPublishableDistill, type HomepageProjectionDraft } from "./projection";
+import { buildHomepageProjection, loadLatestPublishableDistill, loadPublishableDistill, PublicProjectionError, type HomepageProjectionDraft } from "./projection";
 import { allocatePublicationEventAt, beginPublishing, beginWithdrawal, clearPendingWithdrawal, finalizePublished, finalizeWithdrawn, type ReconcileResult } from "./ledger";
 import { compareAndSwapCurrent, putHistoryEventIfAbsent, readCurrentPublication, type CurrentPublicationSnapshot } from "./storage";
 import type { PublicationLease } from "./lease";
@@ -62,6 +62,10 @@ async function draftFor(env: PublicationEnv, sessionId: string): Promise<Homepag
 
 function serviceError(error: unknown, fallback = "publication_ledger_unavailable"): HomepagePublicationServiceError {
   if (error instanceof HomepagePublicationServiceError) return error;
+  if (error instanceof PublicProjectionError) {
+    if (error.code === "source_delete_in_progress") return new HomepagePublicationServiceError(error.code, 409);
+    return new HomepagePublicationServiceError(error.code, 422);
+  }
   const code = error instanceof Error ? error.message : "";
   if (code === "publication_in_progress") return new HomepagePublicationServiceError(code);
   if (code === "source_delete_in_progress") return new HomepagePublicationServiceError(code, 409);
@@ -217,8 +221,13 @@ async function deferRepairAfterRelease(env: PublicationEnv, releasePromise: Prom
 }
 
 export async function previewHomepagePublication(env: PublicationEnv, sessionId: string): Promise<HomepagePreviewResponse> {
-  const draft = await draftFor(env, sessionId);
-  return toPreview(draft, await readCurrentPublication(env.PUBLICATIONS));
+  try {
+    const draft = await draftFor(env, sessionId);
+    return toPreview(draft, await readCurrentPublication(env.PUBLICATIONS));
+  } catch (error) {
+    if (error instanceof PublicProjectionError) throw serviceError(error);
+    throw error;
+  }
 }
 
 export async function publishHomepagePublication(
@@ -267,6 +276,7 @@ export async function publishHomepagePublication(
     // The release is awaited before the promise is handed to waitUntil.
     await deferRepairAfterRelease(env, Promise.resolve(), input.defer);
     if (error instanceof HomepagePublicationServiceError) throw error;
+    if (error instanceof PublicProjectionError) throw serviceError(error);
     throw new HomepagePublicationServiceError((error as Error).message || "publication_failed", 500);
   }
 }
@@ -322,9 +332,17 @@ export async function getHomepagePublicationStatus(env: PublicationEnv, defer: D
       }
     }
     const latest = await loadLatestPublishableDistill(env.DB);
-    const latestPublishable = latest
-      ? { sessionId: latest.id, distilledAt: latest.createdAt, contentHash: (await buildHomepageProjection(env.DB, latest)).contentHash }
-      : null;
+    let latestPublishable: HomepagePublicationStatusResponse["latestPublishable"] = null;
+    if (latest) {
+      try {
+        latestPublishable = { sessionId: latest.id, distilledAt: latest.createdAt, contentHash: (await buildHomepageProjection(env.DB, latest)).contentHash };
+      } catch (error) {
+        // A Distill can be structurally valid yet exceed the deliberately
+        // smaller public allowlist. Keep the status endpoint readable and
+        // leave the session for a human to re-distill within those bounds.
+        if (!(error instanceof PublicProjectionError) || error.code === "source_delete_in_progress") throw error;
+      }
+    }
     const response = { currentRevision: current.currentRevision, current: currentStatus, latestPublishable, ledgerReconcilePending: pending };
     await safeRelease();
     if (pending) await deferRepairAfterRelease(env, Promise.resolve(), defer);

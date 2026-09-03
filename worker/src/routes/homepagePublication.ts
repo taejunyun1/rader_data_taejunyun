@@ -26,7 +26,7 @@ route.get("/homepage-publication/csrf", async (c) => {
 
 route.get("/homepage-publication", async (c) => {
   try { const response = await getHomepagePublicationStatus(c.env); c.header("Cache-Control", "no-store"); return c.json(response); }
-  catch (error) { return jsonError(c, 500, (error as Error).message || "internal_error"); }
+  catch (error) { const e = error instanceof HomepagePublicationServiceError ? error : null; return jsonError(c, e?.status ?? 500, e?.code ?? "internal_error"); }
 });
 
 route.post("/sessions/:id/homepage-publish", async (c) => {
