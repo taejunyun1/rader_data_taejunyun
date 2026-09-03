@@ -225,11 +225,12 @@ pnpm deploy
 
 - Radar main에는 `homepage_publications` 원장·lease·history-first R2 저장·preview/publish/withdraw/status API가 반영되었다.
 - 원격 D1 `research-radar-db`에 migration `0029_homepage_publications.sql`을 적용했고, R2 `radar-publications` 버킷을 `PUBLICATIONS`로 연결했다.
-- Radar Worker 코드 배포 버전: `e9e29f28-0e70-44a8-808b-41e882628eee`; CSRF Secret 등록으로 활성 버전은 `1e8ffe7e-0ff2-40e7-bb9c-320a91fa7bc7`이다.
+- Radar Worker 코드 배포 버전: `d27a4f5d-3d53-4c55-9ba3-a9fd774f678b`; CSRF Secret이 등록된 상태에서 Distill 홈페이지 내보내기 UI·상태 enrichment까지 활성화되어 있다.
 - Homepage reading Worker는 고정키 `homepage/current-research.json`만 공개하며, 미발행은 `404 current_research_not_published`, 반응 API는 현재 운영 설정에서 `410 reactions_disabled`를 반환한다.
 - Homepage reading Worker 배포 버전: `3ebc1478-f9ca-4374-aba8-5f0bd4dc1201`.
 - Pages `homepage-artist`에는 `VITE_CURRENT_RESEARCH_ENABLED=true`로 빌드한 `/text` 현재 연구 view를 배포했다. 현재 R2 payload가 없으므로 공개 화면은 `현재 공개된 연구가 없습니다.` 상태다.
 - 발행 API의 production CSRF 검증을 위해 Worker Secret `CSRF_SECRET`을 등록했다. 현재 연구가 실제로 발행되면 Homepage는 다음 조회에서 새 payload를 표시한다.
+- Distill 결과 화면에는 `홈페이지로 내보내기` 패널이 있으며 `preview → 공개 반영` 순서로만 발행한다. 현재 공개본과 같은 세션은 철회할 수 있고, 공개 중인 결과·삭제 중인 결과·오래된 결과는 상태에 따라 비활성화한다. 브라우저 client는 GET no-store와 fresh CSRF를 사용하고, 공개 payload/검토 메모를 분리해 미리보기에서 공개 허용 필드만 보여준다.
 - Homepage 배포 스크립트는 더 이상 레거시 `reading:sync`를 자동 실행하지 않는다. Radar importer의 `sync:radar`는 별도 운영 경계로 유지한다.
 
 ## 9. 빠른 참조 경로
