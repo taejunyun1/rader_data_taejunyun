@@ -1,19 +1,10 @@
 import type { DistillContext } from "./context";
+import type { DistillOutput } from "@radar/shared";
 
-export type PromptVariant = "distill-v1" | "distill-v2-terse";
+export type PromptVariant = "distill-v1" | "distill-v2-terse" | "distill-v3-layered";
 export const DEFAULT_PROMPT_VARIANT: PromptVariant = "distill-v2-terse";
-export const PROMPT_VARIANTS: PromptVariant[] = ["distill-v1", "distill-v2-terse"];
-
-export interface DistillOutput {
-  keywords: string[];
-  thoughts_fragments: string[];
-  questions: string[];
-  read_next: { title: string; author?: string; why_read: string; related_question?: string }[];
-  research_gaps: { gap: string; kind: string }[];
-  research_directions: string[];
-  artwork_directions: string[];
-  small_experiment?: string;
-}
+export const PROMPT_VARIANTS: PromptVariant[] = ["distill-v1", "distill-v2-terse", "distill-v3-layered"];
+export type { DistillOutput } from "@radar/shared";
 
 export interface CriticOutput {
   warnings: { category: string; note: string }[];
@@ -26,10 +17,7 @@ export interface CounterOutput {
   incompatibility?: string;
   conditions?: string[];
   axes: { from: string; to: string; rationale: string }[];
-  suggestions: {
-    direction: string;
-    grounding: { name: string; kind: string; note: string }[];
-  }[];
+  suggestions: { direction: string; grounding: { name: string; kind: string; note: string }[] }[];
   validation?: {
     status: "verified" | "corrected" | "unverified";
     issues: string[];

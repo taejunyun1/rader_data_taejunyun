@@ -10,6 +10,7 @@
     "./discoveryRun": "./src/discoveryRun.ts",
     "./fieldSignals": "./src/fieldSignals.ts",
     "./visualAnalysis": "./src/visualAnalysis.ts",
+    "./distill": "./src/distill.ts",
     "./homepagePublication": "./src/homepagePublication.ts"
   },
   "scripts": {

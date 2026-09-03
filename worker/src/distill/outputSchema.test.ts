@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseCriticOutput, parseDistillOutput, type DistillOutput } from "./outputSchema";
+import { parseCriticOutput, parseDistillOutput, sanitizeDistillDetails, type DistillOutput } from "./outputSchema";
 
 const validDistill: DistillOutput = {
   keywords: ["빛"], thoughts_fragments: ["관찰"], questions: ["무엇이 보이는가"],
@@ -16,6 +16,24 @@ describe("strict Distill output", () => {
     expect(parseDistillOutput({ ...validDistill, read_next: [{ title: "x", why_read: 1 }] })).toBeNull();
     expect(parseDistillOutput({ ...validDistill, research_gaps: [{ gap: "x" }] })).toBeNull();
     expect(parseDistillOutput({ ...validDistill, small_experiment: 42 })).toBeNull();
+  });
+
+  it("accepts and sanitizes optional layered details against summary and source bounds", () => {
+    const layered = {
+      ...validDistill,
+      details: {
+        thoughts: [{ summaryIndex: 0, rationale: "판단 이유", sourceIds: ["source-1", "unknown"], uncertainty: "불확실", nextCheck: "확인" }],
+        questions: [], researchGaps: [], researchDirections: [], artworkDirections: [],
+      },
+    };
+    const parsed = parseDistillOutput(layered);
+    const thought = layered.details.thoughts[0]!;
+    expect(parsed).toEqual(layered);
+    expect(sanitizeDistillDetails(parsed!, new Set(["source-1"])).details?.thoughts[0]?.sourceIds).toEqual(["source-1"]);
+    expect(sanitizeDistillDetails({ ...layered, details: { ...layered.details, thoughts: [
+      thought,
+      { ...thought, rationale: "duplicate" },
+    ] } }, new Set(["source-1"])).details?.thoughts).toHaveLength(1);
   });
 
   it("rejects malformed stored JSON and the historical weak shape", () => {
