@@ -172,18 +172,11 @@ function ipv4Parts(hostname: string): number[] | null {
   return parts.every((part) => part >= 0 && part <= 255) ? parts : null;
 }
 
-function isPrivateIp(hostname: string): boolean {
+function isIpLiteral(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
   const ipv4 = ipv4Parts(host);
-  if (ipv4) {
-    const a = ipv4[0]!;
-    const b = ipv4[1]!;
-    return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
-  }
-  if (!host.includes(":")) return false;
-  const compact = host.replace(/^::ffff:/i, "");
-  if (ipv4Parts(compact)) return isPrivateIp(compact);
-  return host === "::" || host === "::1" || /^f[cd]/i.test(host) || /^fe[89ab]/i.test(host);
+  if (ipv4) return true;
+  return host.includes(":");
 }
 
 function publicUrl(raw: string): string | null {
@@ -192,7 +185,8 @@ function publicUrl(raw: string): string | null {
   try {
     const url = new URL(value);
     if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password || !url.hostname) return null;
-    if (url.hostname.toLowerCase() === "localhost" || url.hostname.toLowerCase().endsWith(".local") || isPrivateIp(url.hostname)) return null;
+    const hostname = url.hostname.toLowerCase().replace(/\.$/, "");
+    if (hostname === "localhost" || hostname.endsWith(".local") || isIpLiteral(hostname)) return null;
     url.hash = "";
     const normalized = url.toString().replace(/\?$/, "");
     return normalized.length <= 2048 ? normalized : null;

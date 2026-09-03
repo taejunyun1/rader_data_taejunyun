@@ -77,6 +77,21 @@ describe("public Distill selection and material join", () => {
     expect(draft.content.thoughts).toEqual(["첫 생각"]);
   });
 
+  it("uses id DESC as the deterministic tie breaker and falls back past missing sources", async () => {
+    const now = new Date().toISOString();
+    const sourceId = `projection-tie-source-${crypto.randomUUID()}`;
+    const tieAt = "2099-01-01T00:00:00.000Z";
+    await env.DB.prepare(`INSERT INTO sources (id, kind, title, canonical_url, reliability, status, created_at, updated_at) VALUES (?, 'WEB', '정렬 자료', 'https://example.com/tie', 'DISCOVERY', 'indexed', ?, ?)`).bind(sourceId, now, now).run();
+    await env.DB.batch([
+      env.DB.prepare(`INSERT INTO distill_sessions (id, sources_used_json, output_json, created_at) VALUES ('projection-tie-a', ?, ?, ?)`).bind(JSON.stringify([{ id: sourceId, title: "정렬 자료" }]), JSON.stringify(output({ questions: ["A"] })), tieAt),
+      env.DB.prepare(`INSERT INTO distill_sessions (id, sources_used_json, output_json, created_at) VALUES ('projection-tie-z', ?, ?, ?)`).bind(JSON.stringify([{ id: sourceId, title: "정렬 자료" }]), JSON.stringify(output({ questions: ["Z"] })), tieAt),
+      env.DB.prepare(`INSERT INTO distill_sessions (id, sources_used_json, output_json, created_at) VALUES ('projection-missing-new', ?, ?, '2099-02-01T00:00:00.000Z')`).bind(JSON.stringify([{ id: `projection-never-${crypto.randomUUID()}`, title: "삭제 자료" }]), JSON.stringify(output({ questions: ["missing"] }))),
+    ]);
+    const selected = await loadLatestPublishableDistill(env.DB);
+    expect(selected?.id).toBe("projection-tie-z");
+    expect(selected?.output.questions).toEqual(["Z"]);
+  });
+
   it("skips sessions whose source was deleted but blocks a selected session with a deletion claim", async () => {
     const now = new Date().toISOString();
     const sourceId = `projection-claim-source-${crypto.randomUUID()}`;
@@ -85,9 +100,9 @@ describe("public Distill selection and material join", () => {
     const selectedId = `projection-claimed-${crypto.randomUUID()}`;
     await env.DB.batch([
       env.DB.prepare(`INSERT INTO sources (id, kind, title, canonical_url, reliability, status, created_at, updated_at) VALUES (?, 'WEB', '활성 자료', 'https://example.com/active', 'DISCOVERY', 'indexed', ?, ?)`).bind(sourceId, now, now),
-      env.DB.prepare(`INSERT INTO distill_sessions (id, sources_used_json, output_json, created_at) VALUES (?, ?, ?, ?)`).bind(olderId, JSON.stringify([{ id: sourceId, title: "활성 자료" }]), JSON.stringify(output()), "2026-09-02T00:00:00.000Z"),
-      env.DB.prepare(`INSERT INTO distill_sessions (id, sources_used_json, output_json, created_at) VALUES (?, ?, ?, ?)`).bind(`projection-deleted-${crypto.randomUUID()}`, JSON.stringify([{ id: deletedId, title: "삭제 자료" }]), JSON.stringify(output()), "2026-09-04T00:00:00.000Z"),
-      env.DB.prepare(`INSERT INTO distill_sessions (id, sources_used_json, output_json, created_at) VALUES (?, ?, ?, ?)`).bind(selectedId, JSON.stringify([{ id: sourceId, title: "활성 자료" }]), JSON.stringify(output()), "2026-09-05T00:00:00.000Z"),
+      env.DB.prepare(`INSERT INTO distill_sessions (id, sources_used_json, output_json, created_at) VALUES (?, ?, ?, ?)`).bind(olderId, JSON.stringify([{ id: sourceId, title: "활성 자료" }]), JSON.stringify(output()), "2100-01-01T00:00:00.000Z"),
+      env.DB.prepare(`INSERT INTO distill_sessions (id, sources_used_json, output_json, created_at) VALUES (?, ?, ?, ?)`).bind(`projection-deleted-${crypto.randomUUID()}`, JSON.stringify([{ id: deletedId, title: "삭제 자료" }]), JSON.stringify(output()), "2100-02-01T00:00:00.000Z"),
+      env.DB.prepare(`INSERT INTO distill_sessions (id, sources_used_json, output_json, created_at) VALUES (?, ?, ?, ?)`).bind(selectedId, JSON.stringify([{ id: sourceId, title: "활성 자료" }]), JSON.stringify(output()), "2100-03-01T00:00:00.000Z"),
       env.DB.prepare(`INSERT INTO source_deletion_claims (source_id, claim_token, state, lease_expires_at, created_at, updated_at) VALUES (?, ?, 'R2_PENDING', ?, ?, ?)`).bind(sourceId, crypto.randomUUID(), "2999-01-01T00:00:00.000Z", now, now),
     ]);
     await expect(loadLatestPublishableDistill(env.DB)).rejects.toThrow("source_delete_in_progress");
@@ -124,5 +139,43 @@ describe("public Distill selection and material join", () => {
     await expect(buildHomepageProjection(env.DB, { ...base, output: output({ thoughts_fragments: ["<b>위험</b>"] }) })).rejects.toThrow(/html_like/);
     await expect(buildHomepageProjection(env.DB, { ...base, output: output({ questions: ["질문".repeat(401)] }) })).rejects.toThrow(/too_long/);
     await expect(buildHomepageProjection(env.DB, { ...base, createdAt: "x".repeat(70_000) })).rejects.toThrow(/public_projection_too_large/);
+  });
+
+  it.each([
+    ["comment", "<!-- private -->"],
+    ["doctype", "<!doctype html>"],
+    ["tag", "<em>private</em>"],
+  ])("rejects %s markup in every copied text field", async (_label, value) => {
+    const fields = ["keywords", "thoughts_fragments", "questions", "research_directions", "artwork_directions"] as const;
+    for (const field of fields) {
+      await expect(buildHomepageProjection(env.DB, session(`projection-sanitize-${field}-${crypto.randomUUID()}`, [], { [field]: [value] }))).rejects.toThrow(/html_like/);
+    }
+  });
+
+  it("preserves mathematical symbols and accepts a maximal valid content envelope", async () => {
+    const maximal = session(`projection-maximal-${crypto.randomUUID()}`, [], {
+      keywords: Array.from({ length: 6 }, () => "키".repeat(80)),
+      thoughts_fragments: Array.from({ length: 3 }, () => "생각 ∑ ≤ ".repeat(75).slice(0, 600)),
+      questions: Array.from({ length: 3 }, () => "질문 ∑ ≤ ".repeat(50).slice(0, 400)),
+      research_directions: Array.from({ length: 2 }, () => "방향 ∑ ≤ ".repeat(75).slice(0, 600)),
+      artwork_directions: Array.from({ length: 2 }, () => "작업 ∑ ≤ ".repeat(75).slice(0, 600)),
+    });
+    const draft = await buildHomepageProjection(env.DB, maximal);
+    expect(draft.content.thoughts[0]).toContain("∑");
+  });
+
+  it.each([
+    "https://8.8.8.8/public",
+    "https://[2001:db8::1]/public",
+    "https://[::ffff:8.8.8.8]/public",
+    "https://localhost./private",
+    "https://research.local./private",
+  ])("excludes IP literals and trailing-dot local host %s", async (url) => {
+    const now = new Date().toISOString();
+    const id = `projection-url-boundary-${crypto.randomUUID()}`;
+    await env.DB.prepare(`INSERT INTO sources (id, kind, title, canonical_url, reliability, status, created_at, updated_at) VALUES (?, 'WEB', '경계 URL', ?, 'DISCOVERY', 'indexed', ?, ?)`).bind(id, url, now, now).run();
+    const draft = await buildHomepageProjection(env.DB, session(`projection-url-session-${crypto.randomUUID()}`, [{ id, title: "경계 URL" }]));
+    expect(draft.content.researchMaterials).toEqual([]);
+    expect(draft.excludedResearchMaterialCount).toBe(1);
   });
 });
