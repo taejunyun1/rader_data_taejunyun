@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { budgetPct, verifyQueueItems } from "../distill/run";
 import { PROMPT_VARIANTS, type DistillOutput, type PromptVariant } from "../distill/prompts";
+import { parseDistillOutput } from "../distill/outputSchema";
 import { enqueueResearchJob } from "../jobs/enqueue";
 import { verifiedRequester } from "../lib/httpErrors";
 import { readJson } from "../lib/requestBody";
@@ -17,6 +18,63 @@ function homepagePublicationState(value: unknown): string {
     case "PURGED": return "PURGED";
     default: return "NONE";
   }
+}
+
+interface SourceSnapshot {
+  id: string;
+  title: string;
+}
+
+interface DetailSource {
+  id: string;
+  title: string;
+  available: boolean;
+}
+
+function parseSourceSnapshots(value: unknown): SourceSnapshot[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const row = item as Record<string, unknown>;
+    return typeof row.id === "string" && row.id && typeof row.title === "string"
+      ? [{ id: row.id, title: row.title }]
+      : [];
+  });
+}
+
+function detailSourceIds(value: unknown): string[] {
+  const output = parseDistillOutput(value);
+  if (!output?.details) return [];
+  const ids = [
+    ...output.details.thoughts,
+    ...output.details.questions,
+    ...output.details.researchGaps,
+    ...output.details.researchDirections,
+    ...output.details.artworkDirections,
+  ].flatMap((item) => item.sourceIds);
+  return [...new Set(ids)];
+}
+
+async function resolveDetailSources(db: D1Database, snapshots: SourceSnapshot[], output: unknown): Promise<DetailSource[]> {
+  const ids = detailSourceIds(output);
+  if (!ids.length) return [];
+  const placeholders = ids.map(() => "?").join(", ");
+  const rows = await db.prepare(`SELECT id, title FROM sources WHERE id IN (${placeholders})`).bind(...ids).all<{ id: string; title: string }>();
+  const active = new Map((rows.results ?? []).map((row) => [row.id, row.title]));
+  const snapshotTitles = new Map(snapshots.map((source) => [source.id, source.title]));
+  return ids.map((id) => ({ id, title: active.get(id) ?? snapshotTitles.get(id) ?? id, available: active.has(id) }));
+}
+
+function detailSourceLabel(ids: string[], snapshots: SourceSnapshot[]): string {
+  const titles = new Map(snapshots.map((source) => [source.id, source.title]));
+  return ids.map((id) => titles.get(id) ?? id).join(", ");
+}
+
+function appendDetail(lines: string[], heading: string, summary: string, fields: Array<[string, string]>, sourceIds: string[], snapshots: SourceSnapshot[]): void {
+  lines.push(`### ${heading}`, ``, `**요약**: ${summary}`, ``);
+  for (const [label, value] of fields) lines.push(`- ${label}: ${value}`);
+  if (sourceIds.length) lines.push(`- 출처: ${detailSourceLabel(sourceIds, snapshots)}`);
+  lines.push(``);
 }
 
 distill.get("/budget", async (c) => {
@@ -136,6 +194,9 @@ distill.get("/sessions/:id", async (c) => {
       .bind(id)
       .all<Record<string, unknown>>(),
   ]);
+  const sourcesUsed = parse(row.sources_used_json);
+  const output = parse(row.output_json);
+  const detailSources = await resolveDetailSources(c.env.DB, parseSourceSnapshots(sourcesUsed), output);
 
   return c.json({
     session: {
@@ -146,8 +207,8 @@ distill.get("/sessions/:id", async (c) => {
       promptVersion: row.promptVersion,
       costUsd: row.costUsd,
       createdAt: row.createdAt,
-      sourcesUsed: parse(row.sources_used_json),
-      output: parse(row.output_json),
+      sourcesUsed,
+      output,
       critic: parse(row.critic_output_json),
       counter: parse(row.counter_output_json),
       homepagePublicationState: homepagePublicationState(row.homepagePublicationState),
@@ -155,6 +216,7 @@ distill.get("/sessions/:id", async (c) => {
     },
     readingQueue: queue.results ?? [],
     researchGaps: gaps.results ?? [],
+    detailSources,
   });
 });
 
@@ -186,7 +248,7 @@ distill.post("/sessions/:id/select", async (c) => {
 distill.get("/sessions/:id/markdown", async (c) => {
   const id = c.req.param("id");
   const row = await c.env.DB
-    .prepare("SELECT output_json, critic_output_json, counter_output_json, counter_enabled, created_at FROM distill_sessions WHERE id = ?")
+    .prepare("SELECT output_json, sources_used_json, critic_output_json, counter_output_json, counter_enabled, created_at FROM distill_sessions WHERE id = ?")
     .bind(id)
     .first<Record<string, string | null>>();
   if (!row) return c.json({ error: "not_found" }, 404);
@@ -200,7 +262,45 @@ distill.get("/sessions/:id/markdown", async (c) => {
     }
   };
 
-  const o = parse<{
+  const o = parse<DistillOutput>(row.output_json);
+  const snapshots = parseSourceSnapshots(parse(row.sources_used_json));
+  const parsedOutput = parseDistillOutput(o);
+  const details = parsedOutput?.details;
+  const appendDetails = () => {
+    if (!details) return;
+    lines.push(`## 상세 근거와 맥락`, ``, `각 요약 항목의 근거·불확실성·다음 확인 지점을 기록한 Radar 내부 메모입니다.`, ``);
+    for (const item of details.thoughts) {
+      const summary = parsedOutput?.thoughts_fragments[item.summaryIndex] ?? "";
+      appendDetail(lines, `생각의 조각 ${item.summaryIndex + 1}`, summary, [
+        ["근거", item.rationale], ["불확실성", item.uncertainty], ["다음 확인", item.nextCheck],
+      ], item.sourceIds, snapshots);
+    }
+    for (const item of details.questions) {
+      const summary = parsedOutput?.questions[item.summaryIndex] ?? "";
+      appendDetail(lines, `질문 ${item.summaryIndex + 1}`, summary, [
+        ["지금 묻는 이유", item.whyNow], ["조사 방법", item.method], ["필요한 증거", item.evidenceNeeded],
+      ], item.sourceIds, snapshots);
+    }
+    for (const item of details.researchGaps) {
+      const summary = parsedOutput?.research_gaps[item.summaryIndex]?.gap ?? "";
+      appendDetail(lines, `연구 공백 ${item.summaryIndex + 1}`, summary, [
+        ["진단", item.diagnosis], ["연구 방법", item.researchMethod],
+      ], item.sourceIds, snapshots);
+    }
+    for (const item of details.researchDirections) {
+      const summary = parsedOutput?.research_directions[item.summaryIndex] ?? "";
+      appendDetail(lines, `연구 방향 ${item.summaryIndex + 1}`, summary, [
+        ["근거", item.rationale], ["방법", item.method], ["예상 결과", item.expectedOutcome],
+      ], item.sourceIds, snapshots);
+    }
+    for (const item of details.artworkDirections) {
+      const summary = parsedOutput?.artwork_directions[item.summaryIndex] ?? "";
+      appendDetail(lines, `작업 방향 ${item.summaryIndex + 1}`, summary, [
+        ["근거", item.rationale], ["재료", item.materials.join(", ")], ["절차", item.procedure], ["관찰", item.observation],
+      ], item.sourceIds, snapshots);
+    }
+  };
+  const legacyOutput = parse<{
     keywords?: string[];
     thoughts_fragments?: string[];
     questions?: string[];
@@ -216,38 +316,39 @@ distill.get("/sessions/:id/markdown", async (c) => {
   const date = String(row.created_at ?? "").slice(0, 10);
   const lines: string[] = [`---`, `source: research-radar`, `session: ${id}`, `date: ${date}`, `---`, ``, `# Research Radar Distill — ${date}`, ``];
 
-  if (o?.keywords?.length) lines.push(`**키워드**: ${o.keywords.join(", ")}`, ``);
-  if (o?.thoughts_fragments?.length) {
+  if (legacyOutput?.keywords?.length) lines.push(`**키워드**: ${legacyOutput.keywords.join(", ")}`, ``);
+  if (legacyOutput?.thoughts_fragments?.length) {
     lines.push(`## Thoughts`, ``);
-    for (const t of o.thoughts_fragments) lines.push(`- ${t}`);
+    for (const t of legacyOutput.thoughts_fragments) lines.push(`- ${t}`);
     lines.push(``);
   }
-  if (o?.questions?.length) {
+  if (legacyOutput?.questions?.length) {
     lines.push(`## Questions`, ``);
-    for (const q of o.questions) lines.push(`- ${q}`);
+    for (const q of legacyOutput.questions) lines.push(`- ${q}`);
     lines.push(``);
   }
-  if (o?.read_next?.length) {
+  if (legacyOutput?.read_next?.length) {
     lines.push(`## Read Next`, ``);
-    for (const r of o.read_next) lines.push(`- **${r.title}**${r.author ? ` — ${r.author}` : ""}: ${r.why_read}`);
+    for (const r of legacyOutput.read_next) lines.push(`- **${r.title}**${r.author ? ` — ${r.author}` : ""}: ${r.why_read}`);
     lines.push(``);
   }
-  if (o?.research_gaps?.length) {
+  if (legacyOutput?.research_gaps?.length) {
     lines.push(`## Research Gaps`, ``);
-    for (const g of o.research_gaps) lines.push(`- ${g.gap} [${g.kind}]`);
+    for (const g of legacyOutput.research_gaps) lines.push(`- ${g.gap} [${g.kind}]`);
     lines.push(``);
   }
-  if (o?.research_directions?.length) {
+  if (legacyOutput?.research_directions?.length) {
     lines.push(`## Research Directions`, ``);
-    for (const d of o.research_directions) lines.push(`- ${d}`);
+    for (const d of legacyOutput.research_directions) lines.push(`- ${d}`);
     lines.push(``);
   }
-  if (o?.artwork_directions?.length) {
+  if (legacyOutput?.artwork_directions?.length) {
     lines.push(`## Artwork Directions`, ``);
-    for (const d of o.artwork_directions) lines.push(`- ${d}`);
+    for (const d of legacyOutput.artwork_directions) lines.push(`- ${d}`);
     lines.push(``);
   }
-  if (o?.small_experiment) lines.push(`## Small Experiment`, ``, o.small_experiment, ``);
+  if (legacyOutput?.small_experiment) lines.push(`## Small Experiment`, ``, legacyOutput.small_experiment, ``);
+  appendDetails();
   if (critic) {
     lines.push(`## Critic`, ``, `_${critic.overall ?? ""}_`, ``);
     for (const w of critic.warnings ?? []) lines.push(`- ⚠ [${w.category}] ${w.note}`);
