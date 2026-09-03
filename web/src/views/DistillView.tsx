@@ -205,8 +205,9 @@ export default function DistillView({ onJobCreated, focusSessionId, onFocusConsu
     } catch (error) {
       const code = error instanceof Error ? error.message : "withdraw_failed";
       if (generation === generationRef.current) {
-        if (code === "withdrawal_stale" || code === "publication_state_changed") { setWithdrawOpen(false); setWithdrawSnapshot(null); }
-        setWithdrawError(homepagePublicationErrorMessage("withdraw", code));
+        const message = homepagePublicationErrorMessage("withdraw", code);
+        if (code === "withdrawal_stale" || code === "publication_state_changed") { setWithdrawOpen(false); setWithdrawSnapshot(null); setPublicationFeedback({ kind: "error", message }); }
+        else setWithdrawError(message);
       }
     } finally {
       if (generation === generationRef.current) setWithdrawPending(false);
