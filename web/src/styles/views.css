@@ -170,6 +170,36 @@
 .selection-tray__options { display: flex; flex-wrap: wrap; gap: 8px 14px; }
 .selection-tray__options label { color: var(--color-muted); font-size: 11px; }
 .selection-tray__actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.homepage-publication-panel { display: grid; gap: 12px; margin: 18px 0 26px; padding: 16px; border: 1px solid var(--color-line); border-left: 3px solid var(--color-accent); border-radius: var(--radius-sm); background: var(--color-soft); }
+.homepage-publication-panel__heading { display: flex; align-items: start; justify-content: space-between; gap: 16px; }
+.homepage-publication-panel__heading h2 { margin: 3px 0 5px; font-size: 16px; letter-spacing: -0.03em; }
+.homepage-publication-panel__heading p:not(.reading-section__label), .homepage-publication-panel__state span { margin: 0; color: var(--color-muted); font-size: 11px; line-height: 1.55; }
+.homepage-publication-panel__badge { flex: 0 0 auto; color: var(--color-muted); font-size: 10px; }
+.homepage-publication-panel__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
+.homepage-publication-panel__state { display: grid; gap: 3px; margin-right: auto; }
+.homepage-publication-panel__state strong { font-size: 12px; }
+.homepage-publication-panel__announcement { margin: 0; color: var(--color-positive); font-size: 11px; }
+.homepage-publication-panel__error { margin: 0; color: var(--color-danger); font-size: 11px; }
+.homepage-publication-panel__retry { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.homepage-publication-layer { position: fixed; z-index: 80; inset: 0; display: grid; place-items: center; padding: 20px; }
+.homepage-publication-dialog__scrim { position: absolute; inset: 0; width: 100%; border: 0; background: rgb(17 18 22 / 58%); }
+.homepage-publication-dialog { position: relative; display: grid; gap: 14px; width: min(700px, 100%); max-height: calc(100vh - 40px); overflow: auto; padding: 24px; border: 1px solid var(--color-line); border-radius: var(--radius-md); background: var(--color-surface); box-shadow: 0 22px 70px rgb(17 18 22 / 28%); }
+.homepage-publication-dialog h2, .homepage-publication-dialog p { margin: 0; }
+.homepage-publication-dialog__heading { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
+.homepage-publication-dialog__heading h2 { margin-top: 3px; font-size: 20px; letter-spacing: -0.04em; }
+.homepage-publication-dialog__description { color: var(--color-muted); font-size: 11px; line-height: 1.65; }
+.homepage-publication-preview { display: grid; gap: 16px; max-height: min(54vh, 580px); overflow: auto; padding: 17px; border: 1px solid var(--color-line); background: var(--color-soft); }
+.homepage-publication-preview h3 { margin: 0; font-size: 18px; line-height: 1.35; }
+.homepage-publication-preview section { display: grid; gap: 5px; }
+.homepage-publication-preview .reading-section__label { margin: 0; }
+.homepage-publication-preview__materials { display: grid; gap: 5px; margin: 0; padding-left: 18px; font-size: 11px; line-height: 1.5; }
+.homepage-publication-preview__materials a { color: var(--color-accent); }
+.homepage-publication-preview__disclaimer { color: var(--color-muted); font-size: 10px; line-height: 1.6; }
+.homepage-publication-preview__private { display: grid; gap: 5px; padding: 12px; border-left: 3px solid var(--color-warning); background: var(--color-warning-soft); color: var(--color-muted); font-size: 10px; line-height: 1.5; }
+.homepage-publication-preview__private .reading-section__label { color: var(--color-ink); }
+.homepage-publication-dialog__announcement { margin: 0; color: var(--color-positive); font-size: 11px; }
+.homepage-publication-dialog__error { margin: 0; color: var(--color-danger); font-size: 11px; }
+.homepage-publication-dialog__actions { display: flex; justify-content: end; gap: 8px; }
 .budget-note { margin: 0; color: var(--color-muted); font-family: var(--font-mono); font-size: 10px; }
 .budget-note.is-warning { color: var(--color-warning); }
 .session-strip { display: flex; flex-wrap: wrap; gap: 6px; }

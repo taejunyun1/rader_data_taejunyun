@@ -7,6 +7,18 @@ import { readJson } from "../lib/requestBody";
 
 const distill = new Hono<{ Bindings: Env }>();
 
+function homepagePublicationState(value: unknown): string {
+  switch (value) {
+    case "PUBLISHED": return "CURRENT";
+    case "SUPERSEDED": return "SUPERSEDED";
+    case "WITHDRAWN": return "WITHDRAWN";
+    case "FAILED": return "FAILED";
+    case "PURGING": return "PURGING";
+    case "PURGED": return "PURGED";
+    default: return "NONE";
+  }
+}
+
 distill.get("/budget", async (c) => {
   const pct = await budgetPct(c.env);
   return c.json({
@@ -76,10 +88,13 @@ distill.get("/sessions", async (c) => {
                    SELECT COUNT(*)
                    FROM json_each(CASE WHEN json_valid(session.sources_used_json) THEN session.sources_used_json ELSE '[]' END) used
                    JOIN sources active_source ON active_source.id = json_extract(used.value, '$.id')
-                 ) END AS activeSourceCount
+                 ) END AS activeSourceCount,
+            COALESCE((SELECT status FROM homepage_publications publication
+                      WHERE publication.distill_session_id = session.id
+                      ORDER BY publication.updated_at DESC LIMIT 1), 'NONE') AS homepagePublicationState
      FROM distill_sessions session ORDER BY session.created_at DESC LIMIT 30`
   ).all<Record<string, unknown>>();
-  return c.json({ sessions: rows.results ?? [] });
+  return c.json({ sessions: (rows.results ?? []).map((row) => ({ ...row, homepagePublicationState: homepagePublicationState(row.homepagePublicationState) })) });
 });
 
 distill.get("/sessions/:id", async (c) => {
@@ -88,7 +103,10 @@ distill.get("/sessions/:id", async (c) => {
     .prepare(
       `SELECT id, input_context_json, sources_used_json, output_json, critic_output_json, counter_output_json,
               counter_enabled AS counterEnabled, user_selection_json, redistill_of AS redistillOf, model_version AS modelVersion,
-              prompt_version AS promptVersion, cost_usd AS costUsd, created_at AS createdAt
+              prompt_version AS promptVersion, cost_usd AS costUsd, created_at AS createdAt,
+              COALESCE((SELECT status FROM homepage_publications publication
+                        WHERE publication.distill_session_id = distill_sessions.id
+                        ORDER BY publication.updated_at DESC LIMIT 1), 'NONE') AS homepagePublicationState
        FROM distill_sessions WHERE id = ?`
     )
     .bind(id)
@@ -132,6 +150,7 @@ distill.get("/sessions/:id", async (c) => {
       output: parse(row.output_json),
       critic: parse(row.critic_output_json),
       counter: parse(row.counter_output_json),
+      homepagePublicationState: homepagePublicationState(row.homepagePublicationState),
       userSelection: parse(row.user_selection_json),
     },
     readingQueue: queue.results ?? [],

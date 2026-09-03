@@ -35,6 +35,7 @@ interface ModalAccessibilityOptions {
   dialogRef: RefObject<HTMLElement | null>;
   layerRef: RefObject<HTMLElement | null>;
   onClose: () => void;
+  returnFocusTarget?: () => HTMLElement | null;
   getInitialFocusTarget?: () => HTMLElement | null;
   initialFocusDeps?: ReadonlyArray<unknown>;
 }
@@ -44,10 +45,13 @@ export function useModalAccessibility({
   dialogRef,
   layerRef,
   onClose,
+  returnFocusTarget,
   getInitialFocusTarget,
   initialFocusDeps = [],
 }: ModalAccessibilityOptions) {
   const returnFocusRef = useRef<HTMLElement | null>(null);
+  const returnFocusTargetRef = useRef(returnFocusTarget);
+  returnFocusTargetRef.current = returnFocusTarget;
   const initialFocusTargetRef = useRef(getInitialFocusTarget);
   initialFocusTargetRef.current = getInitialFocusTarget;
 
@@ -64,7 +68,9 @@ export function useModalAccessibility({
     return () => {
       restoreSiblings();
       globalThis.document.body.style.overflow = previousOverflow;
-      if (returnFocusRef.current?.isConnected) returnFocusRef.current.focus();
+      const preferred = returnFocusTargetRef.current?.() ?? null;
+      if (preferred?.isConnected) preferred.focus();
+      else if (returnFocusRef.current?.isConnected) returnFocusRef.current.focus();
     };
   }, [dialogRef, layerRef, open]);
 
