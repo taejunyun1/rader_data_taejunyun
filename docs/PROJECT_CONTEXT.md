@@ -221,7 +221,18 @@ pnpm deploy
 
 현재 저장소는 `main`을 최신 기준선으로 유지하며, 작업용 브랜치를 별도로 남기지 않는다. 브랜치 삭제 전에는 원격 목록과 미병합 커밋을 확인하고 `main` 및 보호 대상은 삭제하지 않는다.
 
-## 8. 빠른 참조 경로
+## 8. 현재 연구 발행 운영 상태 (2026-09-03)
+
+- Radar main에는 `homepage_publications` 원장·lease·history-first R2 저장·preview/publish/withdraw/status API가 반영되었다.
+- 원격 D1 `research-radar-db`에 migration `0029_homepage_publications.sql`을 적용했고, R2 `radar-publications` 버킷을 `PUBLICATIONS`로 연결했다.
+- Radar Worker 배포 버전: `e9e29f28-0e70-44a8-808b-41e882628eee`.
+- Homepage reading Worker는 고정키 `homepage/current-research.json`만 공개하며, 미발행은 `404 current_research_not_published`, 반응 API는 현재 운영 설정에서 `410 reactions_disabled`를 반환한다.
+- Homepage reading Worker 배포 버전: `3ebc1478-f9ca-4374-aba8-5f0bd4dc1201`.
+- Pages `homepage-artist`에는 `VITE_CURRENT_RESEARCH_ENABLED=true`로 빌드한 `/text` 현재 연구 view를 배포했다. 현재 R2 payload가 없으므로 공개 화면은 `현재 공개된 연구가 없습니다.` 상태다.
+- 발행 API의 production CSRF 검증을 위해 Worker Secret `CSRF_SECRET`을 등록했다. 현재 연구가 실제로 발행되면 Homepage는 다음 조회에서 새 payload를 표시한다.
+- Homepage 배포 스크립트는 더 이상 레거시 `reading:sync`를 자동 실행하지 않는다. Radar importer의 `sync:radar`는 별도 운영 경계로 유지한다.
+
+## 9. 빠른 참조 경로
 
 - API 진입점: `worker/src/index.ts`
 - ingestion/provenance: `worker/src/ingestion/`
