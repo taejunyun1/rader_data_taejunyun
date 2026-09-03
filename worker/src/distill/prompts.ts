@@ -2,7 +2,7 @@ import type { DistillContext } from "./context";
 import type { DistillOutput } from "@radar/shared";
 
 export type PromptVariant = "distill-v1" | "distill-v2-terse" | "distill-v3-layered";
-export const DEFAULT_PROMPT_VARIANT: PromptVariant = "distill-v2-terse";
+export const DEFAULT_PROMPT_VARIANT: PromptVariant = "distill-v3-layered";
 export const PROMPT_VARIANTS: PromptVariant[] = ["distill-v1", "distill-v2-terse", "distill-v3-layered"];
 export type { DistillOutput } from "@radar/shared";
 
@@ -36,16 +36,27 @@ function paramLine(p: DistillContext["params"]): string {
 
 export function distillPrompt(ctx: DistillContext, variant: PromptVariant = "distill-v1"): string {
   const terse = variant === "distill-v2-terse";
+  const layered = variant === "distill-v3-layered";
   const sources = ctx.sources
     .map((s) => {
       const bits = [
-        `[${s.kind}${s.year ? ` ${s.year}` : ""}${s.signals.length ? `; signals: ${s.signals.join("/")}` : ""}${s.resurfaced ? "; RESURFACED (older material relevant again — connect it to current momentum)" : ""}] ${s.title}`,
+        `[SOURCE ID: ${s.id}] [${s.kind}${s.year ? ` ${s.year}` : ""}${s.signals.length ? `; signals: ${s.signals.join("/")}` : ""}${s.resurfaced ? "; RESURFACED (older material relevant again — connect it to current momentum)" : ""}] ${s.title}`,
       ];
       if (s.summary) bits.push(`  summary: ${s.summary}`);
       for (const f of s.fragments) bits.push(`  fragment: "${f}"`);
       return bits.join("\n");
     })
     .join("\n");
+  const layeredSchema = layered
+    ? `,
+  "details": {
+    "thoughts": [{"summaryIndex": 0, "rationale": "why this synthesis follows from the material", "sourceIds": ["SOURCE ID values only"], "uncertainty": "what remains uncertain", "nextCheck": "how to check it"}],
+    "questions": [{"summaryIndex": 0, "whyNow": "why this question matters now", "method": "a concrete way to investigate", "evidenceNeeded": "evidence needed", "sourceIds": ["SOURCE ID values only"]}],
+    "researchGaps": [{"summaryIndex": 0, "diagnosis": "what is missing", "researchMethod": "how to fill the gap", "sourceIds": ["SOURCE ID values only"]}],
+    "researchDirections": [{"summaryIndex": 0, "rationale": "why this direction follows", "method": "concrete research method", "expectedOutcome": "expected result", "sourceIds": ["SOURCE ID values only"]}],
+    "artworkDirections": [{"summaryIndex": 0, "rationale": "why this can become a work", "materials": ["specific material or medium"], "procedure": "concrete procedure", "observation": "what to observe", "sourceIds": ["SOURCE ID values only"]}]
+  }`
+    : "";
 
   return `You are Distill, the core editorial engine of Research Radar — a research companion for a photographer-researcher (photography, image theory, machine vision, computational photography, media art). You compress a research reservoir into a focused edition. You are NOT a chatbot: output the structured edition only.
 
@@ -75,7 +86,7 @@ Produce the weekly edition as strict JSON:
   "research_gaps": [{"gap": "what is unclear/unargued/disconnected", "kind": "one of: under-evidenced|missing-source|conflicting-claims|needs-firsthand-research|artistically-possible-academically-untested"}],
   "research_directions": ["about 2 possible research directions"],
   "artwork_directions": ["about 2 possible artwork directions, concrete and material"],
-  "small_experiment": "optional: one small, doable experiment (skip if nothing genuinely useful)"
+  "small_experiment": "optional: one small, doable experiment (skip if nothing genuinely useful)"${layeredSchema}
 }
 
 HARD RULES:
@@ -83,7 +94,18 @@ HARD RULES:
 - Never fabricate quotes. Distinguish source fragments (quoted above) from your synthesis.
 - Respect the user's parameters: high divergence → allow more unexpected links; low familiarity → stay closer to existing keywords.
 - The photographer's own works (PERSONAL_WORK) are the center of gravity: connect outward from them, do not ignore them.
-- Language: write ALL prose in Korean (thoughts, questions, gaps, directions, experiment, why_read). Keep proper nouns verbatim in original language: book/paper titles, author names, artist names, technical terms (e.g. "Towards a Philosophy of Photography — Vilém Flusser", "NeRF", "wet plate"). Keyword terms may stay in original language when they are established technical terms, but add Korean gloss where natural (e.g. "인덱스 index").${
+- Language: write ALL prose in Korean (thoughts, questions, gaps, directions, experiment, why_read). Keep proper nouns verbatim in original language: book/paper titles, author names, artist names, technical terms (e.g. "Towards a Philosophy of Photography — Vilém Flusser", "NeRF", "wet plate"). Keyword terms may stay in original language when they are established technical terms, but add Korean gloss where natural (e.g. "인덱스 index").${layered ? `
+
+LAYERED DETAIL RULES (v3):
+- The details object is required and is Radar-internal SYNTHESIS, never a quotation.
+- sourceIds must use only the SOURCE ID allowlist printed above; use at most 3 IDs per item.
+- summaryIndex is zero-based and must point to the matching summary array.
+- thoughts rationale is 2-4 sentences; uncertainty and nextCheck are 1-2 sentences each.
+- questions must explain whyNow, method, and evidenceNeeded.
+- researchGaps must explain diagnosis and researchMethod.
+- researchDirections must explain rationale, method, and expectedOutcome.
+- artworkDirections must explain rationale, materials, procedure, and observation.
+` : ""}${
     terse
       ? `
 

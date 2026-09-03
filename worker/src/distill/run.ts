@@ -15,7 +15,7 @@ import {
   type DistillOutput,
   type PromptVariant,
 } from "./prompts";
-import { parseCriticOutput, parseCounterOutput, parseDistillOutput } from "./outputSchema";
+import { parseCriticOutput, parseCounterOutput, parseDistillOutput, sanitizeDistillDetails } from "./outputSchema";
 
 export type DistillRunResult =
   | { ok: true; sessionId: string; costUsd: number; budgetUsedPct: number; queueItemIds: string[]; distillOutput: DistillOutput }
@@ -76,14 +76,15 @@ export async function runDistill(
     promptVersion: variant,
     model: "high",
     jsonMode: true,
-    maxOutputTokens: 4000,
+    maxOutputTokens: 6500,
     messages: [
       { role: "system", content: sys },
       { role: "user", content: distillPrompt(ctx, variant) + keepNote },
     ],
   });
-  const distill = asValidated(extractJsonLoose(distillRes.text), "distill");
-  if (!distill) throw new Error("distill_invalid_output");
+  const parsedDistill = asValidated(extractJsonLoose(distillRes.text), "distill");
+  if (!parsedDistill) throw new Error("distill_invalid_output");
+  const distill = sanitizeDistillDetails(parsedDistill, new Set(ctx.sources.map((source) => source.id)));
 
   const criticRes = await callOpenAi(env, {
       purpose: "critic",
