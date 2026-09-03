@@ -14,6 +14,7 @@ import usageRoute from "./routes/usage";
 import jobsRoute from "./routes/jobs";
 import visualAssetsRoute from "./routes/visualAssets";
 import visualExtractionRoute from "./routes/visualExtraction";
+import homepagePublicationRoute from "./routes/homepagePublication";
 import { verifyAccessAssertion, extractAssertion, type AccessIdentity } from "./lib/access";
 import { HttpError, jsonError, requestId } from "./lib/httpErrors";
 import { runScheduledCron } from "./operations/scheduled";
@@ -89,6 +90,7 @@ app.route("/api/usage", usageRoute);
 app.route("/api/jobs", jobsRoute);
 app.route("/api/visual-assets", visualAssetsRoute);
 app.route("/api/visual-extraction", visualExtractionRoute);
+app.route("/api/distill", homepagePublicationRoute);
 
 function buffersEqual(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false;
