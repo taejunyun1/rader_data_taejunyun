@@ -77,7 +77,10 @@ function revisionFor(etag: string | null): Promise<string> {
 }
 
 function etagOf(object: R2Object): string {
-  const etag = object.httpEtag || object.etag;
+  // `etag` is the opaque token accepted by R2 conditional writes.  The
+  // convenience `httpEtag` value may be quoted for an HTTP header and must
+  // not be used as the CAS token.
+  const etag = object.etag || object.httpEtag?.replace(/^"|"$/g, "");
   if (!etag) throw storageError("publication_storage_invalid");
   return etag;
 }
@@ -142,7 +145,7 @@ export async function putPermanentPurgeMarker(
   assertDate(input.createdAt, "created_at");
   const key = purgeMarkerKey(input.distillSessionId);
   const body = JSON.stringify(input);
-  let result: R2Object | null;
+  let result: R2Object | null = null;
   try {
     result = await bucket.put(key, body, {
       onlyIf: { etagDoesNotMatch: "*" },
@@ -189,7 +192,7 @@ export async function putHistoryEventIfAbsent(
   const body = JSON.stringify(payload);
   const markerPresent = await hasPermanentPurgeMarker(bucket, input.distillSessionId);
   if (markerPresent) throw storageError("publication_purged");
-  let result: R2Object | null;
+  let result: R2Object | null = null;
   try {
     result = await bucket.put(key, body, {
       onlyIf: { etagDoesNotMatch: "*" },
@@ -197,8 +200,7 @@ export async function putHistoryEventIfAbsent(
     });
   } catch (error) {
     const existing = await readHistoryPayload(bucket, key);
-    if (existing && samePayload(existing, payload)) return;
-    throw error;
+    if (!(existing && samePayload(existing, payload))) throw error;
   }
   if (!result) {
     const existing = await readHistoryPayload(bucket, key);
@@ -271,4 +273,3 @@ export async function deletePublicationHistory(
     // prefix so no key is skipped and report only after a zero-count sweep.
   }
 }
-
