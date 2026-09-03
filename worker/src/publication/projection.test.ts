@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import type { CurrentResearchContent } from "@radar/shared";
-import { buildHomepageProjection, canonicalJson, deriveDisplayTitle, hashHomepageProjection, loadLatestPublishableDistill } from "./projection";
+import { buildHomepageProjection, canonicalJson, deriveDisplayTitle, hashHomepageProjection, loadLatestPublishableDistill, type PublishableDistillSession } from "./projection";
 
 const output = (overrides: Record<string, unknown> = {}) => ({
   keywords: ["빛", "기억"],
@@ -24,6 +24,10 @@ const content: CurrentResearchContent = {
   researchMaterials: [],
 };
 
+function session(id: string, sourcesUsed: Array<{ id: string; title: string }> = [], overrides: Record<string, unknown> = {}): PublishableDistillSession {
+  return { id, createdAt: "2026-09-03T00:00:00.000Z", sourcesUsed, output: output(overrides), critic: null };
+}
+
 describe("public projection primitives", () => {
   it("derives and bounds the display title without changing source arrays", () => {
     expect(deriveDisplayTitle({ questions: ["첫 질문"], researchDirections: ["방향"] })).toBe("첫 질문");
@@ -39,6 +43,11 @@ describe("public projection primitives", () => {
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;
     expect(() => canonicalJson(cyclic)).toThrow();
+    const sparse: unknown[] = [];
+    sparse.length = 1;
+    expect(() => canonicalJson(sparse)).toThrow(/sparse_array/);
+    expect(() => canonicalJson(new Date())).toThrow(/non_plain_record/);
+    expect(canonicalJson({ "\uE000": 1, "😀": 2 })).toBe('{"😀":2,"":1}');
   });
 
   it("hashes the distilled timestamp and content as lowercase sha256", async () => {
@@ -65,5 +74,55 @@ describe("public Distill selection and material join", () => {
     const draft = await buildHomepageProjection(env.DB, selected!);
     expect(draft.content.researchMaterials).toEqual([{ title: "자료", author: null, year: null, url: "https://example.com/source" }]);
     expect(draft.privateReview).toEqual({ warnings: [], overall: null });
+    expect(draft.content.thoughts).toEqual(["첫 생각"]);
+  });
+
+  it("skips sessions whose source was deleted but blocks a selected session with a deletion claim", async () => {
+    const now = new Date().toISOString();
+    const sourceId = `projection-claim-source-${crypto.randomUUID()}`;
+    const deletedId = `projection-deleted-source-${crypto.randomUUID()}`;
+    const olderId = `projection-older-${crypto.randomUUID()}`;
+    const selectedId = `projection-claimed-${crypto.randomUUID()}`;
+    await env.DB.batch([
+      env.DB.prepare(`INSERT INTO sources (id, kind, title, canonical_url, reliability, status, created_at, updated_at) VALUES (?, 'WEB', '활성 자료', 'https://example.com/active', 'DISCOVERY', 'indexed', ?, ?)`).bind(sourceId, now, now),
+      env.DB.prepare(`INSERT INTO distill_sessions (id, sources_used_json, output_json, created_at) VALUES (?, ?, ?, ?)`).bind(olderId, JSON.stringify([{ id: sourceId, title: "활성 자료" }]), JSON.stringify(output()), "2026-09-02T00:00:00.000Z"),
+      env.DB.prepare(`INSERT INTO distill_sessions (id, sources_used_json, output_json, created_at) VALUES (?, ?, ?, ?)`).bind(`projection-deleted-${crypto.randomUUID()}`, JSON.stringify([{ id: deletedId, title: "삭제 자료" }]), JSON.stringify(output()), "2026-09-04T00:00:00.000Z"),
+      env.DB.prepare(`INSERT INTO distill_sessions (id, sources_used_json, output_json, created_at) VALUES (?, ?, ?, ?)`).bind(selectedId, JSON.stringify([{ id: sourceId, title: "활성 자료" }]), JSON.stringify(output()), "2026-09-05T00:00:00.000Z"),
+      env.DB.prepare(`INSERT INTO source_deletion_claims (source_id, claim_token, state, lease_expires_at, created_at, updated_at) VALUES (?, ?, 'R2_PENDING', ?, ?, ?)`).bind(sourceId, crypto.randomUUID(), "2999-01-01T00:00:00.000Z", now, now),
+    ]);
+    await expect(loadLatestPublishableDistill(env.DB)).rejects.toThrow("source_delete_in_progress");
+    await expect(buildHomepageProjection(env.DB, session(selectedId, [{ id: sourceId, title: "활성 자료" }]))).rejects.toThrow("source_delete_in_progress");
+  });
+
+  it("joins ordered materials, prefers canonical URLs, falls back to DOI, excludes private URLs, and counts overflow", async () => {
+    const now = new Date().toISOString();
+    const ids = await Promise.all(Array.from({ length: 9 }, async (_, index) => {
+      const id = `projection-material-${crypto.randomUUID()}`;
+      const canonical = index === 1 ? null : index === 2 ? "http://127.0.0.1/private" : index === 3 ? "https://example.local/private" : `https://example.com/${index}`;
+      const doi = index === 1 ? "10.1234/DOI.TEST" : null;
+      await env.DB.prepare(`INSERT INTO sources (id, kind, title, authors, year, canonical_url, doi, reliability, status, created_at, updated_at) VALUES (?, 'WEB', ?, ?, 2024, ?, ?, 'DISCOVERY', 'indexed', ?, ?)`).bind(id, `자료 ${index}`, index === 0 ? "저자" : null, canonical, doi, now, now).run();
+      return { id, title: `입력 ${index}` };
+    }));
+    const draft = await buildHomepageProjection(env.DB, session(`projection-material-session-${crypto.randomUUID()}`, ids));
+    expect(draft.content.researchMaterials.map((material) => material.url)).toEqual(["https://example.com/0", "https://doi.org/10.1234/doi.test", "https://example.com/4", "https://example.com/5", "https://example.com/6"]);
+    expect(draft.excludedResearchMaterialCount).toBe(4);
+    const longUrlId = `projection-material-long-${crypto.randomUUID()}`;
+    const invalidYearId = `projection-material-year-${crypto.randomUUID()}`;
+    await env.DB.batch([
+      env.DB.prepare(`INSERT INTO sources (id, kind, title, year, canonical_url, reliability, status, created_at, updated_at) VALUES (?, 'WEB', '긴 URL', 2024, ?, 'DISCOVERY', 'indexed', ?, ?)`).bind(longUrlId, `https://example.com/${"x".repeat(2048)}`, now, now),
+      env.DB.prepare(`INSERT INTO sources (id, kind, title, year, canonical_url, reliability, status, created_at, updated_at) VALUES (?, 'WEB', '잘못된 연도', -1, 'https://example.com/year', 'DISCOVERY', 'indexed', ?, ?)`).bind(invalidYearId, now, now),
+    ]);
+    const longDraft = await buildHomepageProjection(env.DB, session(`projection-material-long-session-${crypto.randomUUID()}`, [{ id: longUrlId, title: "긴 URL" }]));
+    expect(longDraft.content.researchMaterials).toEqual([]);
+    expect(longDraft.excludedResearchMaterialCount).toBe(1);
+    await expect(buildHomepageProjection(env.DB, session(`projection-material-year-session-${crypto.randomUUID()}`, [{ id: invalidYearId, title: "잘못된 연도" }]))).rejects.toThrow(/Year_invalid/);
+  });
+
+  it("rejects copied array counts and HTML-like or over-limit values", async () => {
+    const base = session(`projection-invalid-${crypto.randomUUID()}`);
+    await expect(buildHomepageProjection(env.DB, { ...base, output: output({ keywords: Array.from({ length: 7 }, () => "키워드") }) })).rejects.toThrow(/count_too_large/);
+    await expect(buildHomepageProjection(env.DB, { ...base, output: output({ thoughts_fragments: ["<b>위험</b>"] }) })).rejects.toThrow(/html_like/);
+    await expect(buildHomepageProjection(env.DB, { ...base, output: output({ questions: ["질문".repeat(401)] }) })).rejects.toThrow(/too_long/);
+    await expect(buildHomepageProjection(env.DB, { ...base, createdAt: "x".repeat(70_000) })).rejects.toThrow(/public_projection_too_large/);
   });
 });

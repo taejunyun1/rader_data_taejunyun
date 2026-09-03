@@ -72,7 +72,8 @@ function safeText(value: string, field: string, maxLength: number): string {
 }
 
 function boundedTextArray(values: string[], field: string, count: number, maxLength: number): string[] {
-  return values.slice(0, count).map((value) => safeText(value, field, maxLength));
+  if (values.length > count) throw new PublicProjectionError("public_projection_invalid", `${field}_count_too_large`);
+  return values.map((value) => safeText(value, field, maxLength));
 }
 
 function nonEmptyFirst(values: unknown): string | null {
@@ -193,7 +194,8 @@ function publicUrl(raw: string): string | null {
     if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password || !url.hostname) return null;
     if (url.hostname.toLowerCase() === "localhost" || url.hostname.toLowerCase().endsWith(".local") || isPrivateIp(url.hostname)) return null;
     url.hash = "";
-    return url.toString().replace(/\?$/, "");
+    const normalized = url.toString().replace(/\?$/, "");
+    return normalized.length <= 2048 ? normalized : null;
   } catch {
     return null;
   }
@@ -231,7 +233,7 @@ function assertPayloadSize(distilledAt: string, content: CurrentResearchContent)
     source: "research-radar",
     publicationId: "p".repeat(64),
     state: "EXPLORING",
-    distilledAt: "9".repeat(24),
+    distilledAt,
     publishedAt: "9".repeat(24),
     updatedAt: "9".repeat(24),
     contentHash: "a".repeat(64),
@@ -240,7 +242,6 @@ function assertPayloadSize(distilledAt: string, content: CurrentResearchContent)
   if (new TextEncoder().encode(canonicalJson(worstCase)).byteLength > MAX_PAYLOAD_BYTES) {
     throw new PublicProjectionError("public_projection_invalid", "public_projection_too_large");
   }
-  void distilledAt;
 }
 
 export async function buildHomepageProjection(db: D1Database, session: PublishableDistillSession): Promise<HomepageProjectionDraft> {
@@ -264,6 +265,9 @@ export async function buildHomepageProjection(db: D1Database, session: Publishab
     }
     const title = safeText(source.title, "researchMaterialTitle", 300);
     const author = source.authors === null ? null : safeText(source.authors, "researchMaterialAuthor", 200);
+    if (source.year !== null && (!Number.isInteger(source.year) || source.year < 0)) {
+      throw new PublicProjectionError("public_projection_invalid", "researchMaterialYear_invalid");
+    }
     const url = materialUrl(source.canonicalUrl, source.doi);
     if (!url) {
       excluded += 1;
@@ -303,10 +307,21 @@ export function canonicalJson(value: unknown): string {
     if (active.has(current)) throw new PublicProjectionError("public_projection_invalid", "cyclic_value");
     active.add(current);
     try {
-      if (Array.isArray(current)) return `[${current.map(encode).join(",")}]`;
+      if (Array.isArray(current)) {
+        const values: string[] = [];
+        for (let index = 0; index < current.length; index += 1) {
+          if (!Object.prototype.hasOwnProperty.call(current, index)) throw new PublicProjectionError("public_projection_invalid", "sparse_array");
+          values.push(encode(current[index]));
+        }
+        return `[${values.join(",")}]`;
+      }
       const prototype = Object.getPrototypeOf(current);
       if (prototype !== Object.prototype && prototype !== null) throw new PublicProjectionError("public_projection_invalid", "non_plain_record");
-      const entries = Object.entries(current as Record<string, unknown>).sort((left, right) => left[0].localeCompare(right[0]));
+      const entries = Object.entries(current as Record<string, unknown>).sort((left, right) => {
+        const a = left[0]!;
+        const b = right[0]!;
+        return a < b ? -1 : a > b ? 1 : 0;
+      });
       return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${encode(item)}`).join(",")}}`;
     } finally {
       active.delete(current);
