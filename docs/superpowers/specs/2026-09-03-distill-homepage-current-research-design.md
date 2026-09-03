@@ -84,9 +84,9 @@ Distill 문서에 다음 상태를 갖는 버튼을 둔다.
 
 공개 projection은 Distill의 배열 순서를 보존하면서 다음 상한을 적용한다.
 
-- `keywords`: 최대 6개
+- `keywords`: 최대 7개
 - `displayTitle`: 별도 AI 호출 없이 첫 번째 `questions`, 첫 번째 `researchDirections`, 고정 문구 `현재 연구` 순서로 선택한 대표 제목. 선택한 문장이 200자를 넘으면 표시용 제목만 200자와 말줄임표로 줄이고 원래 배열 항목은 바꾸지 않는다.
-- `thoughts`: `thoughts_fragments` 앞에서 최대 3개
+- `thoughts`: `thoughts_fragments` 앞에서 최대 5개
 - `questions`: 최대 3개
 - `researchDirections`: 최대 2개
 - `artworkDirections`: 최대 2개

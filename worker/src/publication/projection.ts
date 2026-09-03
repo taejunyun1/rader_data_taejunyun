@@ -210,8 +210,8 @@ function materialUrl(canonicalUrl: string | null, doi: string | null): string | 
 function toContent(output: DistillOutput, materials: CurrentResearchMaterial[]): CurrentResearchContent {
   const content: CurrentResearchContent = {
     displayTitle: safeText(deriveDisplayTitle(output), "displayTitle", 200),
-    keywords: boundedTextArray(output.keywords, "keyword", 6, 80),
-    thoughts: boundedTextArray(output.thoughts_fragments, "thought", 3, 600),
+    keywords: boundedTextArray(output.keywords, "keyword", 7, 80),
+    thoughts: boundedTextArray(output.thoughts_fragments, "thought", 5, 600),
     questions: boundedTextArray(output.questions, "question", 3, 400),
     researchDirections: boundedTextArray(output.research_directions, "researchDirection", 2, 600),
     artworkDirections: boundedTextArray(output.artwork_directions, "artworkDirection", 2, 600),

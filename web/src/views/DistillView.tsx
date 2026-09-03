@@ -226,8 +226,8 @@ export default function DistillView({ onJobCreated, focusSessionId, onFocusConsu
     const output = data.session.output;
     if (!output) return "최신 Distill에 홈페이지로 공개할 연구 내용이 없습니다.";
     const limits: Array<{ label: string; count: number; limit: number }> = [
-      { label: "키워드", count: output.keywords.length, limit: 6 },
-      { label: "생각의 조각", count: output.thoughts_fragments.length, limit: 3 },
+      { label: "키워드", count: output.keywords.length, limit: 7 },
+      { label: "생각의 조각", count: output.thoughts_fragments.length, limit: 5 },
       { label: "질문", count: output.questions.length, limit: 3 },
       { label: "연구 방향", count: output.research_directions.length, limit: 2 },
       { label: "작업 방향", count: output.artwork_directions.length, limit: 2 },

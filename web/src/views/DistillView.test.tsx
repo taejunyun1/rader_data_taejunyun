@@ -34,12 +34,12 @@ describe("DistillView", () => {
       const url = String(input);
       if (url === "/api/distill/sessions") return Promise.resolve(new Response(JSON.stringify({ sessions: [{ id: "session-latest", redistillOf: null, costUsd: 0.01, createdAt: "2026-09-03T00:00:00Z" }] })));
       if (url === "/api/distill/budget") return Promise.resolve(new Response(JSON.stringify({ usedPct: 12, budgetUsd: 10, blocked: false, warn: false })));
-      if (url === "/api/distill/sessions/session-latest") return Promise.resolve(new Response(JSON.stringify({ session: { id: "session-latest", redistillOf: null, modelVersion: "model", promptVersion: "prompt", costUsd: 0.01, createdAt: "2026-09-03T00:00:00Z", sourcesUsed: [], output: { keywords: ["1", "2", "3", "4", "5", "6", "7"], thoughts_fragments: ["1", "2", "3", "4"], questions: [], read_next: [], research_gaps: [], research_directions: [], artwork_directions: [] }, critic: null, counter: null, homepagePublicationState: "NONE" }, readingQueue: [], researchGaps: [] })));
+      if (url === "/api/distill/sessions/session-latest") return Promise.resolve(new Response(JSON.stringify({ session: { id: "session-latest", redistillOf: null, modelVersion: "model", promptVersion: "prompt", costUsd: 0.01, createdAt: "2026-09-03T00:00:00Z", sourcesUsed: [], output: { keywords: ["1", "2", "3", "4", "5", "6", "7", "8"], thoughts_fragments: ["1", "2", "3", "4", "5", "6"], questions: [], read_next: [], research_gaps: [], research_directions: [], artwork_directions: [] }, critic: null, counter: null, homepagePublicationState: "NONE" }, readingQueue: [], researchGaps: [] })));
       if (url === "/api/distill/homepage-publication") return Promise.resolve(new Response(JSON.stringify({ currentRevision: "r0", current: { state: "NONE" }, latestPublishable: null, ledgerReconcilePending: false }), { headers: { "Content-Type": "application/json" } }));
       return Promise.resolve(new Response(JSON.stringify({ ok: true })));
     });
     render(<DistillView />);
-    expect(await screen.findByText("최신 Distill이 홈페이지 공개 상한을 초과했습니다 (키워드 7/6 · 생각의 조각 4/3).")) .toBeInTheDocument();
+    expect(await screen.findByText("최신 Distill이 홈페이지 공개 상한을 초과했습니다 (키워드 8/7 · 생각의 조각 6/5).")) .toBeInTheDocument();
   });
 
   it("sends the counter choice with a new distill run", async () => {

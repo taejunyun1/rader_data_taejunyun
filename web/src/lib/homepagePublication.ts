@@ -61,7 +61,7 @@ function isContent(value: unknown): value is CurrentResearchContent {
   const keys = Object.keys(value).sort().join(",");
   if (keys !== "artworkDirections,displayTitle,keywords,questions,researchDirections,researchMaterials,thoughts") return false;
   if (typeof value.displayTitle !== "string") return false;
-  if (!isStringArray(value.keywords, 6) || !isStringArray(value.thoughts, 3) || !isStringArray(value.questions, 3) || !isStringArray(value.researchDirections, 2) || !isStringArray(value.artworkDirections, 2)) return false;
+  if (!isStringArray(value.keywords, 7) || !isStringArray(value.thoughts, 5) || !isStringArray(value.questions, 3) || !isStringArray(value.researchDirections, 2) || !isStringArray(value.artworkDirections, 2)) return false;
   if (!Array.isArray(value.researchMaterials) || value.researchMaterials.length > 5) return false;
   return value.researchMaterials.every((material) => {
     if (!isRecord(material)) return false;

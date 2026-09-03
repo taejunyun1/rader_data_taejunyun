@@ -135,7 +135,7 @@ describe("public Distill selection and material join", () => {
 
   it("rejects copied array counts and HTML-like or over-limit values", async () => {
     const base = session(`projection-invalid-${crypto.randomUUID()}`);
-    await expect(buildHomepageProjection(env.DB, { ...base, output: output({ keywords: Array.from({ length: 7 }, () => "키워드") }) })).rejects.toThrow(/count_too_large/);
+    await expect(buildHomepageProjection(env.DB, { ...base, output: output({ keywords: Array.from({ length: 8 }, () => "키워드") }) })).rejects.toThrow(/count_too_large/);
     await expect(buildHomepageProjection(env.DB, { ...base, output: output({ thoughts_fragments: ["<b>위험</b>"] }) })).rejects.toThrow(/html_like/);
     await expect(buildHomepageProjection(env.DB, { ...base, output: output({ questions: ["질문".repeat(401)] }) })).rejects.toThrow(/too_long/);
     await expect(buildHomepageProjection(env.DB, { ...base, createdAt: "x".repeat(70_000) })).rejects.toThrow(/public_projection_too_large/);
@@ -154,8 +154,8 @@ describe("public Distill selection and material join", () => {
 
   it("preserves mathematical symbols and accepts a maximal valid content envelope", async () => {
     const maximal = session(`projection-maximal-${crypto.randomUUID()}`, [], {
-      keywords: Array.from({ length: 6 }, () => "키".repeat(80)),
-      thoughts_fragments: Array.from({ length: 3 }, () => "생각 ∑ ≤ ".repeat(75).slice(0, 600)),
+      keywords: Array.from({ length: 7 }, () => "키".repeat(80)),
+      thoughts_fragments: Array.from({ length: 5 }, () => "생각 ∑ ≤ ".repeat(75).slice(0, 600)),
       questions: Array.from({ length: 3 }, () => "질문 ∑ ≤ ".repeat(50).slice(0, 400)),
       research_directions: Array.from({ length: 2 }, () => "방향 ∑ ≤ ".repeat(75).slice(0, 600)),
       artwork_directions: Array.from({ length: 2 }, () => "작업 ∑ ≤ ".repeat(75).slice(0, 600)),
