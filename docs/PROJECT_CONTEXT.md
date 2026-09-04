@@ -198,6 +198,14 @@ Semantic Search, Obsidian CLI, arXiv/RSS, Usage dashboard는 이미 구현된 �
 - API JSON 본문은 선언된 `Content-Length`와 chunked reader 양쪽에서 상한을 검사하고, multipart 업로드도 파일 상한 전에 요청 길이를 검사한다. API 오류는 request id를 포함한 `{ error, requestId, details? }` 형태로 반환한다.
 - Workflow dispatch는 job id를 Workflow instance id로 사용하며, enqueue 경쟁에서 partial unique index의 승자를 반환한다. dispatch 실패는 `QUEUED + dispatch_pending`으로 남겨 동일 job id를 reconciliation에서 재시도하고, terminal job 상태는 compare-and-set으로 stale replay가 덮어쓰지 못한다.
 
+### 6-2. 착즙 상세 정제와 호출 예약 (2026-09-05)
+
+- Distill의 필수 요약 배열과 선택적 `output_json.details`는 별도로 검증한다. 상세 객체가 깨져도 정상 요약은 보존하고, 배열 안의 잘못된 상세 항목만 제외한다. 조회 API와 Markdown export도 세션의 `sources_used_json` allowlist를 기준으로 같은 정제를 다시 적용한다.
+- 상세 문자열은 저장·표시 전에 trim하고, 빈 상세·빈 작업 재료·범위 밖/중복 `summaryIndex`는 제외한다. 출처 ID는 세션 allowlist 안의 값만 최대 3개 유지하며, 삭제된 자료의 보존된 스냅샷은 `available: false`로 표시한다.
+- UI 연구 공백은 D1의 800자 절단·정렬 결과를 식별자로 사용하지 않고 `output.research_gaps[index]`와 상세의 `summaryIndex`로 연결한다. 따라서 긴 문장·동일 문장·DB 순서 변경에도 상세 연결이 유지된다.
+- `worker/src/distill/callWithBudget.ts`는 실제 선택 모델의 가격과 UTF-8 입력 길이, 호출별 출력 상한으로 착즙 예약액을 계산해 기존 `ai_call_attempts` 원장에 전달한다. 추정액은 보수적 예약이고 실제 `usage` 정산액을 대체하지 않는다. 착즙 호출은 `researchJobId` 없이는 provider에 진입하지 않는다.
+- 이 예약 보강은 Distill 호출의 고정 소액 예약을 없애는 범위다. 전체 AI 작업의 절대 월 상한, 외부 provider 가격 변경, 다른 작업 종류의 reservation pool 통합은 별도 설계가 필요하다.
+
 ## 7. 작업·검증·배포 규칙
 
 ```bash

@@ -16,8 +16,10 @@ export function parseDistillOutput(value: unknown): DistillOutput | null {
   if (!Array.isArray(value.read_next) || !value.read_next.every((item) => record(item) && exactKeys(item, ["author", "related_question", "title", "why_read"].filter((k) => item[k] !== undefined)) && typeof item.title === "string" && typeof item.why_read === "string" && (item.author === undefined || typeof item.author === "string") && (item.related_question === undefined || typeof item.related_question === "string"))) return null;
   if (!Array.isArray(value.research_gaps) || !value.research_gaps.every((item) => record(item) && exactKeys(item, ["gap", "kind"]) && typeof item.gap === "string" && typeof item.kind === "string")) return null;
   if (value.small_experiment !== undefined && typeof value.small_experiment !== "string") return null;
-  if (value.details !== undefined && !parseDetails(value.details)) return null;
-  return value as unknown as DistillOutput;
+  const details = value.details === undefined ? null : parseDetails(value.details);
+  const output = value as unknown as DistillOutput;
+  if (!details || !Object.values(details).some((items) => items.length > 0)) return withoutDetails(output);
+  return { ...output, details };
 }
 
 export function sanitizeDistillDetails(output: DistillOutput, allowedSourceIds: ReadonlySet<string>): DistillOutput {
@@ -41,27 +43,51 @@ function withoutDetails(output: DistillOutput): DistillOutput {
 function sanitizeItems<T extends { summaryIndex: number; sourceIds: string[] }>(items: T[], summaryCount: number, allowedSourceIds: ReadonlySet<string>): T[] {
   const seen = new Set<number>();
   return items.flatMap((item) => {
-    if (!Number.isInteger(item.summaryIndex) || item.summaryIndex < 0 || item.summaryIndex >= summaryCount || seen.has(item.summaryIndex)) return [];
-    seen.add(item.summaryIndex);
-    return [{ ...item, sourceIds: [...new Set(item.sourceIds.filter((id) => allowedSourceIds.has(id)))].slice(0, 3) }];
+    const normalized = normalizeDetailItem(item, allowedSourceIds);
+    if (!Number.isInteger(normalized.summaryIndex) || normalized.summaryIndex < 0 || normalized.summaryIndex >= summaryCount) return [];
+    if (!hasMeaningfulDetail(normalized) || seen.has(normalized.summaryIndex)) return [];
+    seen.add(normalized.summaryIndex);
+    return [normalized];
   });
 }
 
-function parseDetails(value: unknown): value is DistillDetails {
-  if (!record(value) || !exactKeys(value, ["artworkDirections", "questions", "researchDirections", "researchGaps", "thoughts"])) return false;
-  return detailsArray(value.thoughts, ["nextCheck", "rationale", "sourceIds", "summaryIndex", "uncertainty"])
-    && detailsArray(value.questions, ["evidenceNeeded", "method", "sourceIds", "summaryIndex", "whyNow"])
-    && detailsArray(value.researchGaps, ["diagnosis", "researchMethod", "sourceIds", "summaryIndex"])
-    && detailsArray(value.researchDirections, ["expectedOutcome", "method", "rationale", "sourceIds", "summaryIndex"])
-    && detailsArray(value.artworkDirections, ["materials", "observation", "procedure", "rationale", "sourceIds", "summaryIndex"]);
+function parseDetails(value: unknown): DistillDetails | null {
+  if (!record(value) || !exactKeys(value, ["artworkDirections", "questions", "researchDirections", "researchGaps", "thoughts"])) return null;
+  const thoughts = detailsArray(value.thoughts, ["nextCheck", "rationale", "sourceIds", "summaryIndex", "uncertainty"]);
+  const questions = detailsArray(value.questions, ["evidenceNeeded", "method", "sourceIds", "summaryIndex", "whyNow"]);
+  const researchGaps = detailsArray(value.researchGaps, ["diagnosis", "researchMethod", "sourceIds", "summaryIndex"]);
+  const researchDirections = detailsArray(value.researchDirections, ["expectedOutcome", "method", "rationale", "sourceIds", "summaryIndex"]);
+  const artworkDirections = detailsArray(value.artworkDirections, ["materials", "observation", "procedure", "rationale", "sourceIds", "summaryIndex"]);
+  if (!thoughts || !questions || !researchGaps || !researchDirections || !artworkDirections) return null;
+  return { thoughts, questions, researchGaps, researchDirections, artworkDirections } as unknown as DistillDetails;
 }
 
-function detailsArray(value: unknown, keys: string[]): boolean {
-  return Array.isArray(value) && value.every((item) => {
-    if (!record(item) || !exactKeys(item, keys) || !Number.isInteger(item.summaryIndex) || !Array.isArray(item.sourceIds) || !item.sourceIds.every((id) => typeof id === "string")) return false;
-    return keys.filter((key) => !["summaryIndex", "sourceIds", "materials"].includes(key)).every((key) => typeof item[key] === "string")
+function detailsArray(value: unknown, keys: string[]): Record<string, unknown>[] | null {
+  if (!Array.isArray(value)) return null;
+  return value.flatMap((item) => {
+    if (!record(item) || !exactKeys(item, keys) || !Number.isInteger(item.summaryIndex) || !Array.isArray(item.sourceIds) || !item.sourceIds.every((id) => typeof id === "string")) return [];
+    const valid = keys.filter((key) => !["summaryIndex", "sourceIds", "materials"].includes(key)).every((key) => typeof item[key] === "string")
       && ("materials" in item ? Array.isArray(item.materials) && item.materials.every((material) => typeof material === "string") : true);
+    return valid ? [item] : [];
   });
+}
+
+function normalizeDetailItem<T extends { summaryIndex: number; sourceIds: string[] }>(item: T, allowedSourceIds: ReadonlySet<string>): T {
+  const normalized = Object.fromEntries(Object.entries(item).map(([key, value]) => {
+    if (key === "sourceIds" && Array.isArray(value)) {
+      const ids = value.filter((id): id is string => typeof id === "string").map((id) => id.trim()).filter((id) => id && allowedSourceIds.has(id));
+      return [key, [...new Set(ids)].slice(0, 3)];
+    }
+    if (key === "materials" && Array.isArray(value)) return [key, value.filter((material): material is string => typeof material === "string").map((material) => material.trim()).filter(Boolean)];
+    const scalar = value as unknown;
+    return [key, typeof scalar === "string" ? scalar.trim() : scalar];
+  }));
+  return normalized as T;
+}
+
+function hasMeaningfulDetail(item: { summaryIndex: number; sourceIds: string[]; materials?: string[]; [key: string]: unknown }): boolean {
+  if ("materials" in item) return Array.isArray(item.materials) && item.materials.length > 0;
+  return Object.entries(item).some(([key, value]) => !["summaryIndex", "sourceIds"].includes(key) && typeof value === "string" && value.length > 0);
 }
 
 export function parseCriticOutput(value: unknown): CriticOutput | null {

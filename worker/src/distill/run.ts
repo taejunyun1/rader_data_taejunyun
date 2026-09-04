@@ -1,6 +1,6 @@
 import type { RadarParams } from "@radar/shared";
 import { uuid } from "../ingestion/ids";
-import { callOpenAi, monthSpendUsd } from "../lib/openai";
+import { monthSpendUsd } from "../lib/openai";
 import { verifyWork } from "../lib/openalex";
 import { buildDistillContext, type DistillContext } from "./context";
 import {
@@ -16,6 +16,7 @@ import {
   type PromptVariant,
 } from "./prompts";
 import { parseCriticOutput, parseCounterOutput, parseDistillOutput, sanitizeDistillDetails } from "./outputSchema";
+import { callDistillWithBudget } from "./callWithBudget";
 
 export type DistillRunResult =
   | { ok: true; sessionId: string; costUsd: number; budgetUsedPct: number; queueItemIds: string[]; distillOutput: DistillOutput }
@@ -39,6 +40,7 @@ export async function runDistill(
   if (budgetUsedPct >= 100) {
     return { ok: false, error: `monthly_budget_exhausted (${budgetUsedPct.toFixed(0)}% of $${env.MONTHLY_BUDGET_USD})`, budgetUsedPct };
   }
+  if (!opts.researchJobId?.trim()) throw new Error("distill_research_job_required");
 
   const ctx: DistillContext = await buildDistillContext(env, params);
 
@@ -69,7 +71,7 @@ export async function runDistill(
   const variant = opts.promptVariant ?? DEFAULT_PROMPT_VARIANT;
   const includeCounter = opts.includeCounter ?? true;
 
-  const distillRes = await callOpenAi(env, {
+  const distillRes = await callDistillWithBudget(env, {
     purpose: "distill",
     researchJobId: opts.researchJobId,
     workflowStep: "distill-primary",
@@ -86,7 +88,7 @@ export async function runDistill(
   if (!parsedDistill) throw new Error("distill_invalid_output");
   const distill = sanitizeDistillDetails(parsedDistill, new Set(ctx.sources.map((source) => source.id)));
 
-  const criticRes = await callOpenAi(env, {
+  const criticRes = await callDistillWithBudget(env, {
       purpose: "critic",
       researchJobId: opts.researchJobId,
       workflowStep: "distill-critic",
@@ -145,11 +147,11 @@ async function runCounter(
   critic: CriticOutput,
   ctx: DistillContext,
   counterStrength: number,
-  researchJobId?: string,
+  researchJobId: string,
 ): Promise<{ output: CounterOutput; costUsd: number }> {
   const distillJson = JSON.stringify(distill, null, 1);
   const sourceEvidence = [`CRITIC REVIEW:\n${JSON.stringify(critic)}`, ...ctx.sources.map((source) => `${source.title}\n${source.summary ?? ""}\n${source.fragments.map((f) => `- ${f}`).join("\n")}`)].join("\n\n").slice(0, 12_000);
-  const generated = await callOpenAi(env, {
+  const generated = await callDistillWithBudget(env, {
     purpose: "counter",
     researchJobId,
     workflowStep: "distill-counter",
@@ -169,7 +171,7 @@ async function runCounter(
   let totalCost = generated.costUsd + validation.costUsd;
   if (validation.status === "verified") return { output: { ...output, validation: validation.result }, costUsd: totalCost };
 
-  const repaired = await callOpenAi(env, {
+  const repaired = await callDistillWithBudget(env, {
     purpose: "counter",
     researchJobId,
     workflowStep: "distill-counter-repair",
@@ -198,8 +200,8 @@ async function runCounter(
   };
 }
 
-async function validateCounter(env: Env, distillJson: string, counter: CounterOutput, sourceEvidence: string, researchJobId?: string, workflowStep = "distill-counter-validation"): Promise<{ status: "verified" | "unverified"; result: NonNullable<CounterOutput["validation"]>; costUsd: number }> {
-  const response = await callOpenAi(env, {
+async function validateCounter(env: Env, distillJson: string, counter: CounterOutput, sourceEvidence: string, researchJobId: string, workflowStep = "distill-counter-validation"): Promise<{ status: "verified" | "unverified"; result: NonNullable<CounterOutput["validation"]>; costUsd: number }> {
+  const response = await callDistillWithBudget(env, {
     purpose: "counter_validation",
     researchJobId,
     workflowStep,

@@ -36,6 +36,68 @@ describe("strict Distill output", () => {
     ] } }, new Set(["source-1"])).details?.thoughts).toHaveLength(1);
   });
 
+  it("preserves a valid summary when the optional details object is malformed", () => {
+    const malformed = {
+      ...validDistill,
+      details: {
+        thoughts: [{ summaryIndex: 0, rationale: 42, sourceIds: [], uncertainty: "불확실", nextCheck: "확인" }],
+        questions: [], researchGaps: [], researchDirections: [], artworkDirections: [],
+      },
+    };
+
+    const parsed = parseDistillOutput(malformed);
+
+    expect(parsed).not.toBeNull();
+    expect(parsed?.thoughts_fragments).toEqual(validDistill.thoughts_fragments);
+    expect(parsed?.details).toBeUndefined();
+  });
+
+  it("drops blank detail items while preserving non-empty items", () => {
+    const parsed = parseDistillOutput({
+      ...validDistill,
+      details: {
+        thoughts: [
+          { summaryIndex: 0, rationale: "   ", sourceIds: [], uncertainty: "   ", nextCheck: "   " },
+          { summaryIndex: 0, rationale: "  근거  ", sourceIds: [" source-1 ", "unknown"], uncertainty: " 불확실 ", nextCheck: " 다음 확인 " },
+        ],
+        questions: [], researchGaps: [], researchDirections: [], artworkDirections: [],
+      },
+    });
+
+    const sanitized = sanitizeDistillDetails(parsed!, new Set(["source-1"]));
+
+    expect(sanitized.details?.thoughts).toEqual([{
+      summaryIndex: 0,
+      rationale: "근거",
+      sourceIds: ["source-1"],
+      uncertainty: "불확실",
+      nextCheck: "다음 확인",
+    }]);
+  });
+
+  it("lets a valid duplicate-index item survive an invalid earlier item", () => {
+    const parsed = parseDistillOutput({
+      ...validDistill,
+      details: {
+        thoughts: [
+          { summaryIndex: 0, rationale: "", sourceIds: [], uncertainty: "", nextCheck: "" },
+          { summaryIndex: 0, rationale: "유효한 근거", sourceIds: [], uncertainty: "불확실", nextCheck: "다음 확인" },
+        ],
+        questions: [], researchGaps: [], researchDirections: [], artworkDirections: [],
+      },
+    });
+
+    const sanitized = sanitizeDistillDetails(parsed!, new Set());
+
+    expect(sanitized.details?.thoughts).toEqual([{
+      summaryIndex: 0,
+      rationale: "유효한 근거",
+      sourceIds: [],
+      uncertainty: "불확실",
+      nextCheck: "다음 확인",
+    }]);
+  });
+
   it("rejects malformed stored JSON and the historical weak shape", () => {
     expect(parseDistillOutput("{\"keywords\":[\"x\"]" )).toBeNull();
     expect(parseDistillOutput({ keywords: [], research_directions: [] })).toBeNull();

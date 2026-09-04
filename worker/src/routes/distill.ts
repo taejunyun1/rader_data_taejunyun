@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { budgetPct, verifyQueueItems } from "../distill/run";
 import { PROMPT_VARIANTS, type DistillOutput, type PromptVariant } from "../distill/prompts";
-import { parseDistillOutput } from "../distill/outputSchema";
+import { parseDistillOutput, sanitizeDistillDetails } from "../distill/outputSchema";
 import { enqueueResearchJob } from "../jobs/enqueue";
 import { verifiedRequester } from "../lib/httpErrors";
 import { readJson } from "../lib/requestBody";
@@ -42,8 +42,12 @@ function parseSourceSnapshots(value: unknown): SourceSnapshot[] {
   });
 }
 
-function detailSourceIds(value: unknown): string[] {
+function sanitizedOutput(value: unknown, snapshots: SourceSnapshot[]): DistillOutput | null {
   const output = parseDistillOutput(value);
+  return output ? sanitizeDistillDetails(output, new Set(snapshots.map((source) => source.id))) : null;
+}
+
+function detailSourceIds(output: DistillOutput | null): string[] {
   if (!output?.details) return [];
   const ids = [
     ...output.details.thoughts,
@@ -56,7 +60,7 @@ function detailSourceIds(value: unknown): string[] {
 }
 
 async function resolveDetailSources(db: D1Database, snapshots: SourceSnapshot[], output: unknown): Promise<DetailSource[]> {
-  const ids = detailSourceIds(output);
+  const ids = detailSourceIds(sanitizedOutput(output, snapshots));
   if (!ids.length) return [];
   const placeholders = ids.map(() => "?").join(", ");
   const rows = await db.prepare(`SELECT id, title FROM sources WHERE id IN (${placeholders})`).bind(...ids).all<{ id: string; title: string }>();
@@ -195,8 +199,9 @@ distill.get("/sessions/:id", async (c) => {
       .all<Record<string, unknown>>(),
   ]);
   const sourcesUsed = parse(row.sources_used_json);
-  const output = parse(row.output_json);
-  const detailSources = await resolveDetailSources(c.env.DB, parseSourceSnapshots(sourcesUsed), output);
+  const sourceSnapshots = parseSourceSnapshots(sourcesUsed);
+  const output = sanitizedOutput(parse(row.output_json), sourceSnapshots);
+  const detailSources = await resolveDetailSources(c.env.DB, sourceSnapshots, output);
 
   return c.json({
     session: {
@@ -262,9 +267,9 @@ distill.get("/sessions/:id/markdown", async (c) => {
     }
   };
 
-  const o = parse<DistillOutput>(row.output_json);
+  const rawOutput = parse<DistillOutput>(row.output_json);
   const snapshots = parseSourceSnapshots(parse(row.sources_used_json));
-  const parsedOutput = parseDistillOutput(o);
+  const parsedOutput = rawOutput ? sanitizedOutput(rawOutput, snapshots) : null;
   const details = parsedOutput?.details;
   const appendDetails = () => {
     if (!details) return;

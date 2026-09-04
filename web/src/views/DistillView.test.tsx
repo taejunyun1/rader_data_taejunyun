@@ -50,6 +50,49 @@ describe("DistillView", () => {
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/distill/run", expect.objectContaining({ body: JSON.stringify({ includeCounter: false }) })));
   });
 
+  it("renders research-gap details by output index, including long and duplicate gap text", async () => {
+    const fetchMock = vi.mocked(fetch);
+    const longGap = "연구 공백 ".padEnd(801, "가");
+    fetchMock.mockImplementation((input) => {
+      const url = String(input);
+      if (url === "/api/distill/sessions") return Promise.resolve(new Response(JSON.stringify({ sessions: [{ id: "session-gaps", redistillOf: null, costUsd: 0.01, createdAt: "2026-09-03T00:00:00Z" }] })));
+      if (url === "/api/distill/budget") return Promise.resolve(new Response(JSON.stringify({ usedPct: 12, budgetUsd: 10, blocked: false, warn: false })));
+      if (url === "/api/distill/sessions/session-gaps") return Promise.resolve(new Response(JSON.stringify({
+        session: {
+          id: "session-gaps", redistillOf: null, modelVersion: "model", promptVersion: "prompt", costUsd: 0.01, createdAt: "2026-09-03T00:00:00Z", sourcesUsed: [],
+          output: {
+            keywords: [], thoughts_fragments: [], questions: [], read_next: [], research_gaps: [{ gap: longGap, kind: "under-evidenced" }, { gap: longGap, kind: "under-researched" }], research_directions: [], artwork_directions: [],
+            details: {
+              thoughts: [], questions: [],
+              researchGaps: [
+                { summaryIndex: 0, diagnosis: "진단-0", researchMethod: "방법-0", sourceIds: [] },
+                { summaryIndex: 1, diagnosis: "진단-1", researchMethod: "방법-1", sourceIds: [] },
+              ],
+              researchDirections: [], artworkDirections: [],
+            },
+          }, critic: null, counter: null, homepagePublicationState: "NONE",
+        },
+        readingQueue: [],
+        researchGaps: [
+          { id: "gap-db-1", gap: longGap.slice(0, 800), kind: "under-researched" },
+          { id: "gap-db-0", gap: longGap.slice(0, 800), kind: "under-evidenced" },
+        ],
+        detailSources: [],
+      })));
+      return Promise.resolve(new Response(JSON.stringify({ ok: true })));
+    });
+
+    render(<DistillView />);
+
+    expect(await screen.findAllByText(longGap)).toHaveLength(2);
+    const toggles = await screen.findAllByRole("button", { name: "근거와 맥락 보기" });
+    expect(toggles).toHaveLength(2);
+    await userEvent.click(toggles[0]!);
+    expect(screen.getByText("진단-0")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "근거와 맥락 보기" }));
+    expect(screen.getByText("진단-1")).toBeInTheDocument();
+  });
+
   it("previews and publishes a completed Distill to the homepage", async () => {
     const fetchMock = vi.mocked(fetch);
     const content = { displayTitle: "현재 연구", keywords: ["사진"], thoughts: [], questions: ["무엇을 읽을까"], researchDirections: [], artworkDirections: [], researchMaterials: [] };

@@ -91,4 +91,36 @@ describe("layered Distill routes", () => {
     expect(markdown).toContain("### 질문 1");
     expect(markdown).toContain("조사 방법: 세 가지 제작 사례를 비교한다.");
   });
+
+  it("keeps the summary readable when stored detail data is malformed", async () => {
+    const seeded = await seedLayeredSession();
+    const stored = {
+      keywords: ["사진"],
+      thoughts_fragments: ["이미지는 절차로 발생한다"],
+      questions: [],
+      read_next: [],
+      research_gaps: [],
+      research_directions: [],
+      artwork_directions: [],
+      details: {
+        thoughts: [{
+          summaryIndex: 0,
+          rationale: 42,
+          sourceIds: [seeded.activeSourceId],
+          uncertainty: "불확실",
+          nextCheck: "확인",
+        }],
+        questions: [], researchGaps: [], researchDirections: [], artworkDirections: [],
+      },
+    };
+    await env.DB.prepare("UPDATE distill_sessions SET output_json = ? WHERE id = ?")
+      .bind(JSON.stringify(stored), seeded.sessionId).run();
+
+    const response = await app.request(`/api/distill/sessions/${seeded.sessionId}`, undefined, env);
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as { session: { output: { thoughts_fragments: string[]; details?: unknown } | null } };
+    expect(body.session.output?.thoughts_fragments).toEqual(["이미지는 절차로 발생한다"]);
+    expect(body.session.output?.details).toBeUndefined();
+  });
 });

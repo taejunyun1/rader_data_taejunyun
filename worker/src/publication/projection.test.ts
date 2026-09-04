@@ -73,7 +73,25 @@ describe("public projection primitives", () => {
       buildHomepageProjection(env.DB, layered),
     ]);
     expect(layeredDraft.content).toEqual(baseDraft.content);
+    expect(layeredDraft.contentHash).toBe(baseDraft.contentHash);
     expect(layeredDraft.content).not.toHaveProperty("details");
+  });
+
+  it("keeps a valid public summary publishable when stored details are malformed", async () => {
+    const now = new Date().toISOString();
+    const sourceId = `projection-malformed-details-${crypto.randomUUID()}`;
+    await env.DB.prepare(`INSERT INTO sources (id, kind, title, canonical_url, reliability, status, created_at, updated_at) VALUES (?, 'WEB', '자료', 'https://example.com/malformed-details', 'PRIMARY', 'indexed', ?, ?)`).bind(sourceId, now, now).run();
+    const malformed = session(`projection-malformed-session-${crypto.randomUUID()}`, [{ id: sourceId, title: "자료" }], {
+      details: {
+        thoughts: [{ summaryIndex: 0, rationale: 42, sourceIds: [sourceId], uncertainty: "불확실", nextCheck: "확인" }],
+        questions: [], researchGaps: [], researchDirections: [], artworkDirections: [],
+      },
+    });
+
+    const draft = await buildHomepageProjection(env.DB, malformed);
+
+    expect(draft.content.thoughts).toEqual(["첫 생각"]);
+    expect(draft.content).not.toHaveProperty("details");
   });
 });
 
