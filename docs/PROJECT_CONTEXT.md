@@ -1,6 +1,6 @@
 # Research Radar — 내부 참조 가이드
 
-최종 정리: 2026-09-04
+최종 정리: 2026-09-05
 
 이 문서는 다음 작업자가 프로젝트의 기획 의도, 현재 구현, 운영 원칙을 빠르게 이어받기 위한 요약본이다. 요구사항을 새로 정의하지 않으며, 제품 결정은 아래 Source of Truth 문서를 따른다.
 
@@ -233,6 +233,7 @@ pnpm deploy
 
 - Radar main에는 `homepage_publications` 원장·lease·history-first R2 저장·preview/publish/withdraw/status API가 반영되었다.
 - 원격 D1 `research-radar-db`에 migration `0029_homepage_publications.sql`을 적용했고, R2 `radar-publications` 버킷을 `PUBLICATIONS`로 연결했다.
+- 최신 Radar Worker 배포 버전: `9b78c56c-5f55-4fa4-8bc5-51ac1761538f` (2026-09-05).
 - Radar Worker 코드 배포 버전: `8808d05e-b01b-4e38-88ff-66d74b8fa135`; CSRF Secret이 등록된 상태에서 Distill 홈페이지 내보내기 UI·상태 enrichment까지 활성화되어 있다. 공개 projection은 일반 Distill의 최대 범위에 맞춰 키워드 7개·생각의 조각 5개를 허용하며, 그보다 큰 결과는 자동 절단 없이 공개 불가 상태로 보고한다. 공개 상태 조회의 source/claim 확인은 batch query로 줄였고, UI는 부모 렌더링에 따른 중복 조회를 만들지 않는다. HMAC 서명은 바이너리 안전 base64url로 인코딩·검증하므로, 새로 발급한 브라우저 CSRF 토큰이 만료로 오인되지 않는다.
 - Homepage reading Worker는 고정키 `homepage/current-research.json`만 공개하며, 미발행은 `404 current_research_not_published`, 반응 API는 현재 운영 설정에서 `410 reactions_disabled`를 반환한다.
 - Homepage reading Worker 배포 버전: `74e46cd7-a063-4774-b9bc-2a313f62cb66`.
