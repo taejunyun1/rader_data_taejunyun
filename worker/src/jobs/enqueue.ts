@@ -17,14 +17,25 @@ export type ResearchJobRequest =
   | { kind: "VISUAL_EXTRACTION"; input: { sourceId: string; sourceVersionId: string; extractionRunId?: string } };
 
 function stable(value: unknown): string {
-  return JSON.stringify(value, Object.keys((value && typeof value === "object" ? value : {}) as object).sort());
+  return JSON.stringify(value, (_key, item: unknown) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return item;
+    return Object.fromEntries(Object.entries(item).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
+  });
+}
+
+function sanitizeRequest(request: ResearchJobRequest): ResearchJobRequest {
+  // Execution snapshots are authored by the workflow, never accepted from clients or retries.
+  const input = { ...request.input } as Record<string, unknown>;
+  delete input._execution;
+  return { ...request, input } as ResearchJobRequest;
 }
 
 export function dedupeKeyFor(request: ResearchJobRequest): string {
-  return `${request.kind}:${stable(request.input)}`;
+  return `${request.kind}:${stable(sanitizeRequest(request).input)}`;
 }
 
 export async function enqueueResearchJob(env: Env, request: ResearchJobRequest, requestedBy: string, retryOf?: string | null): Promise<{ job: ResearchJob; reused: boolean }> {
+  request = sanitizeRequest(request);
   // Resolve source ownership before dedupe. A claimed source must not be able
   // to reuse an already-queued job as a way to sneak a new workflow into the
   // delete window; the migration trigger remains the race-safe final guard for

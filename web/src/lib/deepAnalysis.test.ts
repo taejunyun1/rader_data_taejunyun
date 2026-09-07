@@ -95,6 +95,8 @@ describe("deep analysis core", () => {
             return this;
           },
           async first() {
+            if (sql.includes("FROM source_analysis") || sql.includes("FROM kv")) return null;
+            if (!sql.includes("FROM sources s LEFT JOIN source_versions")) throw new Error(`Unexpected query: ${sql}`);
             return {
               title: "자료",
               version_id: "version-active",
@@ -112,10 +114,13 @@ describe("deep analysis core", () => {
           },
         };
       },
+      async batch(statements: Array<{ run: () => Promise<unknown> }>) {
+        return Promise.all(statements.map(statement => statement.run()));
+      },
     } as unknown as D1Database;
     const { analyzeDeepSource } = await import("../../../worker/src/analysis/deepAnalyze");
 
-    const result = await analyzeDeepSource({ DB: db } as Env, "source-1", "precision");
+    const result = await analyzeDeepSource({ DB: db, MODEL_HIGH: "base-model", MODEL_DEEP: "review-model" } as Env, "source-1", "precision");
 
     expect(result.payload.meta).toMatchObject({
       sourceCharCount: 1_234,

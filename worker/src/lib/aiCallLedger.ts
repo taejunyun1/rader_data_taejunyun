@@ -46,7 +46,7 @@ function mapRow(row: Record<string, unknown>): AiCallAttempt {
 const SELECT = `SELECT id, research_job_id AS researchJobId, idempotency_key AS idempotencyKey,
   purpose, model, status, reserved_usd AS reservedUsd, actual_usd AS actualUsd,
   provider_request_id AS providerRequestId, response_text AS responseText,
-  input_tokens AS inputTokens, output_tokens AS outputTokens
+  input_tokens AS inputTokens, output_tokens AS outputTokens, error_code AS errorCode
   FROM ai_call_attempts`;
 
 export function deterministicAiCallKey(input: {
@@ -54,18 +54,36 @@ export function deterministicAiCallKey(input: {
   purpose: string;
   workflowStep: string;
   promptVersion: string;
+  inputIdentity?: string;
 }): string {
-  return [input.researchJobId, input.purpose, input.workflowStep, input.promptVersion].join(":");
+  return [input.researchJobId, input.purpose, input.workflowStep, input.promptVersion, ...(input.inputIdentity ? [input.inputIdentity] : [])].join(":");
 }
 
-export async function reserveAiCall(db: D1Database, input: ReserveAiCallInput): Promise<{ ok: boolean; attempt: AiCallAttempt | null }> {
+export async function reserveAiCall(db: D1Database, input: ReserveAiCallInput): Promise<{ ok: boolean; attempt: AiCallAttempt | null; error?: string }> {
   const existing = await db.prepare(`${SELECT} WHERE idempotency_key = ?`).bind(input.idempotencyKey).first<Record<string, unknown>>();
-  if (existing) return { ok: existing.status === "SETTLED" || existing.status === "RESERVED" || existing.status === "CALLED" || existing.status === "SETTLEMENT_PENDING", attempt: mapRow(existing) };
+  if (existing && existing.status !== "FAILED") return { ok: true, attempt: mapRow(existing) };
+  if (existing && !/^openai_error_(429|5\d\d)$/.test(String(existing.errorCode))) {
+    return { ok: false, attempt: mapRow(existing), error: String(existing.errorCode ?? "ai_call_failed") };
+  }
 
   const reservedUsd = Math.max(0, Number(input.reservedUsd) || 0);
   const now = new Date().toISOString();
   const month = now.slice(0, 7);
   const nextMonth = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 1)).toISOString();
+  if (existing) {
+    // A definite retryable HTTP failure has no settled usage. Re-acquire its reservation
+    // under the same atomic budget predicate before allowing another provider attempt.
+    const retry = await db.prepare(
+      `UPDATE ai_call_attempts SET status = 'RESERVED', error_code = NULL, updated_at = ?, created_at = ?
+       WHERE id = ? AND status = 'FAILED'
+         AND COALESCE((SELECT SUM(cost_usd) FROM ai_usage WHERE month = ?), 0)
+           + COALESCE((SELECT SUM(amount_usd) FROM ai_budget_reservations WHERE month = ? AND status = 'RESERVED'), 0)
+           + COALESCE((SELECT SUM(reserved_usd) FROM ai_call_attempts WHERE status IN ('RESERVED','CALLED','SETTLEMENT_PENDING') AND created_at >= ? AND created_at < ?), 0)
+           + reserved_usd <= ?`
+    ).bind(now, now, existing.id, month, month, `${month}-01T00:00:00.000Z`, nextMonth, input.budgetUsd).run();
+    if (!retry.meta.changes) return { ok: false, attempt: null, error: "monthly_budget_exhausted" };
+    return { ok: true, attempt: { ...mapRow(existing), status: "RESERVED" } };
+  }
   const result = await db.prepare(
     `INSERT INTO ai_call_attempts
       (id, research_job_id, idempotency_key, purpose, model, status, reserved_usd, created_at, updated_at)

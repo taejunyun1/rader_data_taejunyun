@@ -37,3 +37,26 @@ describe("research job dispatch dedupe", () => {
     expect(row?.n).toBe(0);
   });
 });
+
+describe("recursive job input identity", () => {
+  const profile = { original: { keywords: ["light", "image"], strength: 50 }, counter: { keywords: ["machine"], strength: 40 }, updatedAt: "2026-09-07" };
+  const key = (value: typeof profile) => dedupeKeyFor({ kind: "DISCOVERY_RUN", input: { divergence: 0.5, profile: value } });
+  it("preserves nested values", () => {
+    expect(key(profile)).not.toBe(key({ ...profile, original: { ...profile.original, strength: 51 } }));
+  });
+  it("ignores object insertion order at every level", () => {
+    expect(key(profile)).toBe(key({ updatedAt: profile.updatedAt, counter: { strength: 40, keywords: ["machine"] }, original: { strength: 50, keywords: ["light", "image"] } }));
+  });
+  it("preserves array order", () => {
+    expect(key(profile)).not.toBe(key({ ...profile, original: { ...profile.original, keywords: ["image", "light"] } }));
+  });
+});
+
+it("strips client execution snapshots before dedupe and job persistence", async () => {
+  const request = { kind: "DISTILL_RUN" as const, input: { includeCounter: true, _execution: { sourceVersionId: "untrusted-version" } } };
+  const expectedKey = dedupeKeyFor({ kind: "DISTILL_RUN", input: { includeCounter: true } });
+  expect(dedupeKeyFor(request)).toBe(expectedKey);
+  const result = await enqueueResearchJob({ ...env, RESEARCH_JOBS_WORKFLOW: { create: async ({ id }: { id: string }) => ({ id }) } } as unknown as Env, request, "test");
+  const persisted = await env.DB.prepare("SELECT input_json FROM research_jobs WHERE id = ?").bind(result.job.id).first<{ input_json: string }>();
+  expect(JSON.parse(persisted!.input_json)).toEqual({ includeCounter: true });
+});

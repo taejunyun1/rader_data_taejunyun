@@ -1,3 +1,4 @@
+import { sha256Hex } from "../ingestion/ids";
 import { loadModelRoles, openAiHeaders, pricingForModel } from "./modelSettings";
 import { deterministicAiCallKey, markAiCallCalled, markAiCallFailed, markAiCallSettlementPending, reserveAiCall, settleAiCall } from "./aiCallLedger";
 
@@ -46,6 +47,7 @@ export async function callOpenAi(env: Env, opts: OpenAiCallOptions): Promise<Ope
       purpose: opts.purpose,
       workflowStep: opts.workflowStep ?? opts.purpose,
       promptVersion: opts.promptVersion ?? "v1",
+      inputIdentity: await sha256Hex(JSON.stringify({ model, messages: opts.messages, jsonMode: opts.jsonMode ?? false, maxOutputTokens: opts.maxOutputTokens ?? null })),
     })
     : null;
   const ledger = idempotencyKey
@@ -58,7 +60,7 @@ export async function callOpenAi(env: Env, opts: OpenAiCallOptions): Promise<Ope
       budgetUsd: parseFloat(env.MONTHLY_BUDGET_USD) || 10,
     })
     : null;
-  if (idempotencyKey && (!ledger?.ok || !ledger.attempt)) throw new Error("monthly_budget_exhausted");
+  if (idempotencyKey && (!ledger?.ok || !ledger.attempt)) throw new Error(ledger?.error ?? "monthly_budget_exhausted");
   if (ledger?.attempt?.status === "SETTLED" && ledger.attempt.responseText != null) {
     return {
       text: ledger.attempt.responseText,

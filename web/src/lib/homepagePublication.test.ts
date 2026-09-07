@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HomepagePublicationStatusResponse } from "@radar/shared";
-import { deriveHomepagePublicationAction, fetchHomepagePreview, fetchHomepagePublicationStatus, homepagePublicationErrorMessage, publishHomepagePreview } from "./homepagePublication";
+import { deriveHomepagePublicationAction, fetchHomepagePreview, fetchHomepagePublicationStatus, homepagePublicationErrorMessage, publishHomepagePreview, withdrawHomepagePublication } from "./homepagePublication";
 
 const json = (body: unknown, init: ResponseInit = {}) => new Response(JSON.stringify(body), { ...init, headers: { "Content-Type": "application/json", ...(init.headers ?? {}) } });
 const status: HomepagePublicationStatusResponse = { currentRevision: "r0", current: { state: "NONE" }, latestPublishable: { sessionId: "s1", distilledAt: "2026-09-03T00:00:00.000Z", contentHash: "a".repeat(64) }, ledgerReconcilePending: false };
@@ -47,4 +47,15 @@ describe("homepage publication client", () => {
     expect(homepagePublicationErrorMessage("publish", "publication_in_progress")).toContain("다른 공개 작업");
     expect(homepagePublicationErrorMessage("status", "unknown_code")).toBe("홈페이지 공개 상태를 확인하지 못했습니다.");
   });
+});
+
+it("accepts the server withdrawal success contract", async () => {
+ const body = {ok:true, state:"WITHDRAWN", withdrawnPublicationId:"p", withdrawnAt:"2026-09-07T00:00:00.000Z", currentRevision:"r", idempotent:false, ledgerReconcilePending:false};
+ vi.mocked(fetch).mockResolvedValueOnce(json({token:"csrf",expiresAt:body.withdrawnAt})).mockResolvedValueOnce(json(body));
+ await expect(withdrawHomepagePublication({expectedPublicationId:"p",expectedContentHash:"a".repeat(64),expectedCurrentRevision:"old"})).resolves.toEqual(body);
+});
+it.each([{ok:false}, {withdrawnPublicationId:null}, {privatePayload:{}}, {withdrawnAt:"2026-02-31T00:00:00.000Z"}])("rejects malformed withdrawal response %j", async (invalid) => {
+ const body={ok:true,state:"WITHDRAWN",withdrawnPublicationId:"p",withdrawnAt:"2026-09-07T00:00:00.000Z",currentRevision:"r",idempotent:false,ledgerReconcilePending:false,...invalid};
+ vi.mocked(fetch).mockResolvedValueOnce(json({token:"csrf",expiresAt:"2026-09-07T00:01:00.000Z"})).mockResolvedValueOnce(json(body));
+ await expect(withdrawHomepagePublication({expectedPublicationId:"p",expectedContentHash:"a".repeat(64),expectedCurrentRevision:"old"})).rejects.toMatchObject({code:"invalid_response"});
 });

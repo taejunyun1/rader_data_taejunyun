@@ -3,7 +3,7 @@ import { normalizeIngestText } from "@radar/shared/ingestion";
 import { analyzeSource } from "../analysis/analyze";
 import { sha256Hex, uuid } from "../ingestion/ids";
 import { createSource } from "../ingestion/store";
-import { activateVersion, decideIncomingVersion, getActiveVersion } from "../ingestion/versioning";
+import { activateIncomingVersion, getActiveVersion } from "../ingestion/versioning";
 import { readJson } from "../lib/requestBody";
 import {
   assertSourceDeletionNotClaimed,
@@ -86,14 +86,16 @@ async function handleObsidianSync(
     return Response.json({ sourceId: existing.id, status: "unchanged" });
   }
 
+  const pending = await env.DB.prepare(`SELECT id FROM source_versions
+    WHERE source_id = ? AND version_origin = 'OBSIDIAN_SYNC' AND review_status = 'PENDING_REVIEW'
+      AND COALESCE(raw_content_hash, content_hash) = ? LIMIT 1`)
+    .bind(existing.id, hash).first<{ id: string }>();
+  if (pending) return Response.json({ sourceId: existing.id, status: "unchanged" });
+
   const active = await getActiveVersion(env.DB, existing.id);
-  const vRow = await env.DB.prepare("SELECT COALESCE(MAX(version), 0) AS v FROM source_versions WHERE source_id = ?")
-    .bind(existing.id).first<{ v: number }>();
-  const nextV = (vRow?.v ?? 0) + 1;
   const versionId = uuid();
-  const r2Key = `originals/${existing.id}/v${nextV}-${filename.replace(/[^a-zA-Z0-9._-]+/g, "_")}`;
+  const r2Key = `originals/${existing.id}/${versionId}-${filename.replace(/[^a-zA-Z0-9._-]+/g, "_")}`;
   const normalized = normalizeIngestText(text, "OBSIDIAN_MARKDOWN");
-  const decision = decideIncomingVersion({ activeOrigin: active?.version_origin ?? null, incomingOrigin: "OBSIDIAN_SYNC" });
   await assertSourceDeletionNotClaimed(env.DB, existing.id);
   await env.ORIGINALS.put(r2Key, text, {
     customMetadata: asciiOnly({ sourceId: existing.id, origin }),
@@ -104,14 +106,14 @@ async function handleObsidianSync(
       env.DB
         .prepare(
           `INSERT INTO source_versions
-           (id, source_id, version, r2_key, extracted_text, char_count, content_hash, normalized_text,
+           (id, source_id, version, r2_key, extracted_text, char_count, content_hash, raw_content_hash, normalized_text,
             normalization_status, normalization_report_json, version_origin, parent_version_id, review_status, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'READY', ?, 'OBSIDIAN_SYNC', ?, ?, ?)`
+           VALUES (?, ?, (SELECT COALESCE(MAX(version), 0) + 1 FROM source_versions WHERE source_id = ?), ?, ?, ?, ?, ?, ?, 'READY', ?, 'OBSIDIAN_SYNC', ?, 'PENDING_REVIEW', ?)`
         )
-        .bind(versionId, existing.id, nextV, r2Key, text.slice(0, 500_000), text.length, hash, normalized.normalizedText, JSON.stringify({ ...normalized.report, metadata: normalized.metadata }), active?.id ?? null, decision.reviewStatus, ts),
+        .bind(versionId, existing.id, existing.id, r2Key, text.slice(0, 500_000), text.length, hash, hash, normalized.normalizedText, JSON.stringify({ ...normalized.report, metadata: normalized.metadata }), active?.id ?? null, ts),
       env.DB
-        .prepare("UPDATE sources SET file_hash = ?, r2_key = ?, status = 'extracted', updated_at = ? WHERE id = ?")
-        .bind(hash, decision.activateIncoming ? r2Key : active?.r2_key ?? null, ts, existing.id),
+        .prepare("UPDATE sources SET status = 'extracted', updated_at = ? WHERE id = ?")
+        .bind(ts, existing.id),
       env.DB
         .prepare("UPDATE processing_jobs SET status = 'extracted', error = NULL, updated_at = ? WHERE source_id = ?")
         .bind(ts, existing.id),
@@ -126,11 +128,12 @@ async function handleObsidianSync(
     throw error;
   }
 
-  if (decision.activateIncoming) {
-    await activateVersion(env.DB, existing.id, versionId, normalized.qualityStatus, ts);
+  const activated = await activateIncomingVersion(env.DB, existing.id, versionId, normalized.qualityStatus, ts);
+  if (activated) {
     if (normalized.qualityStatus === "READY") ctx.waitUntil(analyzeSource(env, existing.id).catch(() => undefined));
   }
-  return Response.json({ sourceId: existing.id, status: decision.activateIncoming ? "updated" : "review_required", version: nextV, qualityStatus: normalized.qualityStatus });
+  const committed = await env.DB.prepare("SELECT version FROM source_versions WHERE id = ?").bind(versionId).first<{ version: number }>();
+  return Response.json({ sourceId: existing.id, status: activated ? "updated" : "review_required", version: committed!.version, qualityStatus: normalized.qualityStatus });
 }
 
 sync.get("/obsidian/status", async (c) => {

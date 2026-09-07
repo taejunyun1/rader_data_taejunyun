@@ -1,5 +1,7 @@
+import { jobInputSnapshot } from "../lib/jobInputSnapshot";
+import { loadModelRoles } from "../lib/modelSettings";
+import type { AiModelRoles } from "@radar/shared";
 import type { RadarParams } from "@radar/shared";
-import { uuid } from "../ingestion/ids";
 import { monthSpendUsd } from "../lib/openai";
 import { verifyWork } from "../lib/openalex";
 import { buildDistillContext, type DistillContext } from "./context";
@@ -36,47 +38,57 @@ export async function runDistill(
   params: RadarParams,
   opts: { redistillOf?: string; keepElements?: string[]; promptVariant?: PromptVariant; includeCounter?: boolean; researchJobId?: string } = {}
 ): Promise<DistillRunResult> {
+  if (!opts.researchJobId?.trim()) throw new Error("distill_research_job_required");
+  const sessionId = `distill:${opts.researchJobId}`;
+  const saved = await env.DB.prepare("SELECT output_json, cost_usd FROM distill_sessions WHERE id = ?")
+    .bind(sessionId).first<{ output_json: string; cost_usd: number }>();
+  if (saved) {
+    const distillOutput = parseDistillOutput(JSON.parse(saved.output_json));
+    if (!distillOutput) throw new Error("distill_saved_output_invalid");
+    const queue = await env.DB.prepare("SELECT id FROM reading_queue WHERE distill_session_id = ? ORDER BY rowid")
+      .bind(sessionId).all<{ id: string }>();
+    return { ok: true, sessionId, costUsd: saved.cost_usd, budgetUsedPct: await budgetPct(env), queueItemIds: queue.results.map(row => row.id), distillOutput };
+  }
   const budgetUsedPct = await budgetPct(env);
   if (budgetUsedPct >= 100) {
     return { ok: false, error: `monthly_budget_exhausted (${budgetUsedPct.toFixed(0)}% of $${env.MONTHLY_BUDGET_USD})`, budgetUsedPct };
   }
-  if (!opts.researchJobId?.trim()) throw new Error("distill_research_job_required");
+  const snapshot = await jobInputSnapshot(env.DB, opts.researchJobId, "distill", async () => {
+    const ctx: DistillContext = await buildDistillContext(env, params);
 
-  const ctx: DistillContext = await buildDistillContext(env, params);
-
-  let parentOutput: DistillOutput | null = null;
-  if (opts.redistillOf) {
-    const parent = await env.DB
-      .prepare("SELECT output_json FROM distill_sessions WHERE id = ?")
-      .bind(opts.redistillOf)
-      .first<{ output_json: string }>();
-    if (parent?.output_json) {
-      try {
-        parentOutput = parseDistillOutput(JSON.parse(parent.output_json));
-      } catch {
-        parentOutput = null;
+    let parentOutput: DistillOutput | null = null;
+    if (opts.redistillOf) {
+      const parent = await env.DB
+        .prepare("SELECT output_json FROM distill_sessions WHERE id = ?")
+        .bind(opts.redistillOf)
+        .first<{ output_json: string }>();
+      if (parent?.output_json) {
+        try {
+          parentOutput = parseDistillOutput(JSON.parse(parent.output_json));
+        } catch {
+          parentOutput = null;
+        }
       }
     }
-  }
 
-  const keep = opts.keepElements ?? [];
-  const keepNote = parentOutput
-    ? `\nThis is a RE-DISTILL. The user selected these elements from the previous edition to KEEP unchanged — carry them over verbatim and regenerate the rest with fresh angles:\n${JSON.stringify(
-        Object.fromEntries(keep.map((k) => [k, (parentOutput as unknown as Record<string, unknown>)[k]]).filter(([, v]) => v !== undefined))
-      )}`
-    : "";
+    const keep = opts.keepElements ?? [];
+    const keepNote = parentOutput
+      ? `\nThis is a RE-DISTILL. The user selected these elements from the previous edition to KEEP unchanged — carry them over verbatim and regenerate the rest with fresh angles:\n${JSON.stringify(
+          Object.fromEntries(keep.map((k) => [k, (parentOutput as unknown as Record<string, unknown>)[k]]).filter(([, v]) => v !== undefined))
+        )}`
+      : "";
 
+    return { ctx, keepNote, models: await loadModelRoles(env.DB, env), variant: opts.promptVariant ?? DEFAULT_PROMPT_VARIANT, includeCounter: opts.includeCounter ?? true, redistillOf: opts.redistillOf ?? null };
+  });
+  const { ctx, keepNote, models, variant, includeCounter } = snapshot;
   const sys = "You are Distill, a precise research synthesis engine. Output only valid JSON.";
-
-  const variant = opts.promptVariant ?? DEFAULT_PROMPT_VARIANT;
-  const includeCounter = opts.includeCounter ?? true;
 
   const distillRes = await callDistillWithBudget(env, {
     purpose: "distill",
     researchJobId: opts.researchJobId,
     workflowStep: "distill-primary",
     promptVersion: variant,
-    model: "high",
+    modelId: models.baseModel,
     jsonMode: true,
     maxOutputTokens: 6500,
     messages: [
@@ -93,7 +105,7 @@ export async function runDistill(
       researchJobId: opts.researchJobId,
       workflowStep: "distill-critic",
       promptVersion: variant,
-      model: "deep",
+      modelId: models.reviewModel,
       jsonMode: true,
       maxOutputTokens: 3000,
       messages: [
@@ -103,11 +115,10 @@ export async function runDistill(
     });
 
   const critic = asValidated(extractJsonLoose(criticRes.text), "critic") ?? { warnings: [], overall: "critic_parse_failed" };
-  const counterRun = includeCounter ? await runCounter(env, distill, critic, ctx, params.counterStrength, opts.researchJobId) : null;
+  const counterRun = includeCounter ? await runCounter(env, distill, critic, ctx, ctx.params.counterStrength, opts.researchJobId, models) : null;
   const counter = counterRun?.output ?? null;
 
   const totalCost = distillRes.costUsd + criticRes.costUsd + (counterRun?.costUsd ?? 0);
-  const sessionId = uuid();
   const ts = new Date().toISOString();
 
   const queueIds = indexQueueItems(env, sessionId, distill, ts);
@@ -115,7 +126,7 @@ export async function runDistill(
   await env.DB.batch([
     env.DB
       .prepare(
-        `INSERT INTO distill_sessions
+        `INSERT OR IGNORE INTO distill_sessions
          (id, input_context_json, sources_used_json, output_json, critic_output_json, counter_output_json,
           counter_enabled, user_selection_json, redistill_of, model_version, prompt_version, cost_usd, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`
@@ -128,7 +139,7 @@ export async function runDistill(
         JSON.stringify(critic),
         counter ? JSON.stringify(counter) : null,
         includeCounter ? 1 : 0,
-        opts.redistillOf ?? null,
+        snapshot.redistillOf,
         distillRes.model,
         variant,
         totalCost,
@@ -136,6 +147,7 @@ export async function runDistill(
       ),
     ...queueIds.stmts,
     ...indexGaps(env, sessionId, distill, ts),
+    env.DB.prepare("UPDATE research_jobs SET input_json = json_remove(input_json, '$._execution') WHERE id = ?").bind(opts.researchJobId),
   ]);
 
   return { ok: true, sessionId, costUsd: totalCost, budgetUsedPct: await budgetPct(env), queueItemIds: queueIds.ids, distillOutput: distill };
@@ -148,6 +160,7 @@ async function runCounter(
   ctx: DistillContext,
   counterStrength: number,
   researchJobId: string,
+  models: AiModelRoles,
 ): Promise<{ output: CounterOutput; costUsd: number }> {
   const distillJson = JSON.stringify(distill, null, 1);
   const sourceEvidence = [`CRITIC REVIEW:\n${JSON.stringify(critic)}`, ...ctx.sources.map((source) => `${source.title}\n${source.summary ?? ""}\n${source.fragments.map((f) => `- ${f}`).join("\n")}`)].join("\n\n").slice(0, 12_000);
@@ -156,7 +169,7 @@ async function runCounter(
     researchJobId,
     workflowStep: "distill-counter",
     promptVersion: "counter-v1",
-    model: "high",
+    modelId: models.baseModel,
     jsonMode: true,
     maxOutputTokens: 3200,
     messages: [
@@ -167,7 +180,7 @@ async function runCounter(
   let output = asValidated(extractJsonLoose(generated.text), "counter");
   if (!output) return { output: { axes: [], suggestions: [], validation: { status: "unverified", issues: ["Counter JSON을 해석하지 못했습니다."] } }, costUsd: generated.costUsd };
 
-  const validation = await validateCounter(env, distillJson, output, sourceEvidence, researchJobId, "distill-counter-validation");
+  const validation = await validateCounter(env, distillJson, output, sourceEvidence, researchJobId, models, "distill-counter-validation");
   let totalCost = generated.costUsd + validation.costUsd;
   if (validation.status === "verified") return { output: { ...output, validation: validation.result }, costUsd: totalCost };
 
@@ -176,7 +189,7 @@ async function runCounter(
     researchJobId,
     workflowStep: "distill-counter-repair",
     promptVersion: "counter-v1",
-    model: "deep",
+    modelId: models.reviewModel,
     jsonMode: true,
     maxOutputTokens: 3200,
     messages: [
@@ -186,7 +199,7 @@ async function runCounter(
   });
   totalCost += repaired.costUsd;
   output = asValidated(extractJsonLoose(repaired.text), "counter") ?? output;
-  const repairedValidation = await validateCounter(env, distillJson, output, sourceEvidence, researchJobId, "distill-counter-validation-repair");
+  const repairedValidation = await validateCounter(env, distillJson, output, sourceEvidence, researchJobId, models, "distill-counter-validation-repair");
   totalCost += repairedValidation.costUsd;
   return {
     output: {
@@ -200,13 +213,13 @@ async function runCounter(
   };
 }
 
-async function validateCounter(env: Env, distillJson: string, counter: CounterOutput, sourceEvidence: string, researchJobId: string, workflowStep = "distill-counter-validation"): Promise<{ status: "verified" | "unverified"; result: NonNullable<CounterOutput["validation"]>; costUsd: number }> {
+async function validateCounter(env: Env, distillJson: string, counter: CounterOutput, sourceEvidence: string, researchJobId: string, models: AiModelRoles, workflowStep = "distill-counter-validation"): Promise<{ status: "verified" | "unverified"; result: NonNullable<CounterOutput["validation"]>; costUsd: number }> {
   const response = await callDistillWithBudget(env, {
     purpose: "counter_validation",
     researchJobId,
     workflowStep,
     promptVersion: "counter-v1",
-    model: "deep",
+    modelId: models.reviewModel,
     jsonMode: true,
     maxOutputTokens: 1600,
     messages: [
@@ -232,6 +245,16 @@ function numberScore(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
 }
 
+export async function verifyPersistedQueueItems(env: Env, sessionId: string): Promise<void> {
+  const rows = await env.DB.prepare("SELECT id, title, author FROM reading_queue WHERE distill_session_id = ? AND verified = 0 ORDER BY rowid")
+    .bind(sessionId).all<{ id: string; title: string; author: string | null }>();
+  for (const item of rows.results) {
+    const work = await verifyWork(item.title, item.author);
+    if (work) await env.DB.prepare("UPDATE reading_queue SET verified = 1, verified_at = ?, openalex_id = ?, source_url = COALESCE(?, source_url) WHERE id = ?")
+      .bind(new Date().toISOString(), work.id, work.openAccessUrl ?? work.doi ?? null, item.id).run();
+  }
+}
+
 export async function verifyQueueItems(env: Env, d: DistillOutput, ids: string[]): Promise<void> {
   const items = d.read_next ?? [];
   for (let i = 0; i < items.length && i < ids.length; i++) {
@@ -253,14 +276,14 @@ export async function verifyQueueItems(env: Env, d: DistillOutput, ids: string[]
 function indexQueueItems(env: Env, sessionId: string, d: DistillOutput, ts: string): { stmts: D1PreparedStatement[]; ids: string[] } {
   const stmts: D1PreparedStatement[] = [];
   const ids: string[] = [];
-  for (const item of d.read_next ?? []) {
+  for (const [index, item] of (d.read_next ?? []).entries()) {
     if (!item?.title) continue;
-    const id = uuid();
+    const id = `${sessionId}:queue:${index}`;
     ids.push(id);
     stmts.push(
       env.DB
         .prepare(
-          `INSERT INTO reading_queue (id, distill_session_id, title, author, source_url, openalex_id, priority, why_read, related_question, created_at)
+          `INSERT OR IGNORE INTO reading_queue (id, distill_session_id, title, author, source_url, openalex_id, priority, why_read, related_question, created_at)
            VALUES (?, ?, ?, ?, NULL, NULL, 'WORTH', ?, ?, ?)`
         )
         .bind(id, sessionId, item.title.slice(0, 300), item.author ?? null, item.why_read ?? null, item.related_question ?? null, ts)
@@ -271,12 +294,12 @@ function indexQueueItems(env: Env, sessionId: string, d: DistillOutput, ts: stri
 
 function indexGaps(env: Env, sessionId: string, d: DistillOutput, ts: string): D1PreparedStatement[] {
   const stmts: D1PreparedStatement[] = [];
-  for (const g of d.research_gaps ?? []) {
+  for (const [index, g] of (d.research_gaps ?? []).entries()) {
     if (!g?.gap) continue;
     stmts.push(
       env.DB
-        .prepare(`INSERT INTO research_gaps (id, distill_session_id, gap_text, kind, created_at) VALUES (?, ?, ?, ?, ?)`)
-        .bind(uuid(), sessionId, g.gap.slice(0, 800), g.kind ?? null, ts)
+        .prepare(`INSERT OR IGNORE INTO research_gaps (id, distill_session_id, gap_text, kind, created_at) VALUES (?, ?, ?, ?, ?)`)
+        .bind(`${sessionId}:gap:${index}`, sessionId, g.gap.slice(0, 800), g.kind ?? null, ts)
     );
   }
   return stmts;

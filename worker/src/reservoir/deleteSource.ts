@@ -1,3 +1,6 @@
+import { acquirePublicationLeaseController, createD1PublicationLeaseBackend, type PublicationLease } from "../publication/lease";
+import { prepareSourceDeletionFence } from "../publication/sourceDeletionInterlock";
+import { compareAndSwapCurrent, readCurrentPublication } from "../publication/storage";
 import { selectCanonicalSourceId } from "./canonicalSource";
 import {
   acquireSourceDeletionClaim,
@@ -13,6 +16,10 @@ import {
 
 export type SourceDeletionMergeRole = "NONE" | "CANONICAL" | "MEMBER";
 export type SourceDeletionErrorCode =
+  | "source_in_publication"
+  | "publication_in_progress"
+  | "publication_state_changed"
+  | "publication_ledger_unavailable"
   | "source_not_found"
   | "source_delete_confirmation_mismatch"
   | "source_delete_active_work"
@@ -698,6 +705,7 @@ async function deleteD1Records(
   db: D1Database,
   plan: SourceDeletionPlan,
   claim: SourceDeletionClaim,
+  publicationLease: PublicationLease,
 ): Promise<DeleteSourceMergeResult | null> {
   await assertPlanStillCurrent(db, plan, claim);
   const merge = await mergeMutation(db, plan);
@@ -711,6 +719,12 @@ async function deleteD1Records(
     // Keep this as the first statement in the transaction. It proves that
     // this exact attempt still owns the R2-complete claim immediately before
     // any source-owned row is removed.
+    db.prepare(`SELECT CASE WHEN EXISTS (
+      SELECT 1 FROM homepage_publication_lease WHERE lock_name='homepage-current-research'
+      AND owner_token=? AND generation=? AND expires_at_ms >
+      (CAST(strftime('%s','now') AS INTEGER)*1000 + CAST(substr(strftime('%f','now'),4,3) AS INTEGER))
+    ) THEN 1 ELSE json('source_delete_guard_failed') END AS valid`)
+      .bind(publicationLease.ownerToken, publicationLease.generation),
     deletionGuard(db, plan, claim),
     db.prepare(
       `UPDATE radar_snapshots
@@ -794,68 +808,95 @@ async function deleteD1Records(
 }
 
 export async function deleteSourcePermanently(
-  env: Pick<Env, "DB" | "ORIGINALS">,
+  env: Pick<Env, "DB" | "ORIGINALS" | "PUBLICATIONS">,
   input: DeleteSourceInput,
 ): Promise<DeleteSourceResult> {
   // Confirm the exact title before creating a lock. If this request is a
   // typo, it must have no operational side effects.
   await validateSourceDeletionInput(env.DB, input);
 
-  let claim: SourceDeletionClaim;
+  const backend = createD1PublicationLeaseBackend(env.DB);
+  let controller;
+  try { controller = await acquirePublicationLeaseController(backend); }
+  catch (error) { throw new SourceDeletionError((error as Error).message === "publication_in_progress" ? "publication_in_progress" : "publication_ledger_unavailable", error); }
   try {
-    claim = await acquireSourceDeletionClaim(env.DB, input.sourceId);
-  } catch (error) {
-    throw mapClaimError(error, "source_delete_d1_failed");
-  }
+    let fence;
+    try { fence = await prepareSourceDeletionFence(env, controller, input.sourceId); }
+    catch (error) { throw new SourceDeletionError((error as Error).message === "source_in_publication" ? "source_in_publication" : "publication_ledger_unavailable", error); }
+    let claim: SourceDeletionClaim;
+    try {
+      claim = await acquireSourceDeletionClaim(env.DB, input.sourceId);
+    } catch (error) {
+      throw mapClaimError(error, "source_delete_d1_failed");
+    }
 
-  let r2MutationStarted = false;
-  let r2Complete = false;
-  try {
-    // All mutable dependency snapshots are collected only after the claim is
-    // held. New versions, visual descendants, and jobs are then blocked by
-    // both the route guard and migration triggers.
-    const plan = await loadDeletionPlan(env.DB, input);
-    await assertPlanStillCurrent(env.DB, plan, claim);
+    let r2MutationStarted = false;
+    let r2Complete = false;
+    try {
+      // All mutable dependency snapshots are collected only after the claim is
+      // held. New versions, visual descendants, and jobs are then blocked by
+      // both the route guard and migration triggers.
+      const plan = await loadDeletionPlan(env.DB, input);
+      await assertPlanStillCurrent(env.DB, plan, claim);
 
-    // Renew immediately before crossing the D1/R2 boundary. A claim that
-    // cannot be renewed is never allowed to start storage mutation.
-    claim = await renewSourceDeletionClaim(env.DB, claim);
-    r2MutationStarted = true;
-    await deleteR2Keys(env.ORIGINALS, plan.r2Keys, async () => {
+      // Renew immediately before crossing the D1/R2 boundary. A claim that
+      // cannot be renewed is never allowed to start storage mutation.
       claim = await renewSourceDeletionClaim(env.DB, claim);
-    });
-
-    claim = await markSourceDeletionR2Complete(env.DB, claim);
-    r2Complete = true;
-    // Extend the lease for the bounded final batch and prove that the same
-    // token is still active before constructing any merge mutation.
-    claim = await renewSourceDeletionClaim(env.DB, claim);
-    const merge = await deleteD1Records(env.DB, plan, claim);
-    return { deletedSourceId: plan.sourceId, merge };
-  } catch (error) {
-    if (!r2MutationStarted) {
-      // Only read-only preflight failures release the claim. If release fails,
-      // the lease remains recoverable and no writer can repopulate the source.
+      await controller.checkpoint();
+      r2MutationStarted = true;
       try {
-        await releaseSourceDeletionClaim(env.DB, claim);
-      } catch {
-        // Preserve the original preflight error.
+        await compareAndSwapCurrent(env.PUBLICATIONS, fence.current, fence.payload);
+      } catch (error) {
+        if ((error as Error).message === "publication_state_changed") r2MutationStarted = false;
+        else {
+          try {
+            const actual = await readCurrentPublication(env.PUBLICATIONS);
+            if (actual.currentRevision === fence.current.currentRevision) r2MutationStarted = false;
+          } catch { /* An ambiguous fence must retain the source claim. */ }
+        }
+        throw new SourceDeletionError("publication_state_changed", error);
       }
+      await controller.checkpoint();
+      await deleteR2Keys(env.ORIGINALS, plan.r2Keys, async () => {
+        await controller.checkpoint();
+        claim = await renewSourceDeletionClaim(env.DB, claim);
+      });
+
+      claim = await markSourceDeletionR2Complete(env.DB, claim);
+      r2Complete = true;
+      // Extend the lease for the bounded final batch and prove that the same
+      // token is still active before constructing any merge mutation.
+      claim = await renewSourceDeletionClaim(env.DB, claim);
+      await controller.checkpoint();
+      const merge = await deleteD1Records(env.DB, plan, claim, controller.currentLease());
+      return { deletedSourceId: plan.sourceId, merge };
+    } catch (error) {
+      if (!r2MutationStarted) {
+        // Only read-only preflight failures release the claim. If release fails,
+        // the lease remains recoverable and no writer can repopulate the source.
+        try {
+          await releaseSourceDeletionClaim(env.DB, claim);
+        } catch {
+          // Preserve the original preflight error.
+        }
+        if (error instanceof SourceDeletionClaimError) {
+          throw mapClaimError(error, "source_delete_d1_failed");
+        }
+        throw error;
+      }
+
+      const failureCode = !r2Complete || (
+        error instanceof SourceDeletionError && error.code === "source_delete_r2_failed"
+      )
+        ? "source_delete_r2_failed"
+        : "source_delete_d1_failed";
+      await recordDeletionFailure(env.DB, claim, failureCode);
       if (error instanceof SourceDeletionClaimError) {
-        throw mapClaimError(error, "source_delete_d1_failed");
+        throw mapClaimError(error, failureCode);
       }
       throw error;
     }
-
-    const failureCode = !r2Complete || (
-      error instanceof SourceDeletionError && error.code === "source_delete_r2_failed"
-    )
-      ? "source_delete_r2_failed"
-      : "source_delete_d1_failed";
-    await recordDeletionFailure(env.DB, claim, failureCode);
-    if (error instanceof SourceDeletionClaimError) {
-      throw mapClaimError(error, failureCode);
-    }
-    throw error;
+  } finally {
+    try { await controller.stop(); } finally { await backend.release(controller.currentLease()); }
   }
 }

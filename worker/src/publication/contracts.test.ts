@@ -52,3 +52,7 @@ describe("strict public payload contract", () => {
     expect(digest).toBe("83658fcd9e3c6f3557020c301d2b66327444e49b3eae48a7bbceef447c847170");
   });
 });
+
+it.each(["features.example", "fc-news.example", "fdphoto.example", "fe80.example"])("accepts DNS hostname %s", (hostname) => {
+ expect(validateCurrentResearchPayload({...validExploring, content: {...content, researchMaterials: [{title:"x",author:null,year:null,url:`https://${hostname}/a`}]}})).not.toBeNull();
+});

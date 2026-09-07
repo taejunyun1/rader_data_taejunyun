@@ -1,6 +1,6 @@
 import type { CurrentResearchPayload, HomepagePreviewResponse, HomepagePublishResponse, HomepagePublicationStatusResponse, HomepageWithdrawResponse } from "@radar/shared";
 import { acquirePublicationLeaseController, createD1PublicationLeaseBackend, type PublicationLeaseController } from "./lease";
-import { buildHomepageProjection, loadLatestPublishableDistill, loadPublishableDistill, PublicProjectionError, type HomepageProjectionDraft } from "./projection";
+import { assertNoSourceDeletionClaim, buildHomepageProjection, loadLatestPublishableDistill, loadPublishableDistill, PublicProjectionError, type HomepageProjectionDraft } from "./projection";
 import { allocatePublicationEventAt, beginPublishing, beginWithdrawal, clearPendingWithdrawal, finalizePublished, finalizeWithdrawn, type ReconcileResult } from "./ledger";
 import { compareAndSwapCurrent, putHistoryEventIfAbsent, readCurrentPublication, type CurrentPublicationSnapshot } from "./storage";
 import type { PublicationLease } from "./lease";
@@ -173,7 +173,7 @@ async function repairMatchingWithdrawal(
   return true;
 }
 
-async function reconcileCurrentLedger(env: PublicationEnv, controller: PublicationLeaseController, current: CurrentPublicationSnapshot): Promise<ReconcileResult> {
+export async function reconcileCurrentLedger(env: PublicationEnv, controller: PublicationLeaseController, current: CurrentPublicationSnapshot): Promise<ReconcileResult> {
   await controller.checkpoint();
   const rows = await env.DB.prepare("SELECT id,distill_session_id,status,payload_json,content_hash,error_code,pending_action,pending_actor_sub,pending_event_at FROM homepage_publications ORDER BY updated_at").all<LedgerRow>();
   let repaired = 0;
@@ -265,6 +265,7 @@ export async function publishHomepagePublication(
     await controller.checkpoint();
     await putHistoryEventIfAbsent(env.PUBLICATIONS, { distillSessionId: input.sessionId, payload: publication as Extract<CurrentResearchPayload, { state: "EXPLORING" }> });
     await controller.checkpoint();
+    await assertNoSourceDeletionClaim(env.DB, draft.sourceIds.map((id) => ({ id, title: "" })));
     current = await compareAndSwapCurrent(env.PUBLICATIONS, current, publication);
     await controller.checkpoint();
     await finalizePublished(env.DB, controller.currentLease(), { previousPublicationId, publication: publication as Extract<CurrentResearchPayload, { state: "EXPLORING" }> });

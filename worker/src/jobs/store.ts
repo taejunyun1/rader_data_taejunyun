@@ -8,6 +8,13 @@ function parse(value: unknown): unknown {
   try { return JSON.parse(value); } catch { return null; }
 }
 
+function publicJobInput(value: unknown): unknown {
+  const input = parse(value);
+  if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+  const { _execution: _internal, ...publicInput } = input as Record<string, unknown>;
+  return publicInput;
+}
+
 function mapJob(row: JobRow): ResearchJob {
   return {
     id: String(row.id),
@@ -16,7 +23,7 @@ function mapJob(row: JobRow): ResearchJob {
     status: String(row.status) as ResearchJobStatus,
     progress: Number(row.progress ?? 0),
     message: row.message == null ? null : String(row.message),
-    input: parse(row.inputJson),
+    input: publicJobInput(row.inputJson),
     result: parse(row.resultJson),
     resultRef: parse(row.resultRefJson) as ResearchJobResultRef | null,
     errorCode: row.errorCode == null ? null : String(row.errorCode),
@@ -107,17 +114,17 @@ export async function updateJobProgress(db: D1Database, id: string, progress: nu
 
 export async function completeResearchJob(db: D1Database, id: string, result: unknown, resultRef: ResearchJobResultRef | null): Promise<void> {
   const now = new Date().toISOString();
-  await db.prepare("UPDATE research_jobs SET status = 'SUCCEEDED', progress = 100, message = '완료', result_json = ?, result_ref_json = ?, finished_at = ?, updated_at = ? WHERE id = ? AND status = 'RUNNING'").bind(JSON.stringify(result ?? null), JSON.stringify(resultRef ?? null), now, now, id).run();
+  await db.prepare("UPDATE research_jobs SET input_json = json_remove(input_json, '$._execution'), status = 'SUCCEEDED', progress = 100, message = '완료', result_json = ?, result_ref_json = ?, finished_at = ?, updated_at = ? WHERE id = ? AND status = 'RUNNING'").bind(JSON.stringify(result ?? null), JSON.stringify(resultRef ?? null), now, now, id).run();
 }
 
 export async function failResearchJob(db: D1Database, id: string, errorCode: string, error: string): Promise<void> {
   const now = new Date().toISOString();
-  await db.prepare("UPDATE research_jobs SET status = 'FAILED', error_code = ?, error = ?, message = '작업에 실패했습니다.', finished_at = ?, updated_at = ? WHERE id = ? AND status NOT IN ('SUCCEEDED', 'FAILED', 'BLOCKED')").bind(errorCode.slice(0, 100), error.slice(0, 300), now, now, id).run();
+  await db.prepare("UPDATE research_jobs SET input_json = json_remove(input_json, '$._execution'), status = 'FAILED', error_code = ?, error = ?, message = '작업에 실패했습니다.', finished_at = ?, updated_at = ? WHERE id = ? AND status NOT IN ('SUCCEEDED', 'FAILED', 'BLOCKED')").bind(errorCode.slice(0, 100), error.slice(0, 300), now, now, id).run();
 }
 
 export async function blockResearchJob(db: D1Database, id: string, errorCode: string, error: string): Promise<void> {
   const now = new Date().toISOString();
-  await db.prepare("UPDATE research_jobs SET status = 'BLOCKED', error_code = ?, error = ?, message = '설정 확인이 필요합니다.', finished_at = ?, updated_at = ? WHERE id = ? AND status NOT IN ('SUCCEEDED', 'FAILED', 'BLOCKED')").bind(errorCode.slice(0, 100), error.slice(0, 300), now, now, id).run();
+  await db.prepare("UPDATE research_jobs SET input_json = json_remove(input_json, '$._execution'), status = 'BLOCKED', error_code = ?, error = ?, message = '설정 확인이 필요합니다.', finished_at = ?, updated_at = ? WHERE id = ? AND status NOT IN ('SUCCEEDED', 'FAILED', 'BLOCKED')").bind(errorCode.slice(0, 100), error.slice(0, 300), now, now, id).run();
 }
 
 export async function dismissResearchJob(db: D1Database, id: string, requestedBy: string): Promise<boolean> {

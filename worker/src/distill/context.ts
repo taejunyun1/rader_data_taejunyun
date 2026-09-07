@@ -54,11 +54,12 @@ export async function buildDistillContext(env: Env, params: RadarParams): Promis
          SELECT 1 FROM user_signals newer
          WHERE newer.source_id = us.source_id
            AND newer.action IN ('keep','develop','select','watch','ignore')
-           AND newer.created_at > ?
+           AND (newer.created_at > us.created_at
+             OR (newer.created_at = us.created_at AND newer.rowid > us.rowid))
        )
-     ORDER BY us.created_at DESC LIMIT 8`
+     ORDER BY us.created_at DESC, us.rowid DESC LIMIT 8`
   )
-    .bind(markSince, markSince)
+    .bind(markSince)
     .all<{ id: string; action: string }>();
 
   const signalMap = new Map((signalSources.results ?? []).map((r) => [r.id, [r.action]]));
@@ -109,7 +110,9 @@ export async function buildDistillContext(env: Env, params: RadarParams): Promis
 
     const analysis = await env.DB
       .prepare(
-        `SELECT payload_json FROM source_analysis WHERE source_id = ? AND analysis_type = 'basic' ORDER BY created_at DESC LIMIT 1`
+        `SELECT a.payload_json FROM source_analysis a JOIN sources s ON s.id = a.source_id
+         WHERE a.source_id = ? AND a.analysis_type = 'basic' AND a.version_id = s.active_version_id
+         ORDER BY a.created_at DESC, a.rowid DESC LIMIT 1`
       )
       .bind(id)
       .first<{ payload_json: string }>();

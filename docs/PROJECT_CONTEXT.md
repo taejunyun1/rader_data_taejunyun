@@ -253,3 +253,11 @@ pnpm deploy
 - D1 migration: `worker/migrations/`
 - 주요 UI: `web/src/views/`
 - 운영 변수: `worker/wrangler.jsonc`, secrets는 `wrangler secret put`으로 관리
+
+## 2026-09-07 기술 감사 후속
+
+- [기술 감사 수정 기록](TECHNICAL_AUDIT_2026-09-07.md): 16건 중 15건 수정·회귀 검증. 전체/개별 AI 예약 통합(T11)은 §6-2의 별도 설계 범위로 남는다.
+- 원본은 UUID 버전 키에 보존하고, 자동 수신은 활성 수동 편집을 대체하지 않는다. 공개 자료 삭제는 publication lease/current CAS 및 source claim으로 차단·직렬화한다.
+- 심층 분석과 착즙은 작업별 입력·모델 snapshot과 결정적 결과 identity를 사용한다. 내부 snapshot은 외부 작업 입력에서 제거하고 결과 저장·terminal 전이 시 삭제한다. 요청 내용 hash가 다른 AI 응답은 재사용하지 않는다.
+- Export JSON v2는 버전·분석·세션 provenance와 관계·시각 자료를 포함한다. 원본 백업은 모든 참조 버전·미리보기와 JSON manifest를 보존하며 누락은 성공으로 처리하지 않는다. 운영 인프라 전체 백업과는 범위가 다르다.
+- 기본 분석과 임베딩 모델도 `MODEL_ANALYSIS`·`MODEL_EMBEDDING` vars로 관리한다. 모델 값은 변경하지 않았다. 기본 분석 fragment는 입력과 일치하는 인용만 SOURCE provenance로 저장한다.

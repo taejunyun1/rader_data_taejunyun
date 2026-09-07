@@ -10,6 +10,7 @@ import {
   type HomepageWithdrawRequest,
   type HomepageWithdrawResponse,
   validateCurrentResearchPayload,
+  validateHomepageWithdrawResponse,
 } from "@radar/shared";
 
 export class HomepagePublicationApiError extends Error {
@@ -110,10 +111,6 @@ function validatePublish(value: unknown): HomepagePublishResponse | null {
   return value as unknown as HomepagePublishResponse;
 }
 
-function validateWithdraw(value: unknown): HomepageWithdrawResponse | null {
-  if (!isRecord(value) || Object.keys(value).sort().join(",") !== "currentRevision,idempotent,ledgerReconcilePending,state,withdrawnAt,withdrawnPublicationId" || value.ok !== true || value.state !== "WITHDRAWN" || typeof value.currentRevision !== "string" || typeof value.idempotent !== "boolean" || typeof value.ledgerReconcilePending !== "boolean" || typeof value.withdrawnPublicationId !== "string" || !isIsoDate(value.withdrawnAt)) return null;
-  return value as unknown as HomepageWithdrawResponse;
-}
 
 function requestId(response: Response, body: unknown): string | null {
   if (response.headers.get("X-Request-Id")) return response.headers.get("X-Request-Id");
@@ -187,7 +184,7 @@ export function withdrawHomepagePublication(expected: HomepageWithdrawRequest) {
     expectedPublicationId: expected.expectedPublicationId,
     expectedContentHash: expected.expectedContentHash,
     expectedCurrentRevision: expected.expectedCurrentRevision,
-  }, validateWithdraw);
+  }, validateHomepageWithdrawResponse);
 }
 
 export function formatHomepagePublicationDate(iso: string): string {

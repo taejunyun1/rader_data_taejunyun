@@ -12,7 +12,7 @@ import {
 import { findDuplicate } from "./dedup";
 import { uuid, sha256Hex } from "./ids";
 import { normalizeDoi, normalizeUrl, titleNorm } from "./normalize";
-import { activateVersion, getActiveVersion } from "./versioning";
+import { activateIncomingVersion, getActiveVersion } from "./versioning";
 import {
   assertSourceDeletionNotClaimed,
   isSourceDeletionClaimError,
@@ -295,12 +295,9 @@ async function appendReimportedVersion(
   await assertSourceDeletionNotClaimed(env.DB, sourceId);
   const source = await env.DB.prepare("SELECT title FROM sources WHERE id = ?").bind(sourceId).first<{ title: string }>();
   if (!source) throw new Error("source_not_found");
-  const row = await env.DB.prepare("SELECT COALESCE(MAX(version), 0) AS version FROM source_versions WHERE source_id = ?")
-    .bind(sourceId).first<{ version: number }>();
-  const version = (row?.version ?? 0) + 1;
   const versionId = uuid();
   const clean = input.filename ? sanitizeFilename(input.filename) : null;
-  const r2Key = input.storedOriginal === null ? null : `originals/${sourceId}/v${version}${clean ? `-${clean}` : ""}`;
+  const r2Key = input.storedOriginal === null ? null : `originals/${sourceId}/${versionId}${clean ? `-${clean}` : ""}`;
   if (r2Key) await copyStagedOriginal(
     env,
     stagedOriginalKey,
@@ -327,10 +324,10 @@ async function appendReimportedVersion(
          (id, source_id, version, r2_key, extracted_text, char_count, content_hash, raw_content_hash, normalized_content_hash, normalized_text,
           normalization_status, normalization_report_json, version_origin, parent_version_id, review_status, created_at,
           text_scope, extraction_method, extraction_error, content_type, final_url, acquired_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'READY', ?, ?,
-          (SELECT active_version_id FROM sources WHERE id = ?), 'ACTIVE', ?, ?, ?, ?, ?, ?, ?)`
+         VALUES (?, ?, (SELECT COALESCE(MAX(version), 0) + 1 FROM source_versions WHERE source_id = ?), ?, ?, ?, ?, ?, ?, ?, 'READY', ?, ?,
+          (SELECT active_version_id FROM sources WHERE id = ?), 'PENDING_REVIEW', ?, ?, ?, ?, ?, ?, ?)`
       ).bind(
-        versionId, sourceId, version, r2Key, text, text.length, versionContentHash, rawContentHash, normalizedContentHash,
+        versionId, sourceId, sourceId, r2Key, text, text.length, versionContentHash, rawContentHash, normalizedContentHash,
         normalized.normalizedText, JSON.stringify(normalized.report), input.versionOrigin ?? "INITIAL_INGEST", sourceId, ts,
         textScope, extractionMethod, input.extractionError ?? null, input.contentType ?? null, input.finalUrl ?? null, input.acquiredAt ?? ts,
       ),
@@ -355,8 +352,10 @@ async function appendReimportedVersion(
     }
     throw error;
   }
-  await activateVersion(env.DB, sourceId, versionId, qualityStatus, ts);
-  return { sourceId, duplicateOf: sourceId, title: source.title, qualityStatus, activeVersionId: versionId };
+  await activateIncomingVersion(env.DB, sourceId, versionId, qualityStatus, ts);
+  const active = await getActiveVersion(env.DB, sourceId);
+  const current = await env.DB.prepare("SELECT quality_status FROM sources WHERE id = ?").bind(sourceId).first<{ quality_status: QualityStatus }>();
+  return { sourceId, duplicateOf: sourceId, title: source.title, qualityStatus: current?.quality_status, activeVersionId: active?.id };
 }
 
 async function stageIncomingOriginal(env: Env, input: CreateSourceInput, rawContentHash: string): Promise<string | null> {

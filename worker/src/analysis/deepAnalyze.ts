@@ -1,8 +1,10 @@
+import { jobInputSnapshot } from "../lib/jobInputSnapshot";
+import { loadModelRoles } from "../lib/modelSettings";
 import type { QualityStatus, TextScope } from "@radar/shared/ingestion";
 import { uuid } from "../ingestion/ids";
 import { callOpenAi } from "../lib/openai";
 import { chunkText, extractJson, deepChunkPrompt, deepSynthesisPrompt, keepVerbatimQuotes, type DeepAnalysisPayload, type DeepChunkResult, validateDeepPayload } from "./deepPrompt";
-import { modelTierForDeepStage, profileFor } from "./deepProfiles";
+import { profileFor } from "./deepProfiles";
 
 export interface DeepAnalysisReadinessInput {
   textScope: TextScope;
@@ -47,41 +49,50 @@ export function isDeepAnalysisReady(input: DeepAnalysisReadinessInput): DeepAnal
 }
 
 export async function analyzeDeepSource(env: Env, sourceId: string, requestedProfile: unknown, researchJobId?: string): Promise<{ analysisId: string; payload: DeepAnalysisPayloadWithProvenance; model: string; costUsd: number }> {
-  const profile = profileFor(requestedProfile);
-  const row = await env.DB.prepare(
-    `SELECT s.title, s.quality_status, v.id AS version_id, v.text_scope, v.char_count,
-            v.normalized_text, v.extracted_text
-     FROM sources s LEFT JOIN source_versions v ON v.id = s.active_version_id
-     WHERE s.id = ?`
-  ).bind(sourceId).first<{
-    title: string;
-    quality_status: QualityStatus;
-    version_id: string | null;
-    text_scope: TextScope | null;
-    char_count: number | null;
-    normalized_text: string | null;
-    extracted_text: string | null;
-  }>();
-  if (!row) throw new Error("source_not_found");
-  const textScope = row.text_scope ?? "UNKNOWN";
-  const readiness = isDeepAnalysisReady({
-    textScope,
-    qualityStatus: row.quality_status,
-    charCount: Number(row.char_count ?? 0),
-    normalizedText: row.normalized_text,
-  });
-  if (!readiness.ok || !row.version_id) throw Object.assign(new Error("deep_analysis_text_not_ready"), readiness);
-  const sourceText = row.normalized_text!.trim();
-  const sourceCharCount = Number(row.char_count);
+  const analysisId = researchJobId ? `deep:${researchJobId}` : uuid();
+  const saved = await env.DB.prepare("SELECT payload_json, model, cost_usd FROM source_analysis WHERE id = ? AND source_id = ?")
+    .bind(analysisId, sourceId).first<{ payload_json: string; model: string; cost_usd: number }>();
+  if (saved) return { analysisId, payload: JSON.parse(saved.payload_json), model: saved.model, costUsd: saved.cost_usd };
+  const snapshot = await jobInputSnapshot(env.DB, researchJobId, "deep", async () => {
+    const profile = profileFor(requestedProfile);
+    const row = await env.DB.prepare(
+      `SELECT s.title, s.quality_status, v.id AS version_id, v.text_scope, v.char_count,
+              v.normalized_text, v.extracted_text
+       FROM sources s LEFT JOIN source_versions v ON v.id = s.active_version_id
+       WHERE s.id = ?`
+    ).bind(sourceId).first<{
+      title: string;
+      quality_status: QualityStatus;
+      version_id: string | null;
+      text_scope: TextScope | null;
+      char_count: number | null;
+      normalized_text: string | null;
+      extracted_text: string | null;
+    }>();
+    if (!row) throw new Error("source_not_found");
+    const textScope = row.text_scope ?? "UNKNOWN";
+    const readiness = isDeepAnalysisReady({
+      textScope,
+      qualityStatus: row.quality_status,
+      charCount: Number(row.char_count ?? 0),
+      normalizedText: row.normalized_text,
+    });
+    if (!readiness.ok || !row.version_id) throw Object.assign(new Error("deep_analysis_text_not_ready"), readiness);
+    const sourceText = row.normalized_text!.trim();
+    const sourceCharCount = Number(row.char_count);
 
-  const chunks = chunkText(sourceText, 24_000, Math.ceil(profile.maxChars / 24_000)).slice(0, 4);
+    const chunks = chunkText(sourceText, 24_000, Math.ceil(profile.maxChars / 24_000)).slice(0, 4);
+    return { sourceId, profile, row: { version_id: row.version_id }, sourceText: sourceText.slice(0, profile.maxChars), sourceCharCount, textScope, chunks, models: await loadModelRoles(env.DB, env) };
+  });
+  if (snapshot.sourceId !== sourceId) throw new Error("deep_analysis_snapshot_source_mismatch");
+  const { profile, row, sourceText, sourceCharCount, textScope, chunks, models } = snapshot;
   const chunkResults = await Promise.all(chunks.map(async (chunk, index) => {
     const result = await callOpenAi(env, {
       purpose: "deep_analysis",
       researchJobId,
       workflowStep: `deep-chunk-${index}`,
       promptVersion: "deep-v1",
-      model: modelTierForDeepStage("chunk"),
+      modelId: models.baseModel,
       jsonMode: true,
       maxOutputTokens: 2600,
       messages: [
@@ -100,7 +111,7 @@ export async function analyzeDeepSource(env: Env, sourceId: string, requestedPro
     researchJobId,
     workflowStep: "deep-synthesis",
     promptVersion: "deep-v1",
-    model: modelTierForDeepStage("synthesis"),
+    modelId: models.reviewModel,
     jsonMode: true,
     maxOutputTokens: 4200,
     messages: [
@@ -121,11 +132,11 @@ export async function analyzeDeepSource(env: Env, sourceId: string, requestedPro
     },
   };
   const ts = new Date().toISOString();
-  const analysisId = uuid();
-  await env.DB.prepare(
-    `INSERT INTO source_analysis (id, source_id, version_id, analysis_type, provenance, model, prompt_version, payload_json, cost_usd, created_at)
+  const insert = env.DB.prepare(
+    `INSERT OR IGNORE INTO source_analysis (id, source_id, version_id, analysis_type, provenance, model, prompt_version, payload_json, cost_usd, created_at)
      VALUES (?, ?, ?, 'deep', 'INTERPRETATION', ?, 'deep-v1', ?, ?, ?)`
-  ).bind(analysisId, sourceId, row.version_id, synthesis.model, JSON.stringify(payload), chunkResults.reduce((sum, item) => sum + item.costUsd, 0) + synthesis.costUsd, ts).run();
+  ).bind(analysisId, sourceId, row.version_id, synthesis.model, JSON.stringify(payload), chunkResults.reduce((sum, item) => sum + item.costUsd, 0) + synthesis.costUsd, ts);
+  await env.DB.batch([insert, ...(researchJobId ? [env.DB.prepare("UPDATE research_jobs SET input_json = json_remove(input_json, '$._execution') WHERE id = ?").bind(researchJobId)] : [])]);
   return { analysisId, payload, model: synthesis.model, costUsd: chunkResults.reduce((sum, item) => sum + item.costUsd, 0) + synthesis.costUsd };
 }
 

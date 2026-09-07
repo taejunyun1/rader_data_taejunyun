@@ -227,7 +227,7 @@ export async function compareAndSwapCurrent(
   } catch (error) {
     try {
       const actual = await readCurrentPublication(bucket);
-      if (actual.exists && samePayload(actual.wrapper.payload, payload)) return actual;
+      if (actual.exists && actual.wrapper.storageRevision === wrapper.storageRevision && samePayload(actual.wrapper.payload, payload)) return actual;
     } catch {
       // Preserve the original ambiguous R2 error. The caller can retry safely.
     }

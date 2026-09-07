@@ -1395,7 +1395,7 @@ async function detectPdfPageCandidates(
         ],
         image,
         max_tokens: 1800,
-      } as unknown as Record<string, unknown>));
+      }));
     const result = researchJobId
       ? await withAiCallLedger(
         env.DB,

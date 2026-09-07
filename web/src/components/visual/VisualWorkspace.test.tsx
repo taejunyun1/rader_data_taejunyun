@@ -263,6 +263,18 @@ describe("Visual workspace", () => {
     expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input) === "/api/visual-assets/asset-1/analysis" && init?.method === "PATCH")).toBe(false);
   });
 
+  it("retains typing into an initially empty analysis field", async () => {
+    render(<VisualAssetPanel assets={[buildSummary()]} />);
+    await userEvent.click(screen.getByRole("button", { name: /도판 1/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "분석 수정" }));
+    const field = screen.getByRole("textbox", { name: "문화 참조 1" });
+    await userEvent.type(field, "새로운 참조");
+    expect(field).toHaveValue("새로운 참조");
+    await userEvent.clear(field);
+    await userEvent.type(field, "다시 입력");
+    expect(field).toHaveValue("다시 입력");
+  });
+
   it("rejects over-limit item lengths while keeping existing values visible and applying field maxLength", async () => {
     const payload = analysisPayload("검증") as Record<string, unknown>;
     const observation = payload.observation as Record<string, unknown>;

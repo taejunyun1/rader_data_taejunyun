@@ -1,10 +1,9 @@
-const EMBED_MODEL = "@cf/baai/bge-m3";
 const MAX_EMBED_CHARS = 4000;
 
 export function embedText(env: Env, text: string): Promise<number[]> {
   const truncated = text.slice(0, MAX_EMBED_CHARS);
   return env.AI
-    .run(EMBED_MODEL, { text: [truncated] })
+    .run(env.MODEL_EMBEDDING, { text: [truncated] })
     .then((r) => {
       const data = (r as unknown as { data?: number[][] }).data;
       if (data?.[0]?.length) return data[0];
@@ -24,13 +23,13 @@ export async function ensureEmbedding(env: Env, sourceId: string): Promise<boole
 
   const rows = await env.DB
     .prepare(
-      `SELECT COALESCE(v.normalized_text, v.extracted_text) AS extracted_text, s.title,
-              (SELECT payload_json FROM source_analysis a WHERE a.source_id = s.id AND a.analysis_type = 'basic' ORDER BY a.created_at DESC LIMIT 1) AS analysis
+      `SELECT v.id AS version_id, COALESCE(v.normalized_text, v.extracted_text) AS extracted_text, s.title,
+              (SELECT payload_json FROM source_analysis a WHERE a.source_id = s.id AND a.analysis_type = 'basic' AND a.version_id = s.active_version_id ORDER BY a.created_at DESC LIMIT 1) AS analysis
        FROM sources s JOIN source_versions v ON v.id = s.active_version_id
        WHERE s.id = ?`
     )
     .bind(sourceId)
-    .first<{ extracted_text: string | null; title: string; analysis: string | null }>();
+    .first<{ version_id: string; extracted_text: string | null; title: string; analysis: string | null }>();
   if (!rows) return false;
 
   let summary = "";
@@ -44,12 +43,15 @@ export async function ensureEmbedding(env: Env, sourceId: string): Promise<boole
   if (text.length < 20) return false;
 
   const vector = await embedText(env, text);
+  const active = await env.DB.prepare("SELECT active_version_id FROM sources WHERE id = ?")
+    .bind(sourceId).first<{ active_version_id: string }>();
+  if (active?.active_version_id !== rows.version_id) return false;
   await env.VECTOR_INDEX.upsert([
     { id: sourceId, values: vector, metadata: { sourceId, title: rows.title.slice(0, 200) } },
   ]);
   await env.DB
     .prepare("INSERT OR REPLACE INTO source_embeddings (source_id, model, chunk_chars, created_at) VALUES (?, ?, ?, ?)")
-    .bind(sourceId, EMBED_MODEL, text.length, new Date().toISOString())
+    .bind(sourceId, env.MODEL_EMBEDDING, text.length, new Date().toISOString())
     .run();
   return true;
 }

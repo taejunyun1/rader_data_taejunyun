@@ -131,7 +131,7 @@ async function sourcesAreLive(db: D1Database, sourcesUsed: Array<{ id: string; t
   return new Set((rows.results ?? []).map((row) => row.id)).size === ids.length;
 }
 
-async function assertNoSourceDeletionClaim(db: D1Database, sourcesUsed: Array<{ id: string; title: string }>): Promise<void> {
+export async function assertNoSourceDeletionClaim(db: D1Database, sourcesUsed: Array<{ id: string; title: string }>): Promise<void> {
   const ids = [...new Set(sourcesUsed.map((source) => source.id))];
   if (ids.length === 0) return;
   const placeholders = ids.map(() => "?").join(",");

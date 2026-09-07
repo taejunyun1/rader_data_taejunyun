@@ -296,6 +296,33 @@ export async function activateVersion(db: D1Database, sourceId: string, versionI
   ]);
 }
 
+/** Automatic promotion must recheck the manual-edit policy inside the D1 transaction. */
+export async function activateIncomingVersion(
+  db: D1Database, sourceId: string, versionId: string, qualityStatus: QualityStatus,
+  now = new Date().toISOString(),
+): Promise<boolean> {
+  await assertSourceDeletionNotClaimed(db, sourceId);
+  const results = await db.batch([
+    db.prepare(`UPDATE sources SET active_version_id = ?,
+      r2_key = (SELECT r2_key FROM source_versions WHERE id = ?),
+      file_hash = COALESCE((SELECT raw_content_hash FROM source_versions WHERE id = ?), file_hash),
+      quality_status = ?, updated_at = ?
+      WHERE id = ? AND EXISTS (SELECT 1 FROM source_versions incoming WHERE incoming.id = ? AND incoming.source_id = sources.id
+        AND (incoming.version_origin = 'MANUAL_EDIT' OR NOT EXISTS (
+          SELECT 1 FROM source_versions active WHERE active.id = sources.active_version_id AND active.version_origin = 'MANUAL_EDIT'
+        )))`).bind(versionId, versionId, versionId, qualityStatus, now, sourceId, versionId),
+    db.prepare(`UPDATE source_versions SET review_status = 'SUPERSEDED', reviewed_at = ?
+      WHERE source_id = ? AND review_status = 'ACTIVE' AND id <> ?
+      AND EXISTS (SELECT 1 FROM sources WHERE id = ? AND active_version_id = ?)`)
+      .bind(now, sourceId, versionId, sourceId, versionId),
+    db.prepare(`UPDATE source_versions SET review_status = 'ACTIVE', reviewed_at = ?
+      WHERE id = ? AND source_id = ?
+      AND EXISTS (SELECT 1 FROM sources WHERE id = ? AND active_version_id = ?)`)
+      .bind(now, versionId, sourceId, sourceId, versionId),
+  ]);
+  return (results[0]?.meta.changes ?? 0) > 0;
+}
+
 export async function rejectVersion(db: D1Database, sourceId: string, versionId: string, now = new Date().toISOString()): Promise<void> {
   await assertSourceDeletionNotClaimed(db, sourceId);
   const result = await db

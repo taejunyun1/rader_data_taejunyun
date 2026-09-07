@@ -67,6 +67,8 @@
     "ENVIRONMENT": "production",
     "AI_GATEWAY_BASE_URL": "https://gateway.ai.cloudflare.com/v1/a58fbe3a0082c49f571d69d08c1227ab/research-radar",
     "OPENAI_BASE_URL": "https://gateway.ai.cloudflare.com/v1/a58fbe3a0082c49f571d69d08c1227ab/research-radar/openai",
+    "MODEL_ANALYSIS": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    "MODEL_EMBEDDING": "@cf/baai/bge-m3",
     "MODEL_HIGH": "gpt-5-mini",
     "MODEL_LOW": "gpt-5-nano",
     "MODEL_DEEP": "gpt-5.4-mini",

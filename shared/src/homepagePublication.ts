@@ -45,8 +45,20 @@ export function validateCurrentResearchStorageWrapper(value: unknown): CurrentRe
 function utf8Bytes(value: unknown): number { return new TextEncoder().encode(JSON.stringify(value)).byteLength; }
 function privateHost(hostname: string): boolean {
   const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  if (h === "localhost" || h.endsWith(".local") || h === "::" || h === "::1" || h.startsWith("fc") || h.startsWith("fd") || h.startsWith("fe8") || h.startsWith("fe9") || h.startsWith("fea") || h.startsWith("feb")) return true;
+  // URL parsing normalizes IP literals. All literal IPs are excluded by the
+  // publication policy; IPv6 prefixes must never be applied to DNS names.
+  if (h === "localhost" || h.endsWith(".local") || h.includes(":")) return true;
   const octets = h.split(".").map(Number);
   if (octets.length !== 4 || octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return h.includes(":");
   return true;
+}
+
+export function validateHomepageWithdrawResponse(value: unknown): HomepageWithdrawResponse | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  if (!keys(v, ["ok", "state", "withdrawnPublicationId", "withdrawnAt", "currentRevision", "idempotent", "ledgerReconcilePending"]) ||
+      v.ok !== true || v.state !== "WITHDRAWN" || typeof v.currentRevision !== "string" ||
+      typeof v.idempotent !== "boolean" || typeof v.ledgerReconcilePending !== "boolean" ||
+      typeof v.withdrawnPublicationId !== "string" || !v.withdrawnPublicationId || !clean(v.withdrawnPublicationId) || !validDate(v.withdrawnAt)) return null;
+  return v as unknown as HomepageWithdrawResponse;
 }

@@ -457,6 +457,7 @@ reservoir.delete("/:sourceId", async (c) => {
     return c.json(result);
   } catch (error) {
     if (!(error instanceof SourceDeletionError)) throw error;
+    if (error.code === "publication_ledger_unavailable") return c.json({ error: error.code }, 503);
     if (error.code === "source_not_found") return c.json({ error: error.code }, 404);
     if (error.code === "source_delete_r2_failed") return c.json({ error: error.code }, 502);
     if (error.code === "source_delete_d1_failed") return c.json({ error: error.code }, 500);

@@ -213,6 +213,7 @@ describe("reservoir permanent deletion route", () => {
       .bind(`tests/delete/${sourceId}/secret`, sourceId).run();
     const failingEnv = {
       DB: env.DB,
+      PUBLICATIONS: env.PUBLICATIONS,
       ORIGINALS: { delete: async () => { throw new Error("secret/key/path"); } },
     } as unknown as Env;
     const response = await deleteRequest(

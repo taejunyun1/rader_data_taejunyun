@@ -159,7 +159,7 @@ async function runVisualModel(env: Env, input: AnalyzeVisualBytesInput): Promise
     ],
     image,
     max_tokens: 1800,
-  } as unknown as Record<string, unknown>);
+  });
   const modelCall = input.visionGate ? () => input.visionGate!.execute(invokeModel) : invokeModel;
   const aiResult = input.researchJobId
     ? await withAiCallLedger(

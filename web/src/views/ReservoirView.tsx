@@ -178,6 +178,9 @@ function acquisitionBlockReason(acquisition: SourceAcquisitionView, canRefetch: 
 }
 
 function sourceDeleteErrorMessage(code: string): string {
+  if (code === "source_in_publication") return "홈페이지에 공개 중인 자료입니다. 공개를 철회한 뒤 삭제해 주세요.";
+  if (code === "publication_in_progress" || code === "publication_state_changed") return "홈페이지 공개 상태가 변경 중입니다. 잠시 후 다시 시도해 주세요.";
+  if (code === "publication_ledger_unavailable") return "홈페이지 공개 상태를 확인할 수 없어 삭제를 멈췄습니다. 잠시 후 다시 시도해 주세요.";
   if (code === "source_delete_confirmation_mismatch") return "자료 제목이 변경됐습니다. 상세 화면을 다시 불러와 주세요.";
   if (code === "source_delete_in_progress") return "이 자료의 영구 삭제가 이미 진행 중입니다. 기존 작업이 끝난 뒤 잠시 후 다시 시도해 주세요.";
   if (code === "source_delete_active_work") return "이 자료의 처리 작업이 진행 중입니다. 작업이 끝난 뒤 다시 시도해 주세요.";

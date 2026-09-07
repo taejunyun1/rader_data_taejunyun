@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { backupResearchOriginals, loadResearchExport } from "../lib/researchExport";
 
 const exportRoute = new Hono<{ Bindings: Env }>();
 
@@ -25,63 +26,8 @@ async function loadSources(db: D1Database): Promise<SourceRow[]> {
   return rows.results ?? [];
 }
 
-async function loadKeywords(db: D1Database) {
-  return (await db.prepare(`SELECT source_id, keyword, weight, created_at FROM keywords`).all()).results ?? [];
-}
-async function loadQuestions(db: D1Database) {
-  return (await db.prepare(`SELECT source_id, question, status, created_at FROM questions`).all()).results ?? [];
-}
-async function loadSignals(db: D1Database) {
-  return (await db.prepare(`SELECT source_id, action, weight, context, created_at FROM user_signals`).all()).results ?? [];
-}
-async function loadSessions(db: D1Database) {
-  return (
-    await db
-      .prepare(
-        `SELECT id, output_json, critic_output_json, counter_output_json, user_selection_json, redistill_of,
-                model_version, prompt_version, cost_usd, created_at FROM distill_sessions ORDER BY created_at`
-      )
-      .all()
-  ).results ?? [];
-}
-async function loadGaps(db: D1Database) {
-  return (await db.prepare(`SELECT distill_session_id, gap_text, kind, created_at FROM research_gaps`).all()).results ?? [];
-}
-async function loadQueue(db: D1Database) {
-  return (
-    await db
-      .prepare(
-        `SELECT distill_session_id, title, author, source_url, openalex_id, priority, why_read, related_question, verified, created_at
-         FROM reading_queue ORDER BY created_at`
-      )
-      .all()
-  ).results ?? [];
-}
-
 exportRoute.get("/json", async (c) => {
-  const db = c.env.DB;
-  const [sources, keywords, questions, signals, sessions, gaps, queue] = await Promise.all([
-    loadSources(db),
-    loadKeywords(db),
-    loadQuestions(db),
-    loadSignals(db),
-    loadSessions(db),
-    loadGaps(db),
-    loadQueue(db),
-  ]);
-
-  const payload = {
-    format: "research-radar-export",
-    version: 1,
-    exportedAt: new Date().toISOString(),
-    sources,
-    keywords,
-    questions,
-    userSignals: signals,
-    distillSessions: sessions,
-    researchGaps: gaps,
-    readingQueue: queue,
-  };
+  const payload = await loadResearchExport(c.env.DB);
   return new Response(JSON.stringify(payload, null, 2), {
     headers: {
       "Content-Type": "application/json; charset=utf-8",
@@ -93,7 +39,15 @@ exportRoute.get("/json", async (c) => {
 exportRoute.get("/csv", async (c) => {
   const sources = await loadSources(c.env.DB);
   const header = "id,kind,title,authors,year,reliability,status,origin,canonical_url,doi,created_at";
-  const esc = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const esc = (v: unknown) => {
+    let text = String(v ?? "");
+    // CSV quoting does not prevent spreadsheet formulas. Protect only the
+    // exported cell; preserve the original metadata in storage and JSON.
+    if (typeof v === "string" && (/^[\t\r\n]/.test(text) || /^[\s\p{Cc}\p{Cf}]*[=+\-@＝＋－＠]/u.test(text))) {
+      text = `'${text}`;
+    }
+    return `"${text.replace(/"/g, '""')}"`;
+  };
   const lines = sources.map((s) =>
     [s.id, s.kind, s.title, s.authors, s.year, s.reliability, s.status, s.origin, s.canonical_url, s.doi, s.created_at].map(esc).join(",")
   );
@@ -119,7 +73,9 @@ exportRoute.get("/markdown", async (c) => {
     parts.push(`- added: ${s.created_at.slice(0, 10)}`, ``);
 
     const analysis = await db
-      .prepare(`SELECT payload_json FROM source_analysis WHERE source_id = ? AND analysis_type = 'basic' ORDER BY created_at DESC LIMIT 1`)
+      .prepare(`SELECT a.payload_json FROM source_analysis a JOIN sources s ON s.id = a.source_id
+                WHERE a.source_id = ? AND a.analysis_type = 'basic' AND a.version_id = s.active_version_id
+                ORDER BY a.created_at DESC, a.rowid DESC LIMIT 1`)
       .bind(s.id)
       .first<{ payload_json: string }>();
     if (analysis) {
@@ -161,23 +117,8 @@ exportRoute.get("/markdown", async (c) => {
 });
 
 exportRoute.post("/originals-to-r2", async (c) => {
-  const sources = await loadSources(c.env.DB);
-  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
-  const manifest = sources.map((s) => `${s.id}\t${s.title}\t${s.r2_key ?? "-"}`).join("\n");
-  await c.env.EXPORTS.put(`exports/originals-manifest-${stamp}.txt`, manifest, { httpMetadata: { contentType: "text/plain" } });
-
-  let copied = 0;
-  for (const s of sources) {
-    if (!s.r2_key) continue;
-    const obj = await c.env.ORIGINALS.get(s.r2_key);
-    if (!obj) continue;
-    const body = await obj.arrayBuffer();
-    await c.env.EXPORTS.put(`exports/originals-${stamp}/${s.id}`, body, {
-      customMetadata: { sourceId: s.id, title: s.title.slice(0, 200), originalKey: s.r2_key },
-    });
-    copied++;
-  }
-  return c.json({ ok: true, copied, total: sources.length, prefix: `exports/originals-${stamp}/` });
+  const result = await backupResearchOriginals(c.env);
+  return c.json(result, result.ok ? 200 : 409);
 });
 
 exportRoute.get("/r2-list", async (c) => {

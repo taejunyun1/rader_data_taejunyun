@@ -123,6 +123,7 @@ function emptyDraft(): DraftPayload {
 }
 
 function replaceValue(values: string[], index: number, nextValue: string): string[] {
+  if (values.length === 0 && index === 0) return [nextValue];
   return values.map((value, current) => (current === index ? nextValue : value));
 }
 

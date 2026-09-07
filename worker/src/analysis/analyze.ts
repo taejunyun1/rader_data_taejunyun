@@ -4,8 +4,6 @@ import { inferTopics } from "./topics";
 import { ensureEmbedding } from "../lib/embed";
 import { uuid } from "../ingestion/ids";
 
-const ANALYSIS_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
-
 export interface AnalyzeResult {
   sourceId: string;
   status: "analyzed" | "failed";
@@ -33,7 +31,7 @@ export async function analyzeSource(env: Env, sourceId: string): Promise<Analyze
 
   try {
     const prompt = analysisPrompt(text, src.kind);
-    const aiRes = (await env.AI.run(ANALYSIS_MODEL, {
+    const aiRes = (await env.AI.run(env.MODEL_ANALYSIS, {
       messages: [
         { role: "system", content: "You are a precise research analysis engine. Output only valid JSON." },
         { role: "user", content: prompt },
@@ -50,6 +48,11 @@ export async function analyzeSource(env: Env, sourceId: string): Promise<Analyze
       }
     }
     const payload = validateAnalysis(parsed);
+    if (payload?.important_fragments) {
+      // SOURCE provenance requires an exact quote from this immutable input.
+      payload.important_fragments = [...new Set(payload.important_fragments)]
+        .filter(fragment => text.includes(fragment));
+    }
 
     const ts = new Date().toISOString();
     if (payload) {
@@ -57,12 +60,16 @@ export async function analyzeSource(env: Env, sourceId: string): Promise<Analyze
         sourceId,
         versionId: version?.id ?? null,
         payload,
-        model: ANALYSIS_MODEL,
+        model: env.MODEL_ANALYSIS,
         ts,
       });
+      const active = await env.DB.prepare("SELECT active_version_id FROM sources WHERE id = ?")
+        .bind(sourceId).first<{ active_version_id: string }>();
+      // The analysis remains useful version history, but must not index a newer input.
+      if (active?.active_version_id !== version?.id) return { sourceId, status: "analyzed", hasAnalysis: true };
       await applyClassification(env, sourceId, payload, src.kind as SourceKind);
       await applyTopics(env, sourceId, payload);
-      await indexAnalysis(env, sourceId, payload, ts);
+      await indexAnalysis(env, sourceId, version!.id, payload, ts);
       await ensureEmbedding(env, sourceId).catch((e: Error) =>
         console.warn(JSON.stringify({ level: "warn", scope: "embed", sourceId, message: e.message }))
       );
@@ -115,7 +122,7 @@ async function applyClassification(env: Env, sourceId: string, payload: SourceAn
     .run();
 }
 
-async function indexAnalysis(env: Env, sourceId: string, payload: SourceAnalysisPayload, ts: string) {
+async function indexAnalysis(env: Env, sourceId: string, sourceVersionId: string, payload: SourceAnalysisPayload, ts: string) {
   const stmts: D1PreparedStatement[] = [];
   for (const kw of payload.keywords ?? []) {
     stmts.push(
@@ -135,7 +142,7 @@ async function indexAnalysis(env: Env, sourceId: string, payload: SourceAnalysis
     stmts.push(
       env.DB
         .prepare("INSERT INTO fragments (id, source_id, text, context_json, created_at) VALUES (?, ?, ?, ?, ?)")
-        .bind(uuid(), sourceId, f, JSON.stringify({ provenance: "SOURCE" }), ts)
+        .bind(uuid(), sourceId, f, JSON.stringify({ provenance: "SOURCE", sourceVersionId }), ts)
     );
   }
   if (stmts.length) await env.DB.batch(stmts);

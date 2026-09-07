@@ -62,7 +62,7 @@ export async function beginPublishing(db: D1Database, lease: PublicationLease, i
     const eventAt = await allocatePublicationEventAt(db, lease, row.id, requestedAt);
     const action = row.first_published_at ? "REPUBLISH" : "PUBLISH";
     await requireLease(db, lease);
-    const result = await db.prepare("UPDATE homepage_publications SET status='PUBLISHING', pending_action=?, pending_actor_sub=?, pending_event_at=?, error_code=NULL, updated_at=? WHERE id=? AND status='FAILED' AND pending_action IS NULL").bind(action, input.actorSub, eventAt, new Date().toISOString(), row.id).run();
+    const result = await db.prepare("UPDATE homepage_publications SET status='PUBLISHING', pending_action=?, pending_actor_sub=?, pending_event_at=?, error_code=NULL, updated_at=? WHERE id=? AND status IN ('FAILED','WITHDRAWN','SUPERSEDED') AND pending_action IS NULL").bind(action, input.actorSub, eventAt, new Date().toISOString(), row.id).run();
     if (!result.meta.changes) throw new Error("publication_ledger_unavailable");
     row = await getRow(db, row.id);
   }

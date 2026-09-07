@@ -7,7 +7,7 @@ import type { TextScope } from "@radar/shared/ingestion";
 import { runDiscovery } from "../discovery/run";
 import { discoveryCombinedJobFailure, discoveryCombinedJobOutcome, discoveryJobOutcome } from "../discovery/diagnostics";
 import { loadParams } from "../lib/params";
-import { runDistill, verifyQueueItems } from "../distill/run";
+import { runDistill, verifyPersistedQueueItems } from "../distill/run";
 import { runRadarSynthesis } from "../radar/run";
 import { analyzeDeepSource } from "../analysis/deepAnalyze";
 import {
@@ -100,6 +100,14 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
         async () => this.execute(job, extractionBudget ?? undefined),
       );
 
+      if (job.kind === "DISTILL_RUN" && result.result.sessionId) {
+        await step.do("verify-distill-queue", { retries: { limit: 1, delay: "5 seconds", backoff: "exponential" }, timeout: "5 minutes" }, async () => {
+          await updateJobProgress(this.env.DB, job.id, 80, "읽기 큐를 검증하는 중");
+          await verifyPersistedQueueItems(this.env, result.result.sessionId!);
+          return true;
+        });
+      }
+
       if (job.kind === "VISUAL_TRANSFORM") {
         await step.do(
           "enqueue-visual-analysis",
@@ -186,8 +194,6 @@ export class ResearchJobWorkflow extends WorkflowEntrypoint<Env, { jobId: string
         if (result.error.includes("monthly_budget_exhausted")) throw new JobBlockedError("monthly_budget_exhausted", result.error);
         throw new Error(result.error);
       }
-      await updateJobProgress(this.env.DB, job.id, 80, "읽기 큐를 검증하는 중");
-      await verifyQueueItems(this.env, result.distillOutput, result.queueItemIds);
       return { result: { sessionId: result.sessionId, costUsd: result.costUsd }, resultRef: { view: "DISTILL", sessionId: result.sessionId } };
     }
 

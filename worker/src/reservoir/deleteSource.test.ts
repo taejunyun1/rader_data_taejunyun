@@ -134,7 +134,7 @@ describe("source deletion preflight", () => {
     const sourceId = `${crypto.randomUUID()}-confirm`;
     await insertSource(sourceId, "정확한 제목", `tests/delete/${sourceId}/v1`);
     const deleteObject = vi.fn();
-    const testEnv = { DB: env.DB, ORIGINALS: { delete: deleteObject } } as unknown as Pick<Env, "DB" | "ORIGINALS">;
+    const testEnv = { PUBLICATIONS: env.PUBLICATIONS, DB: env.DB, ORIGINALS: { delete: deleteObject } } as unknown as Pick<Env, "DB" | "ORIGINALS" | "PUBLICATIONS">;
 
     await expectDeletionError(
       deleteSourcePermanently(testEnv, { sourceId: `${sourceId}-missing`, confirmTitle: "정확한 제목" }),
@@ -211,7 +211,7 @@ describe("source deletion preflight", () => {
     const versionId = await insertSource(sourceId, "R2 실패 자료", sourceKey);
     await insertVisualDeletionFixture(sourceId, versionId);
     const deleteObject = vi.fn(async () => { throw new Error("r2 unavailable"); });
-    const testEnv = { DB: env.DB, ORIGINALS: { delete: deleteObject } } as unknown as Pick<Env, "DB" | "ORIGINALS">;
+    const testEnv = { PUBLICATIONS: env.PUBLICATIONS, DB: env.DB, ORIGINALS: { delete: deleteObject } } as unknown as Pick<Env, "DB" | "ORIGINALS" | "PUBLICATIONS">;
 
     await expectDeletionError(
       deleteSourcePermanently(testEnv, { sourceId, confirmTitle: "R2 실패 자료" }),
@@ -474,7 +474,7 @@ describe("source deletion D1 purge", () => {
 
     await expectDeletionError(
       deleteSourcePermanently(
-        { DB: staleDb, ORIGINALS: env.ORIGINALS },
+        { PUBLICATIONS: env.PUBLICATIONS, DB: staleDb, ORIGINALS: env.ORIGINALS },
         { sourceId: deletedCanonicalId, confirmTitle: "과거 병합 stale 자료" },
       ),
       "source_delete_state_changed",
@@ -521,7 +521,7 @@ describe("source deletion D1 purge", () => {
     } as unknown as D1Database;
     await expectDeletionError(
       deleteSourcePermanently(
-        { DB: failingDb, ORIGINALS: env.ORIGINALS },
+        { PUBLICATIONS: env.PUBLICATIONS, DB: failingDb, ORIGINALS: env.ORIGINALS },
         { sourceId, confirmTitle: "D1 실패 자료" },
       ),
       "source_delete_d1_failed",
@@ -555,7 +555,7 @@ describe("source deletion D1 purge", () => {
 
     await expectDeletionError(
       deleteSourcePermanently(
-        { DB: staleDb, ORIGINALS: env.ORIGINALS },
+        { PUBLICATIONS: env.PUBLICATIONS, DB: staleDb, ORIGINALS: env.ORIGINALS },
         { sourceId, confirmTitle: "stale claim guard" },
       ),
       "source_delete_d1_failed",
@@ -591,7 +591,7 @@ describe("source deletion D1 purge", () => {
       }
     });
     await deleteSourcePermanently(
-      { DB: env.DB, ORIGINALS: { delete: deleteObject } } as unknown as Pick<Env, "DB" | "ORIGINALS">,
+      { PUBLICATIONS: env.PUBLICATIONS, DB: env.DB, ORIGINALS: { delete: deleteObject } } as unknown as Pick<Env, "DB" | "ORIGINALS" | "PUBLICATIONS">,
       { sourceId, confirmTitle: "R2 heartbeat 자료" },
     );
 
@@ -612,7 +612,7 @@ describe("source deletion D1 purge", () => {
     } as unknown as D1Database;
     await expectDeletionError(
       deleteSourcePermanently(
-        { DB: staleDb, ORIGINALS: env.ORIGINALS },
+        { PUBLICATIONS: env.PUBLICATIONS, DB: staleDb, ORIGINALS: env.ORIGINALS },
         { sourceId, confirmTitle: "변경 전 제목" },
       ),
       "source_delete_state_changed",
@@ -656,7 +656,7 @@ describe("source deletion D1 purge", () => {
 
     await expectDeletionError(
       deleteSourcePermanently(
-        { DB: staleDb, ORIGINALS: env.ORIGINALS },
+        { PUBLICATIONS: env.PUBLICATIONS, DB: staleDb, ORIGINALS: env.ORIGINALS },
         { sourceId: canonicalId, confirmTitle: "교체 전 대표" },
       ),
       "source_delete_state_changed",
@@ -700,7 +700,7 @@ describe("source deletion D1 purge", () => {
 
     await expectDeletionError(
       deleteSourcePermanently(
-        { DB: staleDb, ORIGINALS: env.ORIGINALS },
+        { PUBLICATIONS: env.PUBLICATIONS, DB: staleDb, ORIGINALS: env.ORIGINALS },
         { sourceId, confirmTitle: "배치 직전 시각 작업" },
       ),
       "source_delete_state_changed",
@@ -735,7 +735,7 @@ describe("source deletion D1 purge", () => {
     } as unknown as D1Database;
 
     await expect(deleteSourcePermanently(
-      { DB: staleDb, ORIGINALS: env.ORIGINALS },
+      { PUBLICATIONS: env.PUBLICATIONS, DB: staleDb, ORIGINALS: env.ORIGINALS },
       { sourceId, confirmTitle: "배치 직전 새 버전" },
     )).resolves.toMatchObject({ deletedSourceId: sourceId });
     expect(injectionBlocked).toBe(true);
@@ -810,7 +810,7 @@ describe("source deletion D1 purge", () => {
     });
 
     await expect(deleteSourcePermanently(
-      { DB: staleDb, ORIGINALS: env.ORIGINALS },
+      { PUBLICATIONS: env.PUBLICATIONS, DB: staleDb, ORIGINALS: env.ORIGINALS },
       { sourceId, confirmTitle: "배치 직전 시각 의존성" },
     )).resolves.toMatchObject({ deletedSourceId: sourceId });
     expect(injectionBlocked).toBe(true);

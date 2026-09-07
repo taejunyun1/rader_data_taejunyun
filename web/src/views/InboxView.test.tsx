@@ -2,8 +2,16 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import InboxView from "./InboxView";
+import { extractPdfText, fileToBase64, renderPdfPreview } from "../lib/pdf";
+
+vi.mock("../lib/pdf", () => ({
+  extractPdfText: vi.fn(async () => ({ text: "[page 1] 충분한 길이의 정상 PDF 텍스트입니다.", pageCount: 1 })),
+  fileToBase64: vi.fn(async () => "cGRm"),
+  renderPdfPreview: vi.fn(async () => undefined),
+}));
 
 beforeEach(() => {
+  vi.clearAllMocks();
   vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
     if (String(input) === "/api/inbox") return Promise.resolve(new Response(JSON.stringify({ items: [] })));
     return Promise.resolve(new Response(JSON.stringify({ ok: true, title: "메모" })));
@@ -11,6 +19,28 @@ beforeEach(() => {
 });
 
 describe("InboxView", () => {
+  it("rejects an oversized PDF before extraction, preview or reading original bytes", async () => {
+    render(<InboxView />);
+    await userEvent.click(screen.getByRole("tab", { name: "파일" }));
+    const file = new File(["pdf"], "large.pdf", { type: "application/pdf" });
+    Object.defineProperty(file, "size", { value: 29_000_001 });
+    await userEvent.upload(screen.getByLabelText("파일 선택"), file);
+    expect(await screen.findByText(/PDF는 29MB 이하/)).toBeInTheDocument();
+    expect(extractPdfText).not.toHaveBeenCalled();
+    expect(fileToBase64).not.toHaveBeenCalled();
+    expect(renderPdfPreview).not.toHaveBeenCalled();
+  });
+
+  it("accepts a PDF at the upload size limit", async () => {
+    render(<InboxView />);
+    await userEvent.click(screen.getByRole("tab", { name: "파일" }));
+    const file = new File(["pdf"], "allowed.pdf", { type: "application/pdf" });
+    Object.defineProperty(file, "size", { value: 29_000_000 });
+    await userEvent.upload(screen.getByLabelText("파일 선택"), file);
+    expect(extractPdfText).toHaveBeenCalledWith(file);
+    expect(fileToBase64).toHaveBeenCalledWith(file);
+    expect(renderPdfPreview).toHaveBeenCalledWith(file);
+  });
   it("prioritizes original preservation with Korean capture actions", async () => {
     render(<InboxView />);
     expect(await screen.findByRole("heading", { name: "받은 자료" })).toBeInTheDocument();
